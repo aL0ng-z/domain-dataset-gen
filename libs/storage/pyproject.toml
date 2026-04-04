@@ -1,0 +1,16 @@
+[project]
+name = "storage"
+version = "0.1.0"
+description = "MinIO / S3 storage wrapper"
+requires-python = ">=3.11"
+dependencies = [
+    "minio>=7.2.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["storage*"]

@@ -1,0 +1,16 @@
+[project]
+name = "llm"
+version = "0.1.0"
+description = "LLM provider adapter (OpenAI-compatible)"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.60.0",
+]
+
+[build-system]
+requires = ["setuptools>=75.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["llm*"]
