@@ -1,0 +1,175 @@
+"use client";
+
+import React, { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useParams } from "next/navigation";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { DataTable, type ColumnDef } from "@/components/data-table";
+import { StatusBadge } from "@/components/status-badge";
+import { usePagination } from "@/hooks/use-pagination";
+import { api, type PaginatedResponse } from "@/lib/api";
+import { ArrowLeftIcon } from "lucide-react";
+
+interface Chunk {
+  id: string;
+  chunk_index: number;
+  section_id?: string;
+  section_title?: string;
+  heading_path?: string;
+  token_count: number;
+  status: string;
+  content_preview?: string;
+  created_at: string;
+}
+
+interface Section {
+  id: string;
+  title: string;
+  section_index: number;
+}
+
+export default function ChunksPage() {
+  const params = useParams<{ id: string; did: string }>();
+  const projectId = params.id;
+  const docId = params.did;
+  const { page, pageSize, setPage } = usePagination();
+  const [chunks, setChunks] = useState<Chunk[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [sections, setSections] = useState<Section[]>([]);
+  const [sectionFilter, setSectionFilter] = useState<string>("all");
+
+  useEffect(() => {
+    api
+      .get<{ items: Section[] }>(
+        `/projects/${projectId}/documents/${docId}/sections?page=1&page_size=200`
+      )
+      .then((data) => setSections(data.items))
+      .catch(() => {});
+  }, [projectId, docId]);
+
+  const fetchChunks = useCallback(() => {
+    setLoading(true);
+    const sectionParam =
+      sectionFilter !== "all" ? `&section_id=${sectionFilter}` : "";
+    api
+      .get<PaginatedResponse<Chunk>>(
+        `/projects/${projectId}/documents/${docId}/chunks?page=${page}&page_size=${pageSize}${sectionParam}`
+      )
+      .then((data) => {
+        setChunks(data.items);
+        setTotal(data.total);
+      })
+      .catch(() => toast.error("加载分块列表失败"))
+      .finally(() => setLoading(false));
+  }, [projectId, docId, page, pageSize, sectionFilter]);
+
+  useEffect(() => {
+    fetchChunks();
+  }, [fetchChunks]);
+
+  const columns: ColumnDef<Chunk>[] = [
+    {
+      key: "index",
+      header: "序号",
+      render: (row) => row.chunk_index + 1,
+    },
+    {
+      key: "section",
+      header: "所属章节",
+      render: (row) => row.section_title || row.heading_path || "-",
+    },
+    {
+      key: "content",
+      header: "内容预览",
+      className: "max-w-xs",
+      render: (row) => (
+        <Link
+          href={`/projects/${projectId}/documents/${docId}/chunks/${row.id}`}
+          className="text-primary hover:underline truncate block max-w-xs"
+        >
+          {row.content_preview || "(空)"}
+        </Link>
+      ),
+    },
+    {
+      key: "token_count",
+      header: "Token数",
+      render: (row) => row.token_count,
+    },
+    {
+      key: "status",
+      header: "状态",
+      render: (row) => <StatusBadge status={row.status} />,
+    },
+    {
+      key: "actions",
+      header: "操作",
+      render: (row) => (
+        <Link
+          href={`/projects/${projectId}/documents/${docId}/chunks/${row.id}`}
+        >
+          <Button variant="ghost" size="xs">
+            详情
+          </Button>
+        </Link>
+      ),
+    },
+  ];
+
+  return (
+    <div className="p-6">
+      <div className="mb-6">
+        <Link
+          href={`/projects/${projectId}/documents/${docId}`}
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-3"
+        >
+          <ArrowLeftIcon className="size-3" />
+          返回文档详情
+        </Link>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold">分块列表</h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              共 {total} 个分块
+            </p>
+          </div>
+          <div>
+            <select
+              className="rounded border px-3 py-1.5 text-sm bg-transparent"
+              value={sectionFilter}
+              onChange={(e) => {
+                setSectionFilter(e.target.value);
+                setPage(1);
+              }}
+            >
+              <option value="all">全部章节</option>
+              {sections.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.section_index + 1}. {s.title || "无标题"}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="py-12 text-center text-sm text-muted-foreground">
+          加载中...
+        </div>
+      ) : (
+        <DataTable
+          columns={columns}
+          data={chunks}
+          total={total}
+          page={page}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          rowKey={(row) => row.id}
+        />
+      )}
+    </div>
+  );
+}

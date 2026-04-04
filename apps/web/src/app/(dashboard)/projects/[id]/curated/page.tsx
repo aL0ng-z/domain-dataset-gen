@@ -1,0 +1,184 @@
+"use client";
+
+import React, { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { useParams } from "next/navigation";
+import { toast } from "sonner";
+import { DataTable, type ColumnDef } from "@/components/data-table";
+import { StatusBadge } from "@/components/status-badge";
+import { usePagination } from "@/hooks/use-pagination";
+import { api, type PaginatedResponse } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+
+interface CuratedItem {
+  id: string;
+  item_type: string;
+  status: string;
+  content_preview?: string;
+  heading_path?: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+const STATUS_OPTIONS = [
+  { value: "all", label: "全部状态" },
+  { value: "draft", label: "草稿" },
+  { value: "active", label: "活跃" },
+  { value: "archived", label: "已归档" },
+];
+
+const TYPE_OPTIONS = [
+  { value: "all", label: "全部类型" },
+  { value: "knowledge", label: "知识" },
+  { value: "qa", label: "问答" },
+  { value: "eval_case", label: "评测用例" },
+];
+
+export default function CuratedPage() {
+  const params = useParams<{ id: string }>();
+  const projectId = params.id;
+  const { page, pageSize, setPage } = usePagination();
+  const [items, setItems] = useState<CuratedItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+
+  const fetchItems = useCallback(() => {
+    setLoading(true);
+    const statusParam =
+      statusFilter !== "all" ? `&status=${statusFilter}` : "";
+    const typeParam =
+      typeFilter !== "all" ? `&item_type=${typeFilter}` : "";
+    api
+      .get<PaginatedResponse<CuratedItem>>(
+        `/projects/${projectId}/curated-items?page=${page}&page_size=${pageSize}${statusParam}${typeParam}`
+      )
+      .then((data) => {
+        setItems(data.items);
+        setTotal(data.total);
+      })
+      .catch(() => toast.error("加载知识资产列表失败"))
+      .finally(() => setLoading(false));
+  }, [projectId, page, pageSize, statusFilter, typeFilter]);
+
+  useEffect(() => {
+    fetchItems();
+  }, [fetchItems]);
+
+  const columns: ColumnDef<CuratedItem>[] = [
+    {
+      key: "content",
+      header: "内容预览",
+      className: "max-w-md",
+      render: (row) => (
+        <Link
+          href={`/projects/${projectId}/curated/${row.id}`}
+          className="text-primary hover:underline truncate block max-w-md"
+        >
+          {row.content_preview || "(空)"}
+        </Link>
+      ),
+    },
+    {
+      key: "item_type",
+      header: "类型",
+      render: (row) => {
+        const label = TYPE_OPTIONS.find((t) => t.value === row.item_type)?.label;
+        return label || row.item_type;
+      },
+    },
+    {
+      key: "status",
+      header: "状态",
+      render: (row) => <StatusBadge status={row.status} />,
+    },
+    {
+      key: "version",
+      header: "版本",
+      render: (row) => `v${row.version}`,
+    },
+    {
+      key: "heading_path",
+      header: "标题路径",
+      render: (row) => row.heading_path || "-",
+    },
+    {
+      key: "updated_at",
+      header: "更新时间",
+      render: (row) =>
+        new Date(row.updated_at).toLocaleString("zh-CN"),
+    },
+    {
+      key: "actions",
+      header: "操作",
+      render: (row) => (
+        <Link href={`/projects/${projectId}/curated/${row.id}`}>
+          <Button variant="ghost" size="xs">
+            详情
+          </Button>
+        </Link>
+      ),
+    },
+  ];
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-semibold">知识资产</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            经人工审核的正式知识资产
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            className="rounded border px-3 py-1.5 text-sm bg-transparent"
+            value={statusFilter}
+            onChange={(e) => {
+              setStatusFilter(e.target.value);
+              setPage(1);
+            }}
+          >
+            {STATUS_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+          <select
+            className="rounded border px-3 py-1.5 text-sm bg-transparent"
+            value={typeFilter}
+            onChange={(e) => {
+              setTypeFilter(e.target.value);
+              setPage(1);
+            }}
+          >
+            {TYPE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="py-12 text-center text-sm text-muted-foreground">
+          加载中...
+        </div>
+      ) : (
+        <DataTable
+          columns={columns}
+          data={items}
+          total={total}
+          page={page}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          rowKey={(row) => row.id}
+        />
+      )}
+    </div>
+  );
+}
