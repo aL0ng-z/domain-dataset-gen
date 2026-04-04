@@ -34,6 +34,8 @@ app.add_middleware(
 
 
 from app.routers import auth, users, projects, documents, sections, tasks, monitoring
+from app.routers import chunks, prompt_templates, candidates, curated_items
+from app.routers import datasets, benchmarks, exports
 from app.routers.config import (
     model_config_router, parser_profile_router, chunk_profile_router,
     export_profile_router, task_policy_router,
@@ -51,6 +53,13 @@ app.include_router(documents.router)
 app.include_router(sections.router)
 app.include_router(tasks.router)
 app.include_router(monitoring.router)
+app.include_router(chunks.router)
+app.include_router(prompt_templates.router)
+app.include_router(candidates.router)
+app.include_router(curated_items.router)
+app.include_router(datasets.router)
+app.include_router(benchmarks.router)
+app.include_router(exports.router)
 
 
 @app.get("/api/health")
