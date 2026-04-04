@@ -1,0 +1,12 @@
+#!/bin/sh
+# Initialize MinIO buckets for the platform.
+# This script is executed by the minio-init container after MinIO is healthy.
+
+set -e
+
+mc alias set local http://minio:9000 "${MINIO_ACCESS_KEY}" "${MINIO_SECRET_KEY}"
+
+mc mb --ignore-existing "local/${MINIO_BUCKET_DOCUMENTS}"
+mc mb --ignore-existing "local/${MINIO_BUCKET_OUTPUTS}"
+
+echo "MinIO buckets initialized successfully"
