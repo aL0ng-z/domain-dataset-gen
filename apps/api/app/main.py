@@ -33,7 +33,7 @@ app.add_middleware(
 )
 
 
-from app.routers import auth, users, projects, sections
+from app.routers import auth, users, projects, sections, tasks, monitoring
 from app.routers.config import (
     model_config_router, parser_profile_router, chunk_profile_router,
     export_profile_router, task_policy_router,
@@ -48,6 +48,8 @@ app.include_router(chunk_profile_router)
 app.include_router(export_profile_router)
 app.include_router(task_policy_router)
 app.include_router(sections.router)
+app.include_router(tasks.router)
+app.include_router(monitoring.router)
 
 
 @app.get("/api/health")
