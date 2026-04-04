@@ -66,6 +66,14 @@ infra/migrations/  # Alembic migrations
 - **Phase 2 (Lab-usable)**: Multi-user collaboration (leases, comments, review), CuratedItem layer, WebSocket status push, immutable snapshots
 - **Phase 3 (Enhancements)**: PaddleOCR fallback, LLM cleaning suggestions, claim checks, semantic dedup, multi-model support
 
+## Development Log
+
+每次完成开发任务（阶段性里程碑，非微小步骤）后，必须更新项目根目录的 `dev-log.md`，内容包括：
+- 项目总览状态表（R1/R2/R3/R4）
+- 当前 Release 的逐模块详细进度
+- 已知问题
+- 下一步待办事项
+
 ## Key Conventions
 
 - All content is in Chinese (压气机/compressor domain); the platform UI should support Chinese
