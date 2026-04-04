@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.ws.task_ws import task_websocket_endpoint
 
 
 @asynccontextmanager
@@ -35,3 +36,6 @@ app.add_middleware(
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
+
+
+app.websocket("/ws/projects/{pid}/tasks")(task_websocket_endpoint)
