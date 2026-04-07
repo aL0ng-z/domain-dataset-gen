@@ -29,7 +29,3 @@ class Document(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    __table_args__ = (
-        # SHA256 unique per project
-        {"comment": "unique constraint on (project_id, sha256) enforced at application level"},
-    )

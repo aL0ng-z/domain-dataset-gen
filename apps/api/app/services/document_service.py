@@ -18,6 +18,31 @@ class DocumentService:
             settings.minio_secret_key, settings.minio_secure,
         )
 
+    async def _deduplicate_filename(self, project_id: uuid.UUID, filename: str) -> str:
+        """If filename already exists in project, append (1), (2), etc."""
+        import os
+        base, ext = os.path.splitext(filename)
+        result = await self.db.execute(
+            select(func.count()).select_from(Document).where(
+                Document.project_id == project_id,
+                Document.filename == filename,
+            )
+        )
+        if result.scalar() == 0:
+            return filename
+        # Find next available suffix
+        for i in range(1, 100):
+            candidate = f"{base}({i}){ext}"
+            result = await self.db.execute(
+                select(func.count()).select_from(Document).where(
+                    Document.project_id == project_id,
+                    Document.filename == candidate,
+                )
+            )
+            if result.scalar() == 0:
+                return candidate
+        return f"{base}({uuid.uuid4().hex[:6]}){ext}"
+
     async def upload(
         self, project_id: uuid.UUID, filename: str, file_data: bytes, uploaded_by: uuid.UUID
     ) -> Document:
@@ -26,6 +51,9 @@ class DocumentService:
             raise ValueError("文件不是有效的 PDF 格式")
 
         sha256 = hashlib.sha256(file_data).hexdigest()
+
+        # Auto-rename if same filename exists in project
+        filename = await self._deduplicate_filename(project_id, filename)
 
         # Extract page count from PDF
         page_count = None
