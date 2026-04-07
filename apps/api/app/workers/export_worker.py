@@ -14,7 +14,7 @@ from app.models.dataset import Benchmark, BenchmarkCase, Dataset, DatasetItem
 from app.models.export import Export, SnapshotManifest
 from app.services.export_service import ExportService
 from app.services.task_service import TaskService
-from storage import StorageClient
+from storage import get_storage_client
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ async def run_export_dataset(
     """Export a dataset's curated items in the specified format."""
     task_service = TaskService(db, redis)
     export_service = ExportService(db)
-    storage = StorageClient(
+    storage = get_storage_client(
         settings.minio_endpoint, settings.minio_access_key,
         settings.minio_secret_key, settings.minio_secure,
     )
@@ -264,7 +264,7 @@ async def run_export_benchmark(
     """Export a benchmark's curated items in the specified format."""
     task_service = TaskService(db, redis)
     export_service = ExportService(db)
-    storage = StorageClient(
+    storage = get_storage_client(
         settings.minio_endpoint, settings.minio_access_key,
         settings.minio_secret_key, settings.minio_secure,
     )

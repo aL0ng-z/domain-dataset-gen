@@ -10,12 +10,12 @@ from app.models.parse import ParseJob
 from app.models.config import ParserProfile
 from app.services.task_service import TaskService
 from parsing import get_parser
-from storage import StorageClient
+from storage import get_storage_client
 
 
 async def run_parse(task_id: uuid.UUID, document_id: uuid.UUID, parser_profile_id: uuid.UUID, db: AsyncSession, redis=None):
     task_service = TaskService(db, redis)
-    storage = StorageClient(settings.minio_endpoint, settings.minio_access_key, settings.minio_secret_key, settings.minio_secure)
+    storage = get_storage_client(settings.minio_endpoint, settings.minio_access_key, settings.minio_secret_key, settings.minio_secure)
 
     await task_service.update_status(task_id, "processing", progress=10)
 

@@ -8,23 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.document import Document
 from app.models.parse import ParseJob
-from storage import StorageClient
+from storage import get_storage_client
+
+# Pre-load pymupdf at module level to avoid slow first-call initialization
+import pymupdf as _pymupdf  # noqa: F401
 
 
 def _extract_page_count(file_data: bytes) -> int | None:
     """Extract page count from PDF bytes (runs in thread pool)."""
     try:
-        import tempfile
-        import os
-        import pymupdf
-
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(file_data)
-            tmp_path = tmp.name
-        doc_pdf = pymupdf.open(tmp_path)
+        doc_pdf = pymupdf.open(stream=file_data, filetype="pdf")
         page_count = len(doc_pdf)
         doc_pdf.close()
-        os.unlink(tmp_path)
         return page_count
     except Exception:
         return None
@@ -33,7 +28,7 @@ def _extract_page_count(file_data: bytes) -> int | None:
 class DocumentService:
     def __init__(self, db: AsyncSession):
         self.db = db
-        self._storage = StorageClient(
+        self._storage = get_storage_client(
             settings.minio_endpoint, settings.minio_access_key,
             settings.minio_secret_key, settings.minio_secure,
         )

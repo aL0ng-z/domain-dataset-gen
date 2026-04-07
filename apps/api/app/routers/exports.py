@@ -13,7 +13,7 @@ from app.schemas.export import ExportResponse, SnapshotManifestResponse
 from app.services.export_service import ExportService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
-from storage import StorageClient
+from storage import get_storage_client
 
 router = APIRouter(prefix="/api/projects/{pid}/exports", tags=["exports"])
 
@@ -75,7 +75,7 @@ async def download_export(
     if export is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="导出记录不存在")
 
-    storage = StorageClient(
+    storage = get_storage_client(
         settings.minio_endpoint, settings.minio_access_key,
         settings.minio_secret_key, settings.minio_secure,
     )

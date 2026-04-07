@@ -160,7 +160,7 @@ async def test_model_config(
             max_tokens=20,
         )
         response = await client.chat_completion(
-            [{"role": "user", "content": "Reply with exactly: pong"}],
+            [{"role": "user", "content": "Reply with exactly: 连接成功"}],
             max_retries=1,
         )
         return {"status": "success", "response": response.content.strip(), "latency_ms": response.latency_ms}
