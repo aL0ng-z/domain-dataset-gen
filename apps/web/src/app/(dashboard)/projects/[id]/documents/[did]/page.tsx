@@ -15,6 +15,7 @@ import {
 import { StatusBadge } from "@/components/status-badge";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { api } from "@/lib/api";
+import { useWs } from "@/hooks/use-ws";
 import {
   FileTextIcon,
   PlayIcon,
@@ -98,6 +99,15 @@ export default function DocumentDetailPage() {
     fetchData();
   }, [fetchData]);
 
+  // Subscribe to WebSocket for real-time task updates
+  const { subscribe } = useWs();
+  useEffect(() => {
+    const unsub = subscribe("*", () => {
+      fetchData();
+    });
+    return unsub;
+  }, [subscribe, fetchData]);
+
   const getDefaultProfile = (profiles: ProfileOption[]) =>
     profiles.find((p) => p.is_default) || profiles[0];
 
@@ -125,8 +135,6 @@ export default function DocumentDetailPage() {
       toast.success("解析任务已发起");
       // Refresh immediately to show the new parse job, then again after a delay
       fetchData();
-      setTimeout(fetchData, 3000);
-      setTimeout(fetchData, 8000);
     } catch {
       toast.error("发起解析失败");
     } finally {
@@ -148,8 +156,6 @@ export default function DocumentDetailPage() {
       );
       toast.success("切分任务已发起");
       fetchData();
-      setTimeout(fetchData, 3000);
-      setTimeout(fetchData, 8000);
     } catch {
       toast.error("发起切分失败");
     } finally {
@@ -165,8 +171,6 @@ export default function DocumentDetailPage() {
       );
       toast.success("清洗任务已发起");
       fetchData();
-      setTimeout(fetchData, 3000);
-      setTimeout(fetchData, 8000);
     } catch {
       toast.error("发起清洗失败");
     } finally {

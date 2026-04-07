@@ -17,12 +17,19 @@ from app.schemas.document import (
 )
 from app.schemas.section import SectionResponse
 from app.schemas.chunk import ChunkResponse
+from app.config import settings
 from app.services.document_service import DocumentService
 from app.services.task_service import TaskService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
 
 router = APIRouter(prefix="/api/projects/{pid}/documents", tags=["documents"])
+
+
+async def _create_bg_redis():
+    """Create a dedicated Redis connection for background tasks."""
+    import redis.asyncio as aioredis
+    return aioredis.from_url(settings.redis_url, decode_responses=True)
 
 
 @router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
@@ -101,17 +108,19 @@ async def trigger_parse(
     doc.status = "parsing"
     await db.commit()
 
-    # Run in background - need a new session
     from app.workers.parse_worker import run_parse
     from app.database import async_session_factory
 
     async def _run():
+        redis_client = await _create_bg_redis()
         async with async_session_factory() as session:
             try:
-                await run_parse(task.id, did, body.parser_profile_id, session)
+                await run_parse(task.id, did, body.parser_profile_id, session, redis=redis_client)
                 await session.commit()
             except Exception:
                 await session.rollback()
+            finally:
+                await redis_client.close()
 
     background_tasks.add_task(_run)
     return {"task_id": str(task.id), "message": "解析任务已创建"}
@@ -170,12 +179,15 @@ async def start_cleaning(
     from app.database import async_session_factory
 
     async def _run():
+        redis_client = await _create_bg_redis()
         async with async_session_factory() as session:
             try:
-                await run_clean(task.id, did, parse_job.id, current_user.id, session)
+                await run_clean(task.id, did, parse_job.id, current_user.id, session, redis=redis_client)
                 await session.commit()
             except Exception:
                 await session.rollback()
+            finally:
+                await redis_client.close()
 
     background_tasks.add_task(_run)
     return {"task_id": str(task.id), "message": "清洗任务已创建"}
@@ -226,12 +238,15 @@ async def trigger_chunk(
     from app.database import async_session_factory
 
     async def _run():
+        redis_client = await _create_bg_redis()
         async with async_session_factory() as session:
             try:
-                await run_chunk(task.id, did, body.chunk_profile_id, session)
+                await run_chunk(task.id, did, body.chunk_profile_id, session, redis=redis_client)
                 await session.commit()
             except Exception:
                 await session.rollback()
+            finally:
+                await redis_client.close()
 
     background_tasks.add_task(_run)
     return {"task_id": str(task.id), "message": "切分任务已创建"}
@@ -282,15 +297,18 @@ async def trigger_generate_batch(
     from app.database import async_session_factory
 
     async def _run():
+        redis_client = await _create_bg_redis()
         async with async_session_factory() as session:
             try:
                 await run_generate_batch(
                     task.id, did, body.prompt_template_id, body.model_config_id,
-                    pid, current_user.id, session,
+                    pid, current_user.id, session, redis=redis_client,
                 )
                 await session.commit()
             except Exception:
                 await session.rollback()
+            finally:
+                await redis_client.close()
 
     background_tasks.add_task(_run)
     return {"task_id": str(task.id), "message": "批量生成任务已创建"}
