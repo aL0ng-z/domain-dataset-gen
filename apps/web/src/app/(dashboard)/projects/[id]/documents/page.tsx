@@ -103,6 +103,20 @@ export default function DocumentsPage() {
     [projectId, fetchDocuments]
   );
 
+  const handleDelete = useCallback(
+    async (docId: string, filename: string) => {
+      if (!confirm(`确定要删除文档「${filename}」吗？此操作不可撤销。`)) return;
+      try {
+        await api.delete(`/projects/${projectId}/documents/${docId}`);
+        toast.success("文档已删除");
+        fetchDocuments();
+      } catch {
+        toast.error("删除失败");
+      }
+    },
+    [projectId, fetchDocuments]
+  );
+
   const columns: ColumnDef<Document>[] = [
     {
       key: "filename",
@@ -156,6 +170,14 @@ export default function DocumentsPage() {
               详情
             </Button>
           </Link>
+          <Button
+            variant="ghost"
+            size="xs"
+            className="text-destructive hover:text-destructive"
+            onClick={() => handleDelete(row.id, row.filename)}
+          >
+            删除
+          </Button>
         </div>
       ),
     },
