@@ -207,3 +207,29 @@
 - 新增 `_deduplicate_filename()` 方法：同名文件自动重命名为 `test(1).pdf`、`test(2).pdf` ...
 
 **提交：** `ef47a1f fix: allow duplicate PDF uploads with auto-renamed filenames`
+
+---
+
+## Issue #12: 上传和删除文档极慢（500KB PDF 需要约 1 分钟）
+
+**反馈：** 上传 500KB PDF 和删除未解析的文档都需要几十秒到一分钟。
+
+**根因：** `StorageClient`（MinIO SDK）和 `pymupdf` 都是同步库。在 async FastAPI handler 中直接调用同步 I/O 会阻塞整个事件循环，导致请求排队等待。
+
+**修复：** 所有同步 I/O 操作改用 `asyncio.to_thread()` 放到线程池执行：
+- `hashlib.sha256()` 计算
+- `_extract_page_count()` pymupdf 页数提取
+- `self._storage.upload_file()` MinIO 上传
+- `self._storage.delete_file()` MinIO 删除
+
+**提交：** `2839a5b fix: run MinIO and pymupdf operations in thread pool to avoid blocking event loop`
+
+---
+
+## Issue #13: 删除确认对话框交互不佳
+
+**反馈：** 点击确认删除后对话框立即关闭，可以重复点击。应在删除完成前保持对话框打开。
+
+**修复：** `confirm()` 替换为 shadcn Dialog，带 loading spinner 和 disabled 按钮，删除完成后自动关闭。
+
+**提交：** `ed59f5a fix: replace confirm() with Dialog for document delete, add loading state`
