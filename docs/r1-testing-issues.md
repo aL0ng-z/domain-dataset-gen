@@ -145,3 +145,15 @@
 - 切换提供商 / 新建 / 编辑时正确重置 `useCustomModel`
 
 **提交：** `bfd6118 fix: custom model name input disappears on typing`
+
+---
+
+## Issue #8: 进入项目后无法返回项目列表
+
+**反馈：** 进入项目后没有返回主页（项目列表）的入口。
+
+**修复：**
+- 左上角标题从"知识提取平台"改为"DTRC-KE"
+- 标题改为 `<Link href="/projects">` 可点击链接，点击即返回项目列表页
+
+**提交：** `a4c9114 fix: rename sidebar title to DTRC-KE and make it a link to project list`
