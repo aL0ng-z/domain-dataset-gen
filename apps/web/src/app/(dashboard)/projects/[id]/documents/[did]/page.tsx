@@ -101,17 +101,26 @@ export default function DocumentDetailPage() {
   const getDefaultProfile = (profiles: ProfileOption[]) =>
     profiles.find((p) => p.is_default) || profiles[0];
 
+  const [selectedParserId, setSelectedParserId] = useState<string>("");
+
+  // Set default parser when profiles load
+  useEffect(() => {
+    if (parserProfiles.length > 0 && !selectedParserId) {
+      const def = getDefaultProfile(parserProfiles);
+      if (def) setSelectedParserId(def.id);
+    }
+  }, [parserProfiles, selectedParserId]);
+
   const handleParse = useCallback(async () => {
-    const profile = getDefaultProfile(parserProfiles);
-    if (!profile) {
-      toast.error("请先在设置中创建解析器配置");
+    if (!selectedParserId) {
+      toast.error("请选择解析器");
       return;
     }
     setActionLoading("parse");
     try {
       await api.post(
         `/projects/${projectId}/documents/${docId}/parse`,
-        { parser_profile_id: profile.id }
+        { parser_profile_id: selectedParserId }
       );
       toast.success("解析任务已发起");
       fetchData();
@@ -120,7 +129,7 @@ export default function DocumentDetailPage() {
     } finally {
       setActionLoading(null);
     }
-  }, [projectId, docId, parserProfiles, fetchData]);
+  }, [projectId, docId, selectedParserId, fetchData]);
 
   const handleChunk = useCallback(async () => {
     const profile = getDefaultProfile(chunkProfiles);
@@ -167,7 +176,10 @@ export default function DocumentDetailPage() {
     {
       key: "parser_profile_id",
       header: "解析器",
-      render: (row) => row.parser_profile_id?.slice(0, 8) ?? "-",
+      render: (row) => {
+        const p = parserProfiles.find((pp) => pp.id === row.parser_profile_id);
+        return p?.name ?? row.parser_profile_id?.slice(0, 8) ?? "-";
+      },
     },
     {
       key: "started_at",
@@ -287,22 +299,30 @@ export default function DocumentDetailPage() {
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-3">
-            <Button
-              onClick={handleParse}
-              disabled={actionLoading !== null || doc.status !== "uploaded"}
-            >
-              {actionLoading === "parse" ? (
-                <Loader2Icon className="size-4 animate-spin" />
-              ) : (
-                <PlayIcon className="size-4" />
-              )}
-              发起解析
-              {parserProfiles.length > 0 && (
-                <span className="text-xs opacity-70 ml-1">
-                  ({getDefaultProfile(parserProfiles)?.name})
-                </span>
-              )}
-            </Button>
+            <div className="flex items-center gap-1">
+              <select
+                className="h-9 rounded-l-md border border-r-0 px-3 text-sm bg-transparent"
+                value={selectedParserId}
+                onChange={(e) => setSelectedParserId(e.target.value)}
+                disabled={actionLoading !== null}
+              >
+                {parserProfiles.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <Button
+                className="rounded-l-none"
+                onClick={handleParse}
+                disabled={actionLoading !== null || !selectedParserId}
+              >
+                {actionLoading === "parse" ? (
+                  <Loader2Icon className="size-4 animate-spin" />
+                ) : (
+                  <PlayIcon className="size-4" />
+                )}
+                发起解析
+              </Button>
+            </div>
             <Button
               variant="outline"
               onClick={handleCleanStart}

@@ -526,6 +526,15 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
     } catch { toast.error("保存失败"); }
   };
 
+  const handleDelete = async (item: ParserProfile) => {
+    if (!confirm(`确定要删除解析器配置「${item.name}」吗？`)) return;
+    try {
+      await api.delete(`/projects/${projectId}/parser-profiles/${item.id}`);
+      toast.success("已删除");
+      fetchItems();
+    } catch { toast.error("删除失败"); }
+  };
+
   const currentPreset = PARSER_PRESETS[form.parser_name];
 
   const columns: ColumnDef<ParserProfile>[] = [
@@ -548,9 +557,14 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
     {
       key: "actions", header: "操作",
       render: (row) => (
-        <Button variant="ghost" size="xs" onClick={() => openEdit(row)}>
-          <PencilIcon className="size-3" /> 编辑
-        </Button>
+        <div className="flex gap-1">
+          <Button variant="ghost" size="xs" onClick={() => openEdit(row)}>
+            <PencilIcon className="size-3" /> 编辑
+          </Button>
+          <Button variant="ghost" size="xs" className="text-destructive hover:text-destructive" onClick={() => handleDelete(row)}>
+            删除
+          </Button>
+        </div>
       ),
     },
   ];
