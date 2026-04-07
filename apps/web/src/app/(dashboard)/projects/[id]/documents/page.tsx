@@ -6,6 +6,13 @@ import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { usePagination } from "@/hooks/use-pagination";
@@ -103,19 +110,23 @@ export default function DocumentsPage() {
     [projectId, fetchDocuments]
   );
 
-  const handleDelete = useCallback(
-    async (docId: string, filename: string) => {
-      if (!confirm(`确定要删除文档「${filename}」吗？此操作不可撤销。`)) return;
-      try {
-        await api.delete(`/projects/${projectId}/documents/${docId}`);
-        toast.success("文档已删除");
-        fetchDocuments();
-      } catch {
-        toast.error("删除失败");
-      }
-    },
-    [projectId, fetchDocuments]
-  );
+  const [deleteTarget, setDeleteTarget] = useState<{ id: string; filename: string } | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/projects/${projectId}/documents/${deleteTarget.id}`);
+      toast.success("文档已删除");
+      setDeleteTarget(null);
+      fetchDocuments();
+    } catch {
+      toast.error("删除失败");
+    } finally {
+      setDeleting(false);
+    }
+  }, [deleteTarget, projectId, fetchDocuments]);
 
   const columns: ColumnDef<Document>[] = [
     {
@@ -174,7 +185,7 @@ export default function DocumentsPage() {
             variant="ghost"
             size="xs"
             className="text-destructive hover:text-destructive"
-            onClick={() => handleDelete(row.id, row.filename)}
+            onClick={() => setDeleteTarget({ id: row.id, filename: row.filename })}
           >
             删除
           </Button>
@@ -250,6 +261,26 @@ export default function DocumentsPage() {
           rowKey={(row) => row.id}
         />
       )}
+
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => { if (!open && !deleting) setDeleteTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认删除</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            确定要删除文档「{deleteTarget?.filename}」吗？该文档的所有解析结果、Section、Chunk 等关联数据也将被删除，此操作不可撤销。
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteConfirm} disabled={deleting}>
+              {deleting && <Loader2Icon className="size-4 animate-spin" />}
+              {deleting ? "删除中..." : "确认删除"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
