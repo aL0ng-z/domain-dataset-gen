@@ -13,8 +13,8 @@ class ModelConfigCreate(BaseModel):
     base_url: str
     api_key: str
     model_name: str
-    temperature: float = 0.7
-    max_tokens: int = 2048
+    temperature: float | None = None
+    max_tokens: int | None = None
     extra_params: dict | None = None
 
 

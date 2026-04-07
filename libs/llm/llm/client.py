@@ -11,8 +11,8 @@ class LLMClient:
         base_url: str,
         api_key: str,
         model_name: str,
-        temperature: float = 0.7,
-        max_tokens: int = 2048,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
     ):
         self.client = AsyncOpenAI(base_url=base_url, api_key=api_key)
         self.model_name = model_name
@@ -31,12 +31,14 @@ class LLMClient:
             try:
                 start_ms = int(time.time() * 1000)
 
-                kwargs = {
+                kwargs: dict = {
                     "model": self.model_name,
                     "messages": messages,
-                    "temperature": self.temperature,
-                    "max_tokens": self.max_tokens,
                 }
+                if self.temperature is not None:
+                    kwargs["temperature"] = self.temperature
+                if self.max_tokens is not None:
+                    kwargs["max_tokens"] = self.max_tokens
                 if response_format:
                     kwargs["response_format"] = response_format
 
