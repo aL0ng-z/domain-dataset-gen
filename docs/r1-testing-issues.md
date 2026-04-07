@@ -173,3 +173,22 @@
 - WS URL 改为直连后端 `ws://localhost:8000/ws/projects/{pid}/tasks`
 
 **提交：** `824d7d6 fix: make ModelConfigResponse temperature/max_tokens nullable, fix WebSocket URL`
+
+---
+
+## Issue #10: 上传 PDF 不显示页数 + 重复文档应允许上传
+
+**反馈：**
+1. 上传成功后看不到页数
+2. 重复文档只显示"上传失败"无详细提示；用户认为应允许上传重复文档以便用不同配置处理
+
+**根因：**
+1. 页数只在解析（parse）完成后才写入，上传阶段未提取
+2. SHA256 去重硬性拒绝重复文件，且前端只显示通用错误信息
+
+**修复：**
+- 上传时用 pymupdf 快速提取 page_count（不依赖完整解析）
+- 移除 SHA256 去重检查，允许同一文件多次上传
+- MinIO key 使用 UUID 而非 SHA256，避免文件覆盖
+
+**提交：** `d9e8a1b fix: extract page count on upload, allow duplicate PDF uploads`
