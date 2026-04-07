@@ -123,7 +123,10 @@ export default function DocumentDetailPage() {
         { parser_profile_id: selectedParserId }
       );
       toast.success("解析任务已发起");
+      // Refresh immediately to show the new parse job, then again after a delay
       fetchData();
+      setTimeout(fetchData, 3000);
+      setTimeout(fetchData, 8000);
     } catch {
       toast.error("发起解析失败");
     } finally {
@@ -145,6 +148,8 @@ export default function DocumentDetailPage() {
       );
       toast.success("切分任务已发起");
       fetchData();
+      setTimeout(fetchData, 3000);
+      setTimeout(fetchData, 8000);
     } catch {
       toast.error("发起切分失败");
     } finally {
@@ -160,6 +165,8 @@ export default function DocumentDetailPage() {
       );
       toast.success("清洗任务已发起");
       fetchData();
+      setTimeout(fetchData, 3000);
+      setTimeout(fetchData, 8000);
     } catch {
       toast.error("发起清洗失败");
     } finally {

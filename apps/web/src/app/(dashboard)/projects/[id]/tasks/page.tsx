@@ -15,11 +15,11 @@ interface TaskItem {
   id: string;
   task_type: string;
   status: string;
-  progress?: number;
+  progress: number;
   error_message?: string;
   created_at: string;
   started_at?: string;
-  finished_at?: string;
+  completed_at?: string;
 }
 
 const TASK_TYPE_LABELS: Record<string, string> = {
@@ -41,8 +41,8 @@ const TYPE_OPTIONS = [
 
 const STATUS_OPTIONS = [
   { value: "all", label: "全部状态" },
-  { value: "pending", label: "待处理" },
-  { value: "running", label: "运行中" },
+  { value: "queued", label: "排队中" },
+  { value: "processing", label: "处理中" },
   { value: "completed", label: "已完成" },
   { value: "failed", label: "失败" },
   { value: "cancelled", label: "已取消" },
@@ -135,8 +135,7 @@ export default function TasksPage() {
       key: "progress",
       header: "进度",
       render: (row) => {
-        if (row.progress == null) return "-";
-        const pct = Math.round(row.progress * 100);
+        const pct = Math.min(row.progress ?? 0, 100);
         return (
           <div className="flex items-center gap-2">
             <div className="h-1.5 w-20 rounded-full bg-muted overflow-hidden">
@@ -165,11 +164,11 @@ export default function TasksPage() {
           : "-",
     },
     {
-      key: "finished_at",
+      key: "completed_at",
       header: "完成时间",
       render: (row) =>
-        row.finished_at
-          ? new Date(row.finished_at).toLocaleString("zh-CN")
+        row.completed_at
+          ? new Date(row.completed_at).toLocaleString("zh-CN")
           : "-",
     },
     {
@@ -192,7 +191,7 @@ export default function TasksPage() {
       header: "操作",
       render: (row) => (
         <div className="flex gap-1">
-          {(row.status === "pending" || row.status === "running") && (
+          {(row.status === "queued" || row.status === "processing") && (
             <Button
               variant="ghost"
               size="xs"

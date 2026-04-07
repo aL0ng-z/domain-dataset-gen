@@ -24,7 +24,11 @@ async def run_parse(task_id: uuid.UUID, document_id: uuid.UUID, parser_profile_i
         doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one()
         profile = (await db.execute(select(ParserProfile).where(ParserProfile.id == parser_profile_id))).scalar_one()
 
-        parse_job = ParseJob(document_id=document_id, parser_profile_id=parser_profile_id, status="processing")
+        from datetime import datetime, timezone
+        parse_job = ParseJob(
+            document_id=document_id, parser_profile_id=parser_profile_id,
+            status="processing", started_at=datetime.now(timezone.utc),
+        )
         db.add(parse_job)
         await db.flush()
 
@@ -56,6 +60,7 @@ async def run_parse(task_id: uuid.UUID, document_id: uuid.UUID, parser_profile_i
 
         # Update parse job
         parse_job.status = "completed"
+        parse_job.completed_at = datetime.now(timezone.utc)
         parse_job.raw_markdown_key = md_key
         parse_job.structured_json_key = json_key
         parse_job.page_mapping = result.page_mapping
