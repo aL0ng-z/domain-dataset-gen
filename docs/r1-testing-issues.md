@@ -233,3 +233,53 @@
 **修复：** `confirm()` 替换为 shadcn Dialog，带 loading spinner 和 disabled 按钮，删除完成后自动关闭。
 
 **提交：** `ed59f5a fix: replace confirm() with Dialog for document delete, add loading state`
+
+---
+
+## Issue #14: 上传/删除仍慢 — StorageClient 每次重建 + 桶检查冗余
+
+**反馈：** asyncio.to_thread 改造后上传/删除速度仍无明显改善。
+
+**根因：** `DocumentService.__init__` 每次请求都新建 `StorageClient` → 新建 `Minio()` 连接（DNS 解析、连接池初始化）。`ensure_bucket()` 每次上传都发 HTTP 请求检查桶是否存在。pymupdf 写临时文件也有额外磁盘 I/O。
+
+**修复：**
+- `StorageClient` 改为单例模式（`get_storage_client()` 工厂函数）
+- `ensure_bucket()` 增加类级缓存 `_verified_buckets`，已确认的桶不再重复检查
+- pymupdf 改为 `open(stream=file_data)` 从内存读取，不再写临时文件
+- pymupdf 在模块级预加载，避免首次调用初始化慢
+- 所有 workers 和 routers 统一使用 `get_storage_client()`
+
+**提交：** `6fdb65d perf: optimize storage client - singleton + bucket cache + pymupdf from memory`
+
+---
+
+## Issue #15: 文档详情页操作按钮缺少必要参数 + 按钮不区分状态
+
+**反馈：** 点击「发起解析」后端报 422（缺少 parser_profile_id）。所有操作按钮不传 body。按钮在任何文档状态下都可点击。
+
+**根因：** `handleAction` 只发空 POST，但后端 `trigger_parse` 需要 `ParseRequest` body（含 `parser_profile_id`），`trigger_chunk` 需要 `ChunkRequest` body（含 `chunk_profile_id`）。
+
+**修复：**
+- 拆分为独立的 `handleParse`、`handleChunk`、`handleCleanStart` 处理函数
+- 自动获取项目默认的 parser/chunk profile 并传入请求体
+- 按钮按文档状态禁用（parse→uploaded, clean→parsed, chunk→cleaning/cleaned, generate→chunked）
+- 按钮标签显示将使用的配置名称
+- ParseJob 字段名对齐后端（parser_profile_id, completed_at）
+
+**提交：** `3489e8f fix: document detail actions now pass required profile IDs`
+
+---
+
+## Issue #16: 解析器系统重构 — 支持 pymupdf4llm / MinerU / PaddleOCR
+
+**反馈：** 需要支持三种解析器，默认 pymupdf4llm 本地解析，MinerU 和 PaddleOCR 通过 API 接入。
+
+**修改（功能需求，非 bug）：**
+- 重构 `libs/parsing/`：`MockParser` → `PymupdfParser`，新增 `MineruParser`、`PaddleOCRParser`（API 方式）
+- `BaseParser` 接口变更：接受 `options` dict 和 `pdf_data: bytes`（不再是文件路径）
+- `get_parser()` 传递 `parser_options` 到解析器构造函数
+- 前端设置页新增专用 `ParserProfileTab`，按解析器类型显示不同配置项
+- pymupdf4llm：无额外配置；MinerU/PaddleOCR：显示 API 地址 + API Key 输入框
+- 种子数据更新：默认解析器改为 `pymupdf4llm`
+
+**提交：** `1eb61c0 feat: redesign parser system with pymupdf4llm, MinerU, PaddleOCR support`
