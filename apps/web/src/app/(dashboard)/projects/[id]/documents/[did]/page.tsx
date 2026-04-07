@@ -61,14 +61,14 @@ export default function DocumentDetailPage() {
         `/projects/${projectId}/documents/${docId}`
       ),
       api
-        .get<{ items: ParseJob[] }>(
-          `/projects/${projectId}/documents/${docId}/parse-jobs?page=1&page_size=50`
+        .get<ParseJob[]>(
+          `/projects/${projectId}/documents/${docId}/parse-jobs`
         )
-        .catch(() => ({ items: [] })),
+        .catch(() => [] as ParseJob[]),
     ])
       .then(([docData, jobsData]) => {
         setDoc(docData);
-        setParseJobs(jobsData.items);
+        setParseJobs(jobsData);
       })
       .catch(() => toast.error("加载文档详情失败"))
       .finally(() => setLoading(false));
