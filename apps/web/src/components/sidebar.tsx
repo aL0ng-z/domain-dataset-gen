@@ -130,7 +130,7 @@ export function Sidebar() {
               <div className="flex flex-1 items-center justify-between min-w-0">
                 <div className="min-w-0">
                   <div className="text-sm font-medium truncate">
-                    {user.display_name}
+                    {user.username}
                   </div>
                   <Badge variant="secondary" className="text-[10px]">
                     {roleLabels[user.role] || user.role}

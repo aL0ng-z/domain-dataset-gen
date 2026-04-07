@@ -17,8 +17,10 @@ import { api } from "@/lib/api";
 export interface User {
   id: string;
   username: string;
-  display_name: string;
+  email: string;
   role: string;
+  is_active?: boolean;
+  created_at?: string;
 }
 
 export interface AuthContextValue {

@@ -1,10 +1,16 @@
+export interface TokenData {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+}
+
 export interface AuthData {
   access_token: string;
   refresh_token: string;
   user: {
     id: string;
     username: string;
-    display_name: string;
+    email: string;
     role: string;
   };
 }
@@ -13,6 +19,7 @@ export async function login(
   username: string,
   password: string
 ): Promise<AuthData> {
+  // Step 1: Get tokens
   const res = await fetch("/api/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -22,10 +29,24 @@ export async function login(
     const err = await res.json().catch(() => ({ detail: "登录失败" }));
     throw new Error(err.detail || "登录失败");
   }
-  const data: AuthData = await res.json();
-  localStorage.setItem("access_token", data.access_token);
-  localStorage.setItem("refresh_token", data.refresh_token);
-  return data;
+  const tokenData: TokenData = await res.json();
+  localStorage.setItem("access_token", tokenData.access_token);
+  localStorage.setItem("refresh_token", tokenData.refresh_token);
+
+  // Step 2: Fetch user profile
+  const meRes = await fetch("/api/auth/me", {
+    headers: { Authorization: `Bearer ${tokenData.access_token}` },
+  });
+  if (!meRes.ok) {
+    throw new Error("获取用户信息失败");
+  }
+  const user = await meRes.json();
+
+  return {
+    access_token: tokenData.access_token,
+    refresh_token: tokenData.refresh_token,
+    user,
+  };
 }
 
 export async function refreshToken(): Promise<boolean> {
