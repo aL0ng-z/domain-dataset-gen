@@ -96,3 +96,20 @@
 - 测试连接改为使用已保存配置的 ID 调用 `POST /{config_id}/test`
 
 **提交：** `90f5282 fix: improve ModelConfig form with API key field, provider presets, and more providers`
+
+---
+
+## Issue #5: 模型配置保存失败 (500) + 新建时缺少测试按钮
+
+**反馈：** 填写模型配置后点保存，显示"保存失败"。后端报 `TypeError: 'api_key' is an invalid keyword argument for ModelConfig`。另外新建时看不到"测试连接"按钮。
+
+**根因：**
+1. **500 错误**：前端 schema 字段名 `api_key` 与 SQLAlchemy 模型列名 `api_key_encrypted` 不匹配。`ConfigService.create()` 直接将 schema 字段名传给模型构造函数，模型不认识 `api_key`。
+2. **307 重定向**：POST 请求 URL 缺少尾部斜杠，FastAPI 307 重定向到带斜杠的 URL，POST body 可能丢失。
+3. **测试按钮**：新建时 `editItem` 为 null，测试按钮被条件隐藏（需要 config ID 才能调用测试端点）。
+
+**修复：**
+- `apps/api/app/services/config_service.py`: 添加 `FIELD_MAPPINGS` 和 `_map_fields()` 方法，在 create/update 时将 `api_key` → `api_key_encrypted`
+- `apps/web/.../settings/page.tsx`: POST URL 加尾部斜杠；新建保存后不关闭 Dialog，切换为编辑模式（`setEditItem(created)`），测试按钮随即出现
+
+**提交：** `b67ecf6 fix: map api_key to api_key_encrypted in config service, fix save+test flow`
