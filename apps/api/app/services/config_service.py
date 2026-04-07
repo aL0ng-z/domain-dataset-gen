@@ -14,8 +14,22 @@ class ConfigService:
         self.db = db
         self.model_class = model_class
 
+    # Map schema field names to model column names where they differ
+    FIELD_MAPPINGS = {
+        "api_key": "api_key_encrypted",
+    }
+
+    def _map_fields(self, kwargs: dict) -> dict:
+        """Remap schema field names to model column names."""
+        mapped = {}
+        for key, value in kwargs.items():
+            mapped_key = self.FIELD_MAPPINGS.get(key, key)
+            mapped[mapped_key] = value
+        return mapped
+
     async def create(self, project_id: uuid.UUID, **kwargs) -> Any:
-        obj = self.model_class(project_id=project_id, **kwargs)
+        mapped = self._map_fields(kwargs)
+        obj = self.model_class(project_id=project_id, **mapped)
         self.db.add(obj)
         await self.db.flush()
         await self.db.refresh(obj)
@@ -37,7 +51,8 @@ class ConfigService:
         obj = await self.get(config_id)
         if obj is None:
             return None
-        for key, value in kwargs.items():
+        mapped = self._map_fields(kwargs)
+        for key, value in mapped.items():
             if value is not None:
                 setattr(obj, key, value)
         obj.version = obj.version + 1

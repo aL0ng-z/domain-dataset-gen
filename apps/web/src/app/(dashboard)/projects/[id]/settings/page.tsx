@@ -185,14 +185,16 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
           `/projects/${projectId}/model-configs/${editItem.id}`,
           payload
         );
+        toast.success("保存成功");
+        setDialogOpen(false);
       } else {
-        await api.post(
-          `/projects/${projectId}/model-configs`,
+        const created = await api.post<ModelConfig>(
+          `/projects/${projectId}/model-configs/`,
           payload
         );
+        toast.success("创建成功，可点击「测试连接」验证");
+        setEditItem(created); // Switch to edit mode so test button appears
       }
-      toast.success("保存成功");
-      setDialogOpen(false);
       fetchItems();
     } catch {
       toast.error("保存失败");
@@ -492,7 +494,7 @@ function GenericConfigTab({
         );
       } else {
         await api.post(
-          `/projects/${projectId}/${endpoint}`,
+          `/projects/${projectId}/${endpoint}/`,
           payload
         );
       }
