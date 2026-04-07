@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import uuid
 
@@ -8,6 +9,25 @@ from app.config import settings
 from app.models.document import Document
 from app.models.parse import ParseJob
 from storage import StorageClient
+
+
+def _extract_page_count(file_data: bytes) -> int | None:
+    """Extract page count from PDF bytes (runs in thread pool)."""
+    try:
+        import tempfile
+        import os
+        import pymupdf
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(file_data)
+            tmp_path = tmp.name
+        doc_pdf = pymupdf.open(tmp_path)
+        page_count = len(doc_pdf)
+        doc_pdf.close()
+        os.unlink(tmp_path)
+        return page_count
+    except Exception:
+        return None
 
 
 class DocumentService:
@@ -30,7 +50,6 @@ class DocumentService:
         )
         if result.scalar() == 0:
             return filename
-        # Find next available suffix
         for i in range(1, 100):
             candidate = f"{base}({i}){ext}"
             result = await self.db.execute(
@@ -50,38 +69,28 @@ class DocumentService:
         if not file_data[:4] == b"%PDF":
             raise ValueError("文件不是有效的 PDF 格式")
 
-        sha256 = hashlib.sha256(file_data).hexdigest()
+        # Run CPU/IO-bound operations in thread pool to avoid blocking event loop
+        sha256 = await asyncio.to_thread(hashlib.sha256, file_data)
+        sha256_hex = sha256.hexdigest()
 
-        # Auto-rename if same filename exists in project
         filename = await self._deduplicate_filename(project_id, filename)
 
-        # Extract page count from PDF
-        page_count = None
-        try:
-            import tempfile
-            import pymupdf
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp.write(file_data)
-                tmp_path = tmp.name
-            doc_pdf = pymupdf.open(tmp_path)
-            page_count = len(doc_pdf)
-            doc_pdf.close()
-            import os
-            os.unlink(tmp_path)
-        except Exception:
-            pass  # Non-critical, page_count stays None
+        page_count = await asyncio.to_thread(_extract_page_count, file_data)
 
-        # Upload to MinIO (use UUID in key to allow duplicate files)
+        # Upload to MinIO in thread pool
         doc_id = uuid.uuid4()
         minio_key = f"{project_id}/{doc_id}/{filename}"
-        self._storage.upload_file(settings.minio_bucket_documents, minio_key, file_data, "application/pdf")
+        await asyncio.to_thread(
+            self._storage.upload_file,
+            settings.minio_bucket_documents, minio_key, file_data, "application/pdf",
+        )
 
         doc = Document(
             id=doc_id,
             project_id=project_id,
             filename=filename,
             file_size=len(file_data),
-            sha256=sha256,
+            sha256=sha256_hex,
             minio_key=minio_key,
             page_count=page_count,
             uploaded_by=uploaded_by,
@@ -111,7 +120,10 @@ class DocumentService:
         doc = await self.get_document(document_id)
         if doc is None:
             return False
-        self._storage.delete_file(settings.minio_bucket_documents, doc.minio_key)
+        # Run MinIO delete in thread pool
+        await asyncio.to_thread(
+            self._storage.delete_file, settings.minio_bucket_documents, doc.minio_key,
+        )
         await self.db.delete(doc)
         await self.db.flush()
         return True
