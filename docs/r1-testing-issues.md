@@ -66,3 +66,33 @@
 **提交：** `fix: align all frontend API paths with backend route definitions`
 
 > 弹窗关闭按钮问题待进一步确认（可能是 sonner toast 的 UI 问题，不影响功能）。
+
+---
+
+## Issue #4: 模型配置表单缺少 API Key + 提供商不联动
+
+**反馈：**
+1. 模型配置新建表单缺少 API Key 输入框，无法填写密钥
+2. 切换提供商（OpenAI/vLLM/其他）后，API 地址等参数没有变化，应根据提供商自动填入
+3. 缺少常用提供商：硅基流动、OpenRouter、DeepSeek
+
+**根因：**
+- 表单 state 中有 `api_base` 但没有 `api_key` 字段，且字段名与后端 schema 不匹配（后端用 `base_url` 和 `api_key`）
+- Provider 的 onChange 只更新 provider 值，没有联动更新其他字段
+- Provider 选项只有 3 个硬编码值
+
+**修复：**
+- 添加 API Key 输入框（password 类型，编辑时留空表示保持原值）
+- 新增 `PROVIDER_PRESETS` 配置表，包含 6 个提供商的默认 base_url 和推荐模型列表：
+  - OpenAI (`https://api.openai.com/v1`)
+  - DeepSeek (`https://api.deepseek.com/v1`)
+  - 硅基流动 (`https://api.siliconflow.cn/v1`)
+  - OpenRouter (`https://openrouter.ai/api/v1`)
+  - vLLM (`http://localhost:8080/v1`)
+  - 其他（手动输入）
+- 切换提供商自动填充 API 地址和默认模型名
+- 已知提供商显示模型下拉列表，支持"自定义"选项；vLLM/其他为自由输入
+- 表单字段名对齐后端 schema（`base_url`, `api_key`）
+- 测试连接改为使用已保存配置的 ID 调用 `POST /{config_id}/test`
+
+**提交：** `90f5282 fix: improve ModelConfig form with API key field, provider presets, and more providers`
