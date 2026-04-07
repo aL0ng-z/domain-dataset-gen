@@ -97,8 +97,16 @@ async def seed():
         print(f"Created project: {project.name} (ID: {project.id})")
 
         # Seed config profiles
-        parser_profile = ParserProfile(
-            project_id=project.id, name="PyMuPDF4LLM（默认）", parser_name="pymupdf4llm", is_default=True,
+        parser_pymupdf = ParserProfile(
+            project_id=project.id, name="PyMuPDF4LLM（本地）", parser_name="pymupdf4llm", is_default=True,
+        )
+        parser_mineru = ParserProfile(
+            project_id=project.id, name="MinerU（API）", parser_name="mineru",
+            parser_options={"base_url": "https://mineru.net/api/v4/extract/task"},
+        )
+        parser_paddle = ParserProfile(
+            project_id=project.id, name="PaddleOCR（API）", parser_name="paddleocr",
+            parser_options={"base_url": "https://bea4c9v5r2i52ba7.aistudio-app.com/layout-parsing"},
         )
         chunk_profile = ChunkProfile(
             project_id=project.id, name="混合标题递归（默认）", is_default=True,
@@ -109,7 +117,7 @@ async def seed():
         task_policy = TaskPolicy(
             project_id=project.id, name="默认任务策略", task_type="parse", is_default=True,
         )
-        db.add_all([parser_profile, chunk_profile, export_profile, task_policy])
+        db.add_all([parser_pymupdf, parser_mineru, parser_paddle, chunk_profile, export_profile, task_policy])
 
         # Seed prompt templates
         for tmpl_data in SEED_TEMPLATES:

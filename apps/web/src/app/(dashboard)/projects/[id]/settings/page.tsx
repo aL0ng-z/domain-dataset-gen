@@ -430,8 +430,8 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
 
 const PARSER_PRESETS: Record<string, { label: string; needsApi: boolean; defaultUrl: string }> = {
   pymupdf4llm: { label: "PyMuPDF4LLM（本地）", needsApi: false, defaultUrl: "" },
-  mineru: { label: "MinerU（API）", needsApi: true, defaultUrl: "http://localhost:8010" },
-  paddleocr: { label: "PaddleOCR（API）", needsApi: true, defaultUrl: "http://localhost:8011" },
+  mineru: { label: "MinerU（API）", needsApi: true, defaultUrl: "https://mineru.net/api/v4/extract/task" },
+  paddleocr: { label: "PaddleOCR（API）", needsApi: true, defaultUrl: "https://bea4c9v5r2i52ba7.aistudio-app.com/layout-parsing" },
 };
 
 interface ParserProfile extends ConfigItem {
