@@ -94,8 +94,8 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
     model_name: "deepseek-chat",
     base_url: "https://api.deepseek.com/v1",
     api_key: "",
-    max_tokens: 2048,
-    temperature: 0.7,
+    max_tokens: "" as string | number,
+    temperature: "" as string | number,
   });
   const [testing, setTesting] = useState(false);
   const [useCustomModel, setUseCustomModel] = useState(false);
@@ -136,8 +136,8 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
       model_name: preset.models[0] || "",
       base_url: preset.base_url,
       api_key: "",
-      max_tokens: 2048,
-      temperature: 0.7,
+      max_tokens: "",
+      temperature: "",
     });
     setUseCustomModel(false);
     setDialogOpen(true);
@@ -153,8 +153,8 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
       model_name: item.model_name,
       base_url: item.base_url || "",
       api_key: "",
-      max_tokens: item.max_tokens ?? 2048,
-      temperature: item.temperature ?? 0.7,
+      max_tokens: item.max_tokens ?? "",
+      temperature: item.temperature ?? "",
     });
     setUseCustomModel(!isKnownModel && !!preset?.models.length);
     setDialogOpen(true);
@@ -179,12 +179,15 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
         provider: form.provider,
         model_name: form.model_name,
         base_url: form.base_url,
-        max_tokens: form.max_tokens,
-        temperature: form.temperature,
       };
-      // Only send api_key if provided (for edit, empty means keep existing)
       if (form.api_key.trim()) {
         payload.api_key = form.api_key;
+      }
+      if (form.max_tokens !== "" && form.max_tokens !== null) {
+        payload.max_tokens = Number(form.max_tokens);
+      }
+      if (form.temperature !== "" && form.temperature !== null) {
+        payload.temperature = Number(form.temperature);
       }
       if (editItem) {
         await api.patch(
@@ -379,8 +382,9 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
                   type="number"
                   value={form.max_tokens}
                   onChange={(e) =>
-                    setForm({ ...form, max_tokens: Number(e.target.value) })
+                    setForm({ ...form, max_tokens: e.target.value === "" ? "" : Number(e.target.value) })
                   }
+                  placeholder="默认由 API 决定"
                 />
               </div>
               <div>
@@ -392,8 +396,9 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
                   max="2"
                   value={form.temperature}
                   onChange={(e) =>
-                    setForm({ ...form, temperature: Number(e.target.value) })
+                    setForm({ ...form, temperature: e.target.value === "" ? "" : Number(e.target.value) })
                   }
+                  placeholder="默认由 API 决定"
                 />
               </div>
             </div>
