@@ -128,3 +128,20 @@
 - 响应内容 strip() 处理
 
 **提交：** `7276c24 fix: optimize model config test - limit to 20 tokens for fast response`
+
+---
+
+## Issue #7: 自定义模型名称输入框一打字就消失
+
+**反馈：** 模型名称选择"自定义..."后出现输入框，但输入任何字符后输入框立即消失。
+
+**根因：** 自定义输入框的显示条件是 `form.model_name === "__custom"`。输入时 `onChange` 将 `model_name` 设为用户输入的值（不再是 `"__custom"`），条件变 false，输入框被 React 卸载。另外 `value=""` 写死了空字符串，输入内容也不会显示。
+
+**修复：**
+- 新增独立的 `useCustomModel` state 布尔标志，不依赖 `model_name` 的值来控制 UI
+- 选择"自定义"时 `setUseCustomModel(true)` + `model_name` 清空
+- 自定义输入框直接绑定 `form.model_name`，输入正常工作
+- 提供"选择"按钮可切回下拉列表
+- 切换提供商 / 新建 / 编辑时正确重置 `useCustomModel`
+
+**提交：** `bfd6118 fix: custom model name input disappears on typing`
