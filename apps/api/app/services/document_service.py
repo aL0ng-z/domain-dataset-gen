@@ -27,23 +27,35 @@ class DocumentService:
 
         sha256 = hashlib.sha256(file_data).hexdigest()
 
-        # Check for duplicate
-        result = await self.db.execute(
-            select(Document).where(Document.project_id == project_id, Document.sha256 == sha256)
-        )
-        if result.scalar_one_or_none():
-            raise ValueError("该文件已存在（SHA256 重复）")
+        # Extract page count from PDF
+        page_count = None
+        try:
+            import tempfile
+            import pymupdf
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                tmp.write(file_data)
+                tmp_path = tmp.name
+            doc_pdf = pymupdf.open(tmp_path)
+            page_count = len(doc_pdf)
+            doc_pdf.close()
+            import os
+            os.unlink(tmp_path)
+        except Exception:
+            pass  # Non-critical, page_count stays None
 
-        # Upload to MinIO
-        minio_key = f"{project_id}/{sha256}/{filename}"
+        # Upload to MinIO (use UUID in key to allow duplicate files)
+        doc_id = uuid.uuid4()
+        minio_key = f"{project_id}/{doc_id}/{filename}"
         self._storage.upload_file(settings.minio_bucket_documents, minio_key, file_data, "application/pdf")
 
         doc = Document(
+            id=doc_id,
             project_id=project_id,
             filename=filename,
             file_size=len(file_data),
             sha256=sha256,
             minio_key=minio_key,
+            page_count=page_count,
             uploaded_by=uploaded_by,
         )
         self.db.add(doc)
