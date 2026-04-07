@@ -10,6 +10,10 @@ class ParseResult:
 
 
 class BaseParser(ABC):
+    def __init__(self, options: dict | None = None):
+        self.options = options or {}
+
     @abstractmethod
-    def parse(self, pdf_path: str) -> ParseResult:
+    def parse(self, pdf_data: bytes) -> ParseResult:
+        """Parse PDF bytes and return structured result."""
         pass

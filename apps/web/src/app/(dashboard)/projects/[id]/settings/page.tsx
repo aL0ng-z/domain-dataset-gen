@@ -426,6 +426,203 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
   );
 }
 
+/* ========= ParserProfile tab ========= */
+
+const PARSER_PRESETS: Record<string, { label: string; needsApi: boolean; defaultUrl: string }> = {
+  pymupdf4llm: { label: "PyMuPDF4LLM（本地）", needsApi: false, defaultUrl: "" },
+  mineru: { label: "MinerU（API）", needsApi: true, defaultUrl: "http://localhost:8010" },
+  paddleocr: { label: "PaddleOCR（API）", needsApi: true, defaultUrl: "http://localhost:8011" },
+};
+
+interface ParserProfile extends ConfigItem {
+  parser_name: string;
+  parser_options: Record<string, string> | null;
+  is_default: boolean;
+  version: number;
+}
+
+function ParserProfileTab({ projectId }: { projectId: string }) {
+  const [items, setItems] = useState<ParserProfile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editItem, setEditItem] = useState<ParserProfile | null>(null);
+  const [form, setForm] = useState({
+    name: "",
+    parser_name: "pymupdf4llm",
+    base_url: "",
+    api_key: "",
+  });
+
+  const fetchItems = useCallback(() => {
+    setLoading(true);
+    api
+      .get<{ items: ParserProfile[] }>(
+        `/projects/${projectId}/parser-profiles?page=1&page_size=100`
+      )
+      .then((data) => setItems(data.items))
+      .catch(() => toast.error("加载解析器配置失败"))
+      .finally(() => setLoading(false));
+  }, [projectId]);
+
+  useEffect(() => {
+    fetchItems();
+  }, [fetchItems]);
+
+  const handleParserChange = (parserName: string) => {
+    const preset = PARSER_PRESETS[parserName];
+    setForm({
+      ...form,
+      parser_name: parserName,
+      base_url: preset?.defaultUrl || "",
+      api_key: "",
+    });
+  };
+
+  const openCreate = () => {
+    setEditItem(null);
+    setForm({ name: "", parser_name: "pymupdf4llm", base_url: "", api_key: "" });
+    setDialogOpen(true);
+  };
+
+  const openEdit = (item: ParserProfile) => {
+    setEditItem(item);
+    setForm({
+      name: item.name,
+      parser_name: item.parser_name,
+      base_url: item.parser_options?.base_url || "",
+      api_key: "",
+    });
+    setDialogOpen(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.name.trim()) { toast.error("请输入配置名称"); return; }
+    const preset = PARSER_PRESETS[form.parser_name];
+    if (preset?.needsApi && !form.base_url.trim()) { toast.error("请输入 API 地址"); return; }
+
+    const parser_options: Record<string, string> = {};
+    if (preset?.needsApi) {
+      parser_options.base_url = form.base_url;
+      if (form.api_key.trim()) parser_options.api_key = form.api_key;
+    }
+
+    const payload = {
+      name: form.name,
+      parser_name: form.parser_name,
+      parser_options: Object.keys(parser_options).length > 0 ? parser_options : null,
+    };
+
+    try {
+      if (editItem) {
+        await api.patch(`/projects/${projectId}/parser-profiles/${editItem.id}`, payload);
+        toast.success("保存成功");
+        setDialogOpen(false);
+      } else {
+        await api.post(`/projects/${projectId}/parser-profiles/`, payload);
+        toast.success("创建成功");
+        setDialogOpen(false);
+      }
+      fetchItems();
+    } catch { toast.error("保存失败"); }
+  };
+
+  const currentPreset = PARSER_PRESETS[form.parser_name];
+
+  const columns: ColumnDef<ParserProfile>[] = [
+    {
+      key: "name", header: "名称",
+      render: (row) => (
+        <button className="text-primary hover:underline" onClick={() => openEdit(row)}>
+          {row.name}
+        </button>
+      ),
+    },
+    {
+      key: "parser_name", header: "解析器",
+      render: (row) => PARSER_PRESETS[row.parser_name]?.label || row.parser_name,
+    },
+    {
+      key: "is_default", header: "默认",
+      render: (row) => row.is_default ? "✓" : "",
+    },
+    {
+      key: "actions", header: "操作",
+      render: (row) => (
+        <Button variant="ghost" size="xs" onClick={() => openEdit(row)}>
+          <PencilIcon className="size-3" /> 编辑
+        </Button>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <div className="flex justify-end mb-4">
+        <Button onClick={openCreate}><PlusIcon className="size-4" /> 新建</Button>
+      </div>
+      {loading ? (
+        <div className="py-8 text-center text-sm text-muted-foreground">加载中...</div>
+      ) : (
+        <DataTable columns={columns} data={items} total={items.length} page={1} pageSize={100} onPageChange={() => {}} rowKey={(r) => r.id} />
+      )}
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{editItem ? "编辑解析器配置" : "新建解析器配置"}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <label className="text-sm font-medium">名称</label>
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="例如：MinerU 生产" />
+            </div>
+            <div>
+              <label className="text-sm font-medium">解析器类型</label>
+              <select
+                className="w-full rounded border px-3 py-1.5 text-sm bg-transparent"
+                value={form.parser_name}
+                onChange={(e) => handleParserChange(e.target.value)}
+              >
+                {Object.entries(PARSER_PRESETS).map(([value, { label }]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground mt-1">
+                {form.parser_name === "pymupdf4llm" && "本地解析，无需额外配置。基于 PyMuPDF 提取文本和结构。"}
+                {form.parser_name === "mineru" && "需要部署 MinerU 服务并提供 API 地址。支持复杂版面识别。"}
+                {form.parser_name === "paddleocr" && "需要部署 PaddleOCR/PP-StructureV3 服务。适合扫描件 OCR。"}
+              </p>
+            </div>
+            {currentPreset?.needsApi && (
+              <>
+                <div>
+                  <label className="text-sm font-medium">API 地址</label>
+                  <Input
+                    value={form.base_url}
+                    onChange={(e) => setForm({ ...form, base_url: e.target.value })}
+                    placeholder={currentPreset.defaultUrl}
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium">API Key（可选）</label>
+                  <Input
+                    type="password"
+                    value={form.api_key}
+                    onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+                    placeholder={editItem ? "留空则保持原 Key 不变" : "如需认证请填写"}
+                  />
+                </div>
+              </>
+            )}
+          </div>
+          <DialogFooter>
+            <Button onClick={handleSave}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 /* ========= Generic Config Tab ========= */
 interface GenericConfig extends ConfigItem {
   description?: string;
@@ -688,14 +885,7 @@ export default function SettingsPage() {
               <CardTitle>解析器配置 (ParserProfile)</CardTitle>
             </CardHeader>
             <CardContent>
-              <GenericConfigTab
-                projectId={projectId}
-                endpoint="parser-profiles"
-                label="解析器配置"
-                extraFields={[
-                  { key: "parser_type", label: "解析器类型" },
-                ]}
-              />
+              <ParserProfileTab projectId={projectId} />
             </CardContent>
           </Card>
         </TabsContent>

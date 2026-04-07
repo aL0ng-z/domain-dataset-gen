@@ -6,11 +6,11 @@ import urllib.error
 from parsing.base import BaseParser, ParseResult
 
 
-class MineruParser(BaseParser):
-    """API-based parser using MinerU service.
+class PaddleOCRParser(BaseParser):
+    """API-based parser using PaddleOCR / PP-StructureV3 service.
 
     Required options:
-        base_url: MinerU API endpoint (e.g. http://localhost:8010)
+        base_url: PaddleOCR API endpoint (e.g. http://localhost:8011)
         api_key: API key for authentication (if required)
     """
 
@@ -19,16 +19,17 @@ class MineruParser(BaseParser):
         api_key = self.options.get("api_key", "")
 
         if not base_url:
-            raise ValueError("MinerU 解析器需要配置 API 地址 (base_url)")
+            raise ValueError("PaddleOCR 解析器需要配置 API 地址 (base_url)")
 
         # Encode PDF as base64 for API transmission
         pdf_b64 = base64.b64encode(pdf_data).decode("utf-8")
 
-        # Call MinerU API
         payload = json.dumps({
             "file": pdf_b64,
             "file_type": "pdf",
-            "parse_method": "auto",
+            "use_doc_orientation_classify": True,
+            "use_doc_unwarping": True,
+            "use_textline_orientation": True,
         }).encode("utf-8")
 
         headers = {
@@ -49,18 +50,17 @@ class MineruParser(BaseParser):
                 result = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
-            raise ValueError(f"MinerU API 错误 ({e.code}): {body}")
+            raise ValueError(f"PaddleOCR API 错误 ({e.code}): {body}")
         except urllib.error.URLError as e:
-            raise ValueError(f"无法连接 MinerU 服务: {e.reason}")
+            raise ValueError(f"无法连接 PaddleOCR 服务: {e.reason}")
 
         # Extract markdown from response
-        # MinerU API response format may vary; adapt as needed
         raw_markdown = result.get("markdown", result.get("content", ""))
         page_count = result.get("page_count", 0)
         page_mapping = result.get("page_mapping", [])
 
         return ParseResult(
             raw_markdown=raw_markdown,
-            structured_json={"page_count": page_count, "parser": "mineru"},
+            structured_json={"page_count": page_count, "parser": "paddleocr"},
             page_mapping=page_mapping,
         )

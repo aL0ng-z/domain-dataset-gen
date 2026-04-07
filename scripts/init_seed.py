@@ -98,7 +98,7 @@ async def seed():
 
         # Seed config profiles
         parser_profile = ParserProfile(
-            project_id=project.id, name="Mock 解析器（默认）", parser_name="mock", is_default=True,
+            project_id=project.id, name="PyMuPDF4LLM（默认）", parser_name="pymupdf4llm", is_default=True,
         )
         chunk_profile = ChunkProfile(
             project_id=project.id, name="混合标题递归（默认）", is_default=True,

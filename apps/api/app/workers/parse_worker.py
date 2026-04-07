@@ -1,4 +1,5 @@
-import tempfile
+import asyncio
+import json
 import uuid
 
 from sqlalchemy import select
@@ -20,36 +21,38 @@ async def run_parse(task_id: uuid.UUID, document_id: uuid.UUID, parser_profile_i
     await task_service.update_status(task_id, "processing", progress=10)
 
     try:
-        # Get document and parser profile
         doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one()
         profile = (await db.execute(select(ParserProfile).where(ParserProfile.id == parser_profile_id))).scalar_one()
 
-        # Create parse job
         parse_job = ParseJob(document_id=document_id, parser_profile_id=parser_profile_id, status="processing")
         db.add(parse_job)
         await db.flush()
 
-        # Download PDF
+        # Download PDF (sync IO → thread pool)
         await task_service.update_status(task_id, "processing", progress=20)
-        pdf_data = storage.download_file(settings.minio_bucket_documents, doc.minio_key)
+        pdf_data = await asyncio.to_thread(
+            storage.download_file, settings.minio_bucket_documents, doc.minio_key,
+        )
 
-        # Parse
+        # Parse (CPU/IO-bound → thread pool)
         await task_service.update_status(task_id, "processing", progress=40)
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(pdf_data)
-            tmp_path = tmp.name
+        parser_options = profile.parser_options or {}
+        parser = get_parser(profile.parser_name, options=parser_options)
+        result = await asyncio.to_thread(parser.parse, pdf_data)
 
-        parser = get_parser(profile.parser_name)
-        result = parser.parse(tmp_path)
-
-        # Upload results
+        # Upload results (sync IO → thread pool)
         await task_service.update_status(task_id, "processing", progress=70)
         md_key = f"{doc.project_id}/{document_id}/parsed/raw.md"
-        storage.upload_file(settings.minio_bucket_outputs, md_key, result.raw_markdown.encode("utf-8"), "text/markdown")
+        await asyncio.to_thread(
+            storage.upload_file, settings.minio_bucket_outputs, md_key,
+            result.raw_markdown.encode("utf-8"), "text/markdown",
+        )
 
-        import json
         json_key = f"{doc.project_id}/{document_id}/parsed/structured.json"
-        storage.upload_file(settings.minio_bucket_outputs, json_key, json.dumps(result.structured_json).encode("utf-8"), "application/json")
+        await asyncio.to_thread(
+            storage.upload_file, settings.minio_bucket_outputs, json_key,
+            json.dumps(result.structured_json).encode("utf-8"), "application/json",
+        )
 
         # Update parse job
         parse_job.status = "completed"
@@ -66,7 +69,6 @@ async def run_parse(task_id: uuid.UUID, document_id: uuid.UUID, parser_profile_i
         await task_service.update_status(task_id, "completed", progress=100)
 
     except Exception as e:
-        # Mark as failed
         result_job = await db.execute(
             select(ParseJob).where(ParseJob.document_id == document_id).order_by(ParseJob.created_at.desc())
         )
@@ -75,7 +77,3 @@ async def run_parse(task_id: uuid.UUID, document_id: uuid.UUID, parser_profile_i
             job.status = "failed"
             job.error_message = str(e)
         await task_service.update_status(task_id, "failed", error_message=str(e))
-    finally:
-        import os
-        if "tmp_path" in locals():
-            os.unlink(tmp_path)
