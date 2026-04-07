@@ -64,9 +64,9 @@ export function Sidebar() {
       {/* Header */}
       <div className="flex h-12 items-center justify-between px-3">
         {!collapsed && (
-          <span className="text-sm font-semibold truncate">
-            知识提取平台
-          </span>
+          <Link href="/projects" className="text-sm font-semibold truncate hover:text-primary transition-colors">
+            DTRC-KE
+          </Link>
         )}
         <Button
           variant="ghost"
