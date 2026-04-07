@@ -38,11 +38,17 @@ interface DocumentDetail {
 interface ParseJob {
   id: string;
   status: string;
-  parser_type?: string;
+  parser_profile_id?: string;
   started_at?: string;
-  finished_at?: string;
+  completed_at?: string;
   error_message?: string;
   created_at: string;
+}
+
+interface ProfileOption {
+  id: string;
+  name: string;
+  is_default: boolean;
 }
 
 export default function DocumentDetailPage() {
@@ -51,6 +57,8 @@ export default function DocumentDetailPage() {
   const docId = params.did;
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [parseJobs, setParseJobs] = useState<ParseJob[]>([]);
+  const [parserProfiles, setParserProfiles] = useState<ProfileOption[]>([]);
+  const [chunkProfiles, setChunkProfiles] = useState<ProfileOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
 
@@ -65,10 +73,22 @@ export default function DocumentDetailPage() {
           `/projects/${projectId}/documents/${docId}/parse-jobs`
         )
         .catch(() => [] as ParseJob[]),
+      api
+        .get<{ items: ProfileOption[] }>(
+          `/projects/${projectId}/parser-profiles?page=1&page_size=50`
+        )
+        .catch(() => ({ items: [] })),
+      api
+        .get<{ items: ProfileOption[] }>(
+          `/projects/${projectId}/chunk-profiles?page=1&page_size=50`
+        )
+        .catch(() => ({ items: [] })),
     ])
-      .then(([docData, jobsData]) => {
+      .then(([docData, jobsData, parserData, chunkData]) => {
         setDoc(docData);
         setParseJobs(jobsData);
+        setParserProfiles(parserData.items);
+        setChunkProfiles(chunkData.items);
       })
       .catch(() => toast.error("加载文档详情失败"))
       .finally(() => setLoading(false));
@@ -78,23 +98,65 @@ export default function DocumentDetailPage() {
     fetchData();
   }, [fetchData]);
 
-  const handleAction = useCallback(
-    async (action: string, label: string) => {
-      setActionLoading(action);
-      try {
-        await api.post(
-          `/projects/${projectId}/documents/${docId}/${action}`
-        );
-        toast.success(`${label}任务已发起`);
-        fetchData();
-      } catch {
-        toast.error(`${label}失败`);
-      } finally {
-        setActionLoading(null);
-      }
-    },
-    [projectId, docId, fetchData]
-  );
+  const getDefaultProfile = (profiles: ProfileOption[]) =>
+    profiles.find((p) => p.is_default) || profiles[0];
+
+  const handleParse = useCallback(async () => {
+    const profile = getDefaultProfile(parserProfiles);
+    if (!profile) {
+      toast.error("请先在设置中创建解析器配置");
+      return;
+    }
+    setActionLoading("parse");
+    try {
+      await api.post(
+        `/projects/${projectId}/documents/${docId}/parse`,
+        { parser_profile_id: profile.id }
+      );
+      toast.success("解析任务已发起");
+      fetchData();
+    } catch {
+      toast.error("发起解析失败");
+    } finally {
+      setActionLoading(null);
+    }
+  }, [projectId, docId, parserProfiles, fetchData]);
+
+  const handleChunk = useCallback(async () => {
+    const profile = getDefaultProfile(chunkProfiles);
+    if (!profile) {
+      toast.error("请先在设置中创建切分配置");
+      return;
+    }
+    setActionLoading("chunk");
+    try {
+      await api.post(
+        `/projects/${projectId}/documents/${docId}/chunk`,
+        { chunk_profile_id: profile.id }
+      );
+      toast.success("切分任务已发起");
+      fetchData();
+    } catch {
+      toast.error("发起切分失败");
+    } finally {
+      setActionLoading(null);
+    }
+  }, [projectId, docId, chunkProfiles, fetchData]);
+
+  const handleCleanStart = useCallback(async () => {
+    setActionLoading("clean");
+    try {
+      await api.post(
+        `/projects/${projectId}/documents/${docId}/cleaning/start`
+      );
+      toast.success("清洗任务已发起");
+      fetchData();
+    } catch {
+      toast.error("发起清洗失败");
+    } finally {
+      setActionLoading(null);
+    }
+  }, [projectId, docId, fetchData]);
 
   const jobColumns: ColumnDef<ParseJob>[] = [
     {
@@ -103,9 +165,9 @@ export default function DocumentDetailPage() {
       render: (row) => <StatusBadge status={row.status} />,
     },
     {
-      key: "parser_type",
+      key: "parser_profile_id",
       header: "解析器",
-      render: (row) => row.parser_type ?? "-",
+      render: (row) => row.parser_profile_id?.slice(0, 8) ?? "-",
     },
     {
       key: "started_at",
@@ -116,11 +178,11 @@ export default function DocumentDetailPage() {
           : "-",
     },
     {
-      key: "finished_at",
+      key: "completed_at",
       header: "完成时间",
       render: (row) =>
-        row.finished_at
-          ? new Date(row.finished_at).toLocaleString("zh-CN")
+        row.completed_at
+          ? new Date(row.completed_at).toLocaleString("zh-CN")
           : "-",
     },
     {
@@ -226,8 +288,8 @@ export default function DocumentDetailPage() {
         <CardContent>
           <div className="flex flex-wrap gap-3">
             <Button
-              onClick={() => handleAction("parse", "解析")}
-              disabled={actionLoading !== null}
+              onClick={handleParse}
+              disabled={actionLoading !== null || doc.status !== "uploaded"}
             >
               {actionLoading === "parse" ? (
                 <Loader2Icon className="size-4 animate-spin" />
@@ -235,26 +297,48 @@ export default function DocumentDetailPage() {
                 <PlayIcon className="size-4" />
               )}
               发起解析
+              {parserProfiles.length > 0 && (
+                <span className="text-xs opacity-70 ml-1">
+                  ({getDefaultProfile(parserProfiles)?.name})
+                </span>
+              )}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleCleanStart}
+              disabled={actionLoading !== null || doc.status !== "parsed"}
+            >
+              {actionLoading === "clean" && (
+                <Loader2Icon className="size-4 animate-spin" />
+              )}
+              开始清洗
             </Button>
             <Link
               href={`/projects/${projectId}/documents/${docId}/clean`}
             >
-              <Button variant="outline">开始清洗</Button>
+              <Button variant="outline" disabled={!["cleaning", "cleaned"].includes(doc.status)}>
+                清洗工作台
+              </Button>
             </Link>
             <Button
               variant="outline"
-              onClick={() => handleAction("chunk", "切分")}
-              disabled={actionLoading !== null}
+              onClick={handleChunk}
+              disabled={actionLoading !== null || !["cleaning", "cleaned"].includes(doc.status)}
             >
               {actionLoading === "chunk" && (
                 <Loader2Icon className="size-4 animate-spin" />
               )}
               执行切分
+              {chunkProfiles.length > 0 && (
+                <span className="text-xs opacity-70 ml-1">
+                  ({getDefaultProfile(chunkProfiles)?.name})
+                </span>
+              )}
             </Button>
             <Button
               variant="outline"
-              onClick={() => handleAction("generate", "生成")}
-              disabled={actionLoading !== null}
+              onClick={() => {}} // TODO: batch generate needs template + model selection
+              disabled={actionLoading !== null || doc.status !== "chunked"}
             >
               {actionLoading === "generate" && (
                 <Loader2Icon className="size-4 animate-spin" />
