@@ -1,6 +1,6 @@
 import { refreshToken } from "./auth";
 
-const API_BASE = "/api";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 
 async function fetchApi<T>(
   path: string,

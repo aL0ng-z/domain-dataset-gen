@@ -15,12 +15,14 @@ export interface AuthData {
   };
 }
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+
 export async function login(
   username: string,
   password: string
 ): Promise<AuthData> {
   // Step 1: Get tokens
-  const res = await fetch("/api/auth/login", {
+  const res = await fetch(`${API_URL}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
@@ -34,7 +36,7 @@ export async function login(
   localStorage.setItem("refresh_token", tokenData.refresh_token);
 
   // Step 2: Fetch user profile
-  const meRes = await fetch("/api/auth/me", {
+  const meRes = await fetch(`${API_URL}/auth/me`, {
     headers: { Authorization: `Bearer ${tokenData.access_token}` },
   });
   if (!meRes.ok) {
@@ -53,7 +55,7 @@ export async function refreshToken(): Promise<boolean> {
   const rt = localStorage.getItem("refresh_token");
   if (!rt) return false;
   try {
-    const res = await fetch("/api/auth/refresh", {
+    const res = await fetch(`${API_URL}/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: rt }),
