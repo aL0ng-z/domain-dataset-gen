@@ -156,8 +156,13 @@ async def test_model_config(
             base_url=config.base_url,
             api_key=config.api_key_encrypted,  # In MVP, stored as plaintext
             model_name=config.model_name,
+            temperature=0,
+            max_tokens=20,
         )
-        response = await client.chat_completion([{"role": "user", "content": "ping"}], max_retries=1)
-        return {"status": "success", "response": response.content, "latency_ms": response.latency_ms}
+        response = await client.chat_completion(
+            [{"role": "user", "content": "Reply with exactly: pong"}],
+            max_retries=1,
+        )
+        return {"status": "success", "response": response.content.strip(), "latency_ms": response.latency_ms}
     except Exception as e:
         return {"status": "error", "error": str(e)}
