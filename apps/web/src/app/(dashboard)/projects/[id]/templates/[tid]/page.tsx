@@ -71,7 +71,7 @@ export default function TemplateEditorPage() {
   useEffect(() => {
     api
       .get<TemplateDetail>(
-        `/projects/${projectId}/templates/${templateId}`
+        `/projects/${projectId}/prompt-templates/${templateId}`
       )
       .then((data) => {
         setTemplate(data);
@@ -98,7 +98,7 @@ export default function TemplateEditorPage() {
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
-      await api.put(`/projects/${projectId}/templates/${templateId}`, {
+      await api.patch(`/projects/${projectId}/prompt-templates/${templateId}`, {
         system_prompt: systemPrompt,
         user_prompt_template: userPrompt,
       });
@@ -119,7 +119,7 @@ export default function TemplateEditorPage() {
     setTestResult("");
     try {
       const result = await api.post<{ content: string }>(
-        `/projects/${projectId}/templates/${templateId}/test-run`,
+        `/projects/${projectId}/prompt-templates/${templateId}/test-run`,
         { chunk_id: selectedChunk }
       );
       setTestResult(result.content || "(空结果)");

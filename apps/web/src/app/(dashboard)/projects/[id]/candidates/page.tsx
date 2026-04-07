@@ -65,7 +65,7 @@ export default function CandidatesPage() {
       statusFilter !== "all" ? `&status=${statusFilter}` : "";
     api
       .get<PaginatedResponse<Candidate>>(
-        `/projects/${projectId}/candidates?page=${page}&page_size=${pageSize}${statusParam}`
+        `/candidates?project_id=${projectId}&page=${page}&page_size=${pageSize}${statusParam}`
       )
       .then((data) => {
         setCandidates(data.items);
@@ -98,7 +98,7 @@ export default function CandidatesPage() {
     async (candidateId: string, action: "approve" | "reject") => {
       try {
         await api.post(
-          `/projects/${projectId}/candidates/${candidateId}/review`,
+          `/candidates/${candidateId}/review`,
           {
             action,
             verdict: reviewVerdict,
@@ -113,14 +113,14 @@ export default function CandidatesPage() {
         toast.error("审核操作失败");
       }
     },
-    [projectId, reviewVerdict, reviewEvidence, reviewRejectReason, fetchCandidates]
+    [reviewVerdict, reviewEvidence, reviewRejectReason, fetchCandidates]
   );
 
   const handlePromote = useCallback(
     async (candidateId: string) => {
       try {
         await api.post(
-          `/projects/${projectId}/candidates/${candidateId}/promote`
+          `/candidates/${candidateId}/promote-to-curated`
         );
         toast.success("已提升为知识资产");
         fetchCandidates();
@@ -128,7 +128,7 @@ export default function CandidatesPage() {
         toast.error("提升失败");
       }
     },
-    [projectId, fetchCandidates]
+    [fetchCandidates]
   );
 
   const columns: ColumnDef<Candidate>[] = [

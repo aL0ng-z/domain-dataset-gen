@@ -93,7 +93,7 @@ export default function CleaningWorkbenchPage() {
     if (!selectedSectionId) return;
     api
       .get<Section>(
-        `/projects/${projectId}/documents/${docId}/sections/${selectedSectionId}`
+        `/sections/${selectedSectionId}`
       )
       .then((section) => {
         setSelectedSection(section);
@@ -104,7 +104,7 @@ export default function CleaningWorkbenchPage() {
     // Fetch comments
     api
       .get<{ items: Comment[] }>(
-        `/projects/${projectId}/documents/${docId}/sections/${selectedSectionId}/comments?page=1&page_size=50`
+        `/sections/${selectedSectionId}/comments?page=1&page_size=50`
       )
       .then((data) => setComments(data.items))
       .catch(() => setComments([]));
@@ -116,7 +116,7 @@ export default function CleaningWorkbenchPage() {
     const interval = setInterval(() => {
       api
         .post(
-          `/projects/${projectId}/documents/${docId}/sections/${selectedSectionId}/heartbeat`
+          `/sections/${selectedSectionId}/lease/heartbeat`
         )
         .catch(() => {});
     }, 30000);
@@ -127,8 +127,8 @@ export default function CleaningWorkbenchPage() {
     if (!selectedSectionId) return;
     setSaving(true);
     try {
-      await api.put(
-        `/projects/${projectId}/documents/${docId}/sections/${selectedSectionId}`,
+      await api.patch(
+        `/sections/${selectedSectionId}`,
         { cleaned_markdown: editedMarkdown }
       );
       toast.success("保存成功");
@@ -144,7 +144,7 @@ export default function CleaningWorkbenchPage() {
     if (!selectedSectionId) return;
     try {
       await api.post(
-        `/projects/${projectId}/documents/${docId}/sections/${selectedSectionId}/submit-review`
+        `/sections/${selectedSectionId}/submit`
       );
       toast.success("已提交审核");
       fetchSections();
@@ -157,7 +157,8 @@ export default function CleaningWorkbenchPage() {
     if (!selectedSectionId) return;
     try {
       await api.post(
-        `/projects/${projectId}/documents/${docId}/sections/${selectedSectionId}/approve`
+        `/sections/${selectedSectionId}/review`,
+        { action: "accept" }
       );
       toast.success("已通过");
       fetchSections();
@@ -170,7 +171,8 @@ export default function CleaningWorkbenchPage() {
     if (!selectedSectionId) return;
     try {
       await api.post(
-        `/projects/${projectId}/documents/${docId}/sections/${selectedSectionId}/reject`
+        `/sections/${selectedSectionId}/review`,
+        { action: "reject" }
       );
       toast.success("已驳回");
       fetchSections();
@@ -183,13 +185,13 @@ export default function CleaningWorkbenchPage() {
     if (!selectedSectionId || !newComment.trim()) return;
     try {
       await api.post(
-        `/projects/${projectId}/documents/${docId}/sections/${selectedSectionId}/comments`,
+        `/sections/${selectedSectionId}/comments`,
         { content: newComment }
       );
       setNewComment("");
       // Refetch comments
       const data = await api.get<{ items: Comment[] }>(
-        `/projects/${projectId}/documents/${docId}/sections/${selectedSectionId}/comments?page=1&page_size=50`
+        `/sections/${selectedSectionId}/comments?page=1&page_size=50`
       );
       setComments(data.items);
     } catch {

@@ -83,7 +83,7 @@ export default function CuratedItemDetailPage() {
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
-      await api.put(
+      await api.patch(
         `/projects/${projectId}/curated-items/${itemId}`,
         { content: editContent }
       );

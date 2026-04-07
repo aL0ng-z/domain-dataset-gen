@@ -64,7 +64,7 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
     setLoading(true);
     api
       .get<{ items: ModelConfig[] }>(
-        `/projects/${projectId}/config/model-configs?page=1&page_size=100`
+        `/projects/${projectId}/model-configs?page=1&page_size=100`
       )
       .then((data) => setItems(data.items))
       .catch(() => toast.error("加载模型配置失败"))
@@ -108,13 +108,13 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
     }
     try {
       if (editItem) {
-        await api.put(
-          `/projects/${projectId}/config/model-configs/${editItem.id}`,
+        await api.patch(
+          `/projects/${projectId}/model-configs/${editItem.id}`,
           form
         );
       } else {
         await api.post(
-          `/projects/${projectId}/config/model-configs`,
+          `/projects/${projectId}/model-configs`,
           form
         );
       }
@@ -130,7 +130,7 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
     setTesting(true);
     try {
       await api.post(
-        `/projects/${projectId}/config/model-configs/test-connection`,
+        `/projects/${projectId}/model-configs/test-connection`,
         form
       );
       toast.success("连接测试成功");
@@ -328,7 +328,7 @@ function GenericConfigTab({
     setLoading(true);
     api
       .get<{ items: GenericConfig[] }>(
-        `/projects/${projectId}/config/${endpoint}?page=1&page_size=100`
+        `/projects/${projectId}/${endpoint}?page=1&page_size=100`
       )
       .then((data) => setItems(data.items))
       .catch(() => toast.error(`加载${label}失败`))
@@ -384,13 +384,13 @@ function GenericConfigTab({
         // keep as string if invalid json
       }
       if (editItem) {
-        await api.put(
-          `/projects/${projectId}/config/${endpoint}/${editItem.id}`,
+        await api.patch(
+          `/projects/${projectId}/${endpoint}/${editItem.id}`,
           payload
         );
       } else {
         await api.post(
-          `/projects/${projectId}/config/${endpoint}`,
+          `/projects/${projectId}/${endpoint}`,
           payload
         );
       }

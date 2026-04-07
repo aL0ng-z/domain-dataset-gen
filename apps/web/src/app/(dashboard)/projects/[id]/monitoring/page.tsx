@@ -151,7 +151,7 @@ export default function MonitoringPage() {
     setLoading(true);
     api
       .get<MonitoringData>(
-        `/projects/${projectId}/monitoring/llm-usage`
+        `/projects/${projectId}/monitoring/summary`
       )
       .then(setData)
       .catch(() => toast.error("加载监控数据失败"))

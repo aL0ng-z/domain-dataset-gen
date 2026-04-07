@@ -58,11 +58,11 @@ export default function ChunkDetailPage() {
   useEffect(() => {
     Promise.all([
       api.get<ChunkDetail>(
-        `/projects/${projectId}/documents/${docId}/chunks/${chunkId}`
+        `/chunks/${chunkId}`
       ),
       api
         .get<{ items: Template[] }>(
-          `/projects/${projectId}/templates?page=1&page_size=100`
+          `/projects/${projectId}/prompt-templates?page=1&page_size=100`
         )
         .catch(() => ({ items: [] })),
     ])
@@ -86,7 +86,7 @@ export default function ChunkDetailPage() {
     setCandidate(null);
     try {
       const result = await api.post<Candidate>(
-        `/projects/${projectId}/documents/${docId}/chunks/${chunkId}/generate`,
+        `/chunks/${chunkId}/generate`,
         { template_id: selectedTemplate }
       );
       setCandidate(result);

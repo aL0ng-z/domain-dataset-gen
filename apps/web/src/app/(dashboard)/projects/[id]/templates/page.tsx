@@ -67,7 +67,7 @@ export default function TemplatesPage() {
       activeTab !== "all" ? `&task_type=${activeTab}` : "";
     api
       .get<PaginatedResponse<Template>>(
-        `/projects/${projectId}/templates?page=${page}&page_size=${pageSize}${typeParam}`
+        `/projects/${projectId}/prompt-templates?page=${page}&page_size=${pageSize}${typeParam}`
       )
       .then((data) => {
         setTemplates(data.items);
@@ -87,7 +87,7 @@ export default function TemplatesPage() {
       return;
     }
     try {
-      await api.post(`/projects/${projectId}/templates`, formData);
+      await api.post(`/projects/${projectId}/prompt-templates`, formData);
       toast.success("模板创建成功");
       setDialogOpen(false);
       setFormData({

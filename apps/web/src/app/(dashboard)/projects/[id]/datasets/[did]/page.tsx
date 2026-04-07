@@ -71,7 +71,7 @@ export default function DatasetDetailPage() {
       ),
       api
         .get<{ items: ExportProfile[] }>(
-          `/projects/${projectId}/config/export-profiles?page=1&page_size=50`
+          `/projects/${projectId}/export-profiles?page=1&page_size=50`
         )
         .catch(() => ({ items: [] })),
     ])
