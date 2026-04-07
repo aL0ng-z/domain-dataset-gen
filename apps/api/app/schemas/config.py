@@ -38,8 +38,8 @@ class ModelConfigResponse(BaseSchema):
     provider: str
     base_url: str
     model_name: str
-    temperature: float
-    max_tokens: int
+    temperature: float | None
+    max_tokens: int | None
     extra_params: dict | None
     created_at: datetime
     updated_at: datetime

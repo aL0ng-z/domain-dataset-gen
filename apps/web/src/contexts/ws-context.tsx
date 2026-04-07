@@ -31,9 +31,9 @@ export function WsProvider({ projectId, children }: WsProviderProps) {
   useEffect(() => {
     if (!projectId) return;
 
-    const protocol = typeof window !== "undefined" && window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = typeof window !== "undefined" ? window.location.host : "localhost:3000";
-    const url = `${protocol}//${host}/ws/projects/${projectId}`;
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+    const wsBase = apiUrl.replace(/^http/, "ws").replace(/\/api$/, "");
+    const url = `${wsBase}/ws/projects/${projectId}/tasks`;
 
     const client = createWsClient(url);
     clientRef.current = client;
