@@ -157,3 +157,19 @@
 - 标题改为 `<Link href="/projects">` 可点击链接，点击即返回项目列表页
 
 **提交：** `a4c9114 fix: rename sidebar title to DTRC-KE and make it a link to project list`
+
+---
+
+## Issue #9: 创建模型配置 500 (temperature/max_tokens 为 None 时响应验证失败) + WebSocket 403
+
+**反馈：** 不填最大 Token 和温度保存模型配置时，后端 500 报 `ResponseValidationError: Input should be a valid number, input: None`。同时控制台有 WebSocket 403 错误。
+
+**根因：**
+1. **500 错误**：`ModelConfigResponse` schema 中 `temperature: float` 和 `max_tokens: int` 不接受 None，但数据库列已改为 nullable。
+2. **WS 403**：前端 WebSocket 连的是 `ws://localhost:3000/ws/projects/{pid}`（Next.js 代理），路径也缺少 `/tasks` 后缀。后端路由是 `/ws/projects/{pid}/tasks`。
+
+**修复：**
+- `ModelConfigResponse`: `temperature: float | None`, `max_tokens: int | None`
+- WS URL 改为直连后端 `ws://localhost:8000/ws/projects/{pid}/tasks`
+
+**提交：** `824d7d6 fix: make ModelConfigResponse temperature/max_tokens nullable, fix WebSocket URL`
