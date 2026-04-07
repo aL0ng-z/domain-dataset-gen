@@ -10,8 +10,18 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { FolderOpenIcon, PlusIcon } from "lucide-react";
+import { toast } from "sonner";
 
 interface Project {
   id: string;
@@ -28,19 +38,45 @@ interface ProjectListResponse {
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newDesc, setNewDesc] = useState("");
+  const [creating, setCreating] = useState(false);
 
   const fetchProjects = useCallback(() => {
     setLoading(true);
+    setError(null);
     api
-      .get<ProjectListResponse>("/projects?page=1&page_size=50")
+      .get<ProjectListResponse>("/projects/?page=1&page_size=50")
       .then((data) => setProjects(data.items))
-      .catch(() => {})
+      .catch((err) => {
+        console.error("Failed to fetch projects:", err);
+        setError(err.message);
+      })
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
     fetchProjects();
   }, [fetchProjects]);
+
+  async function handleCreate() {
+    if (!newName.trim()) return;
+    setCreating(true);
+    try {
+      await api.post("/projects/", { name: newName.trim(), description: newDesc.trim() || null });
+      toast.success("项目创建成功");
+      setDialogOpen(false);
+      setNewName("");
+      setNewDesc("");
+      fetchProjects();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "创建失败");
+    } finally {
+      setCreating(false);
+    }
+  }
 
   return (
     <div className="p-6">
@@ -51,7 +87,7 @@ export default function ProjectsPage() {
             选择一个项目开始工作
           </p>
         </div>
-        <Button>
+        <Button onClick={() => setDialogOpen(true)}>
           <PlusIcon className="size-4" />
           新建项目
         </Button>
@@ -60,6 +96,10 @@ export default function ProjectsPage() {
       {loading ? (
         <div className="py-12 text-center text-sm text-muted-foreground">
           加载中...
+        </div>
+      ) : error ? (
+        <div className="py-12 text-center text-sm text-destructive">
+          加载失败: {error}
         </div>
       ) : projects.length === 0 ? (
         <div className="py-12 text-center text-sm text-muted-foreground">
@@ -93,6 +133,41 @@ export default function ProjectsPage() {
           ))}
         </div>
       )}
+
+      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>新建项目</DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium">项目名称</label>
+              <Input
+                placeholder="请输入项目名称"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-sm font-medium">项目描述（可选）</label>
+              <Textarea
+                placeholder="请输入项目描述"
+                value={newDesc}
+                onChange={(e) => setNewDesc(e.target.value)}
+                rows={3}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={handleCreate} disabled={creating || !newName.trim()}>
+              {creating ? "创建中..." : "创建"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
