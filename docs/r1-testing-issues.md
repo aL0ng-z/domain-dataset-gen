@@ -192,3 +192,18 @@
 - MinIO key 使用 UUID 而非 SHA256，避免文件覆盖
 
 **提交：** `d9e8a1b fix: extract page count on upload, allow duplicate PDF uploads`
+
+---
+
+## Issue #11: 重复文档上传仍然失败（数据库唯一约束）
+
+**反馈：** 移除 Python 层去重后，重复上传仍显示"上传失败"。MinIO 有文件但数据库写入失败。
+
+**根因：** 初始迁移中添加了 `uq_documents_project_sha256` 数据库唯一约束，Python 检查虽然移除但 DB 约束仍在。
+
+**修复：**
+- 新增 Alembic 迁移，删除 `uq_documents_project_sha256` 唯一约束
+- 移除 Document model 的 `__table_args__`
+- 新增 `_deduplicate_filename()` 方法：同名文件自动重命名为 `test(1).pdf`、`test(2).pdf` ...
+
+**提交：** `ef47a1f fix: allow duplicate PDF uploads with auto-renamed filenames`
