@@ -113,3 +113,18 @@
 - `apps/web/.../settings/page.tsx`: POST URL 加尾部斜杠；新建保存后不关闭 Dialog，切换为编辑模式（`setEditItem(created)`），测试按钮随即出现
 
 **提交：** `b67ecf6 fix: map api_key to api_key_encrypted in config service, fix save+test flow`
+
+---
+
+## Issue #6: 测试连接响应慢 + 返回内容过长
+
+**反馈：** 硅基流动测试连接成功但返回非常长的回复（模型用葡萄牙语解释了 ping 命令），且等待时间很久。
+
+**根因：** 测试端点发送 `{"role":"user","content":"ping"}`，模型当成正常问题回答。`max_tokens` 使用 LLMClient 默认值 2048，模型可自由生成大量内容，导致耗时长。
+
+**修复：**
+- 测试 prompt 改为 `"Reply with exactly: pong"`
+- 测试时 `max_tokens=20`, `temperature=0`，只需生成几个 token
+- 响应内容 strip() 处理
+
+**提交：** `7276c24 fix: optimize model config test - limit to 20 tokens for fast response`
