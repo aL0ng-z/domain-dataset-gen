@@ -37,10 +37,48 @@ interface ConfigItem {
 }
 
 /* ========= ModelConfig tab ========= */
+
+const PROVIDER_PRESETS: Record<string, { base_url: string; models: string[] }> = {
+  openai: {
+    base_url: "https://api.openai.com/v1",
+    models: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+  },
+  deepseek: {
+    base_url: "https://api.deepseek.com/v1",
+    models: ["deepseek-chat", "deepseek-reasoner"],
+  },
+  siliconflow: {
+    base_url: "https://api.siliconflow.cn/v1",
+    models: ["Qwen/Qwen2.5-72B-Instruct", "deepseek-ai/DeepSeek-V3", "Pro/deepseek-ai/DeepSeek-R1"],
+  },
+  openrouter: {
+    base_url: "https://openrouter.ai/api/v1",
+    models: ["openai/gpt-4o", "anthropic/claude-sonnet-4", "deepseek/deepseek-chat-v3-0324"],
+  },
+  vllm: {
+    base_url: "http://localhost:8080/v1",
+    models: [],
+  },
+  other: {
+    base_url: "",
+    models: [],
+  },
+};
+
+const PROVIDER_LABELS: Record<string, string> = {
+  openai: "OpenAI",
+  deepseek: "DeepSeek",
+  siliconflow: "硅基流动 (SiliconFlow)",
+  openrouter: "OpenRouter",
+  vllm: "vLLM (本地)",
+  other: "其他",
+};
+
 interface ModelConfig extends ConfigItem {
   provider: string;
   model_name: string;
-  api_base?: string;
+  base_url: string;
+  api_key_encrypted?: string;
   max_tokens?: number;
   temperature?: number;
 }
@@ -52,9 +90,10 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
   const [editItem, setEditItem] = useState<ModelConfig | null>(null);
   const [form, setForm] = useState({
     name: "",
-    provider: "openai",
-    model_name: "",
-    api_base: "",
+    provider: "deepseek",
+    model_name: "deepseek-chat",
+    base_url: "https://api.deepseek.com/v1",
+    api_key: "",
     max_tokens: 2048,
     temperature: 0.7,
   });
@@ -75,13 +114,26 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
     fetchItems();
   }, [fetchItems]);
 
+  const handleProviderChange = (provider: string) => {
+    const preset = PROVIDER_PRESETS[provider];
+    setForm({
+      ...form,
+      provider,
+      base_url: preset?.base_url || "",
+      model_name: preset?.models[0] || "",
+    });
+  };
+
   const openCreate = () => {
     setEditItem(null);
+    const defaultProvider = "deepseek";
+    const preset = PROVIDER_PRESETS[defaultProvider];
     setForm({
       name: "",
-      provider: "openai",
-      model_name: "",
-      api_base: "",
+      provider: defaultProvider,
+      model_name: preset.models[0] || "",
+      base_url: preset.base_url,
+      api_key: "",
       max_tokens: 2048,
       temperature: 0.7,
     });
@@ -94,7 +146,8 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
       name: item.name,
       provider: item.provider,
       model_name: item.model_name,
-      api_base: item.api_base || "",
+      base_url: item.base_url || "",
+      api_key: "", // Don't show existing key, leave blank to keep unchanged
       max_tokens: item.max_tokens ?? 2048,
       temperature: item.temperature ?? 0.7,
     });
@@ -106,16 +159,36 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
       toast.error("请输入配置名称");
       return;
     }
+    if (!form.base_url.trim()) {
+      toast.error("请输入 API 地址");
+      return;
+    }
+    if (!editItem && !form.api_key.trim()) {
+      toast.error("请输入 API Key");
+      return;
+    }
     try {
+      const payload: Record<string, unknown> = {
+        name: form.name,
+        provider: form.provider,
+        model_name: form.model_name,
+        base_url: form.base_url,
+        max_tokens: form.max_tokens,
+        temperature: form.temperature,
+      };
+      // Only send api_key if provided (for edit, empty means keep existing)
+      if (form.api_key.trim()) {
+        payload.api_key = form.api_key;
+      }
       if (editItem) {
         await api.patch(
           `/projects/${projectId}/model-configs/${editItem.id}`,
-          form
+          payload
         );
       } else {
         await api.post(
           `/projects/${projectId}/model-configs`,
-          form
+          payload
         );
       }
       toast.success("保存成功");
@@ -127,13 +200,21 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
   };
 
   const handleTestConnection = async () => {
+    if (!editItem) {
+      toast.error("请先保存配置后再测试连接");
+      return;
+    }
     setTesting(true);
     try {
-      await api.post(
-        `/projects/${projectId}/model-configs/test-connection`,
-        form
+      const res = await api.post<{ status: string; response?: string; error?: string }>(
+        `/projects/${projectId}/model-configs/${editItem.id}/test`,
+        {}
       );
-      toast.success("连接测试成功");
+      if (res.status === "success") {
+        toast.success(`连接成功: ${res.response}`);
+      } else {
+        toast.error(`连接失败: ${res.error}`);
+      }
     } catch {
       toast.error("连接测试失败");
     } finally {
@@ -154,18 +235,9 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
         </button>
       ),
     },
-    { key: "provider", header: "提供商", render: (row) => row.provider },
+    { key: "provider", header: "提供商", render: (row) => PROVIDER_LABELS[row.provider] || row.provider },
     { key: "model_name", header: "模型", render: (row) => row.model_name },
-    {
-      key: "max_tokens",
-      header: "最大Token",
-      render: (row) => row.max_tokens ?? "-",
-    },
-    {
-      key: "temperature",
-      header: "温度",
-      render: (row) => row.temperature ?? "-",
-    },
+    { key: "base_url", header: "API 地址", render: (row) => <span className="text-xs text-muted-foreground truncate max-w-48 block">{row.base_url}</span> },
     {
       key: "actions",
       header: "操作",
@@ -177,6 +249,8 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
       ),
     },
   ];
+
+  const currentPreset = PROVIDER_PRESETS[form.provider];
 
   return (
     <div>
@@ -202,7 +276,7 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
         />
       )}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>
               {editItem ? "编辑模型配置" : "新建模型配置"}
@@ -214,6 +288,7 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
               <Input
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="例如：DeepSeek 生产"
               />
             </div>
             <div>
@@ -221,37 +296,63 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
               <select
                 className="w-full rounded border px-3 py-1.5 text-sm bg-transparent"
                 value={form.provider}
-                onChange={(e) =>
-                  setForm({ ...form, provider: e.target.value })
-                }
+                onChange={(e) => handleProviderChange(e.target.value)}
               >
-                <option value="openai">OpenAI</option>
-                <option value="vllm">vLLM</option>
-                <option value="other">其他</option>
+                {Object.entries(PROVIDER_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
               </select>
             </div>
             <div>
-              <label className="text-sm font-medium">模型名称</label>
+              <label className="text-sm font-medium">API 地址</label>
               <Input
-                value={form.model_name}
-                onChange={(e) =>
-                  setForm({ ...form, model_name: e.target.value })
-                }
+                value={form.base_url}
+                onChange={(e) => setForm({ ...form, base_url: e.target.value })}
+                placeholder="https://api.example.com/v1"
               />
             </div>
             <div>
-              <label className="text-sm font-medium">API地址</label>
+              <label className="text-sm font-medium">API Key</label>
               <Input
-                value={form.api_base}
-                onChange={(e) =>
-                  setForm({ ...form, api_base: e.target.value })
-                }
-                placeholder="https://api.openai.com/v1"
+                type="password"
+                value={form.api_key}
+                onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+                placeholder={editItem ? "留空则保持原 Key 不变" : "请输入 API Key"}
               />
+            </div>
+            <div>
+              <label className="text-sm font-medium">模型名称</label>
+              {currentPreset?.models.length ? (
+                <select
+                  className="w-full rounded border px-3 py-1.5 text-sm bg-transparent"
+                  value={form.model_name}
+                  onChange={(e) => setForm({ ...form, model_name: e.target.value })}
+                >
+                  {currentPreset.models.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                  <option value="__custom">自定义...</option>
+                </select>
+              ) : (
+                <Input
+                  value={form.model_name}
+                  onChange={(e) => setForm({ ...form, model_name: e.target.value })}
+                  placeholder="请输入模型名称"
+                />
+              )}
+              {form.model_name === "__custom" && (
+                <Input
+                  className="mt-1"
+                  value=""
+                  onChange={(e) => setForm({ ...form, model_name: e.target.value })}
+                  placeholder="请输入自定义模型名称"
+                  autoFocus
+                />
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-sm font-medium">最大Token</label>
+                <label className="text-sm font-medium">最大 Token</label>
                 <Input
                   type="number"
                   value={form.max_tokens}
@@ -265,30 +366,31 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
                 <Input
                   type="number"
                   step="0.1"
+                  min="0"
+                  max="2"
                   value={form.temperature}
                   onChange={(e) =>
-                    setForm({
-                      ...form,
-                      temperature: Number(e.target.value),
-                    })
+                    setForm({ ...form, temperature: Number(e.target.value) })
                   }
                 />
               </div>
             </div>
           </div>
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={handleTestConnection}
-              disabled={testing}
-            >
-              {testing ? (
-                <Loader2Icon className="size-4 animate-spin" />
-              ) : (
-                <ZapIcon className="size-4" />
-              )}
-              测试连接
-            </Button>
+            {editItem && (
+              <Button
+                variant="outline"
+                onClick={handleTestConnection}
+                disabled={testing}
+              >
+                {testing ? (
+                  <Loader2Icon className="size-4 animate-spin" />
+                ) : (
+                  <ZapIcon className="size-4" />
+                )}
+                测试连接
+              </Button>
+            )}
             <Button onClick={handleSave}>保存</Button>
           </DialogFooter>
         </DialogContent>
