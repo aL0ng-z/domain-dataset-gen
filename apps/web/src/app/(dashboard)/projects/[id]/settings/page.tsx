@@ -98,6 +98,7 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
     temperature: 0.7,
   });
   const [testing, setTesting] = useState(false);
+  const [useCustomModel, setUseCustomModel] = useState(false);
 
   const fetchItems = useCallback(() => {
     setLoading(true);
@@ -122,6 +123,7 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
       base_url: preset?.base_url || "",
       model_name: preset?.models[0] || "",
     });
+    setUseCustomModel(false);
   };
 
   const openCreate = () => {
@@ -137,20 +139,24 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
       max_tokens: 2048,
       temperature: 0.7,
     });
+    setUseCustomModel(false);
     setDialogOpen(true);
   };
 
   const openEdit = (item: ModelConfig) => {
     setEditItem(item);
+    const preset = PROVIDER_PRESETS[item.provider];
+    const isKnownModel = preset?.models.includes(item.model_name);
     setForm({
       name: item.name,
       provider: item.provider,
       model_name: item.model_name,
       base_url: item.base_url || "",
-      api_key: "", // Don't show existing key, leave blank to keep unchanged
+      api_key: "",
       max_tokens: item.max_tokens ?? 2048,
       temperature: item.temperature ?? 0.7,
     });
+    setUseCustomModel(!isKnownModel && !!preset?.models.length);
     setDialogOpen(true);
   };
 
@@ -324,11 +330,18 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
             </div>
             <div>
               <label className="text-sm font-medium">模型名称</label>
-              {currentPreset?.models.length ? (
+              {currentPreset?.models.length && !useCustomModel ? (
                 <select
                   className="w-full rounded border px-3 py-1.5 text-sm bg-transparent"
                   value={form.model_name}
-                  onChange={(e) => setForm({ ...form, model_name: e.target.value })}
+                  onChange={(e) => {
+                    if (e.target.value === "__custom") {
+                      setUseCustomModel(true);
+                      setForm({ ...form, model_name: "" });
+                    } else {
+                      setForm({ ...form, model_name: e.target.value });
+                    }
+                  }}
                 >
                   {currentPreset.models.map((m) => (
                     <option key={m} value={m}>{m}</option>
@@ -336,20 +349,27 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
                   <option value="__custom">自定义...</option>
                 </select>
               ) : (
-                <Input
-                  value={form.model_name}
-                  onChange={(e) => setForm({ ...form, model_name: e.target.value })}
-                  placeholder="请输入模型名称"
-                />
-              )}
-              {form.model_name === "__custom" && (
-                <Input
-                  className="mt-1"
-                  value=""
-                  onChange={(e) => setForm({ ...form, model_name: e.target.value })}
-                  placeholder="请输入自定义模型名称"
-                  autoFocus
-                />
+                <div className="flex gap-2">
+                  <Input
+                    value={form.model_name}
+                    onChange={(e) => setForm({ ...form, model_name: e.target.value })}
+                    placeholder="请输入模型名称"
+                    autoFocus={useCustomModel}
+                  />
+                  {currentPreset?.models.length ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setUseCustomModel(false);
+                        setForm({ ...form, model_name: currentPreset.models[0] || "" });
+                      }}
+                    >
+                      选择
+                    </Button>
+                  ) : null}
+                </div>
               )}
             </div>
             <div className="grid grid-cols-2 gap-3">
