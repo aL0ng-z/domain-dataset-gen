@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -95,6 +95,7 @@ async def trigger_parse(
     pid: uuid.UUID,
     did: uuid.UUID,
     body: ParseRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
@@ -103,8 +104,17 @@ async def trigger_parse(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
 
-    task_service = TaskService(db)
+    # Reuse app-level Redis connection for publishing task.created event
+    task_service = TaskService(db, request.app.state.redis)
     task = await task_service.create_task(pid, "parse", "document", did, current_user.id)
+
+    # Create ParseJob immediately so frontend can see it right away
+    parse_job = ParseJob(
+        document_id=did, parser_profile_id=body.parser_profile_id,
+        status="queued",
+    )
+    db.add(parse_job)
+
     doc.status = "parsing"
     await db.commit()
 
@@ -112,15 +122,15 @@ async def trigger_parse(
     from app.database import async_session_factory
 
     async def _run():
-        redis_client = await _create_bg_redis()
+        bg_redis = await _create_bg_redis()
         async with async_session_factory() as session:
             try:
-                await run_parse(task.id, did, body.parser_profile_id, session, redis=redis_client)
+                await run_parse(task.id, did, body.parser_profile_id, session, redis=bg_redis, parse_job_id=parse_job.id)
                 await session.commit()
             except Exception:
                 await session.rollback()
             finally:
-                await redis_client.close()
+                await bg_redis.close()
 
     background_tasks.add_task(_run)
     return {"task_id": str(task.id), "message": "解析任务已创建"}
@@ -151,10 +161,24 @@ async def get_parse_job(
     return job
 
 
+@router.delete("/{did}/parse-jobs/{jid}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_parse_job(
+    pid: uuid.UUID,
+    did: uuid.UUID,
+    jid: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _: Annotated[User, Depends(require_project_member(UserRole.editor))],
+):
+    service = DocumentService(db)
+    if not await service.delete_parse_job(jid):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="解析任务不存在")
+
+
 @router.post("/{did}/cleaning/start", status_code=status.HTTP_202_ACCEPTED)
 async def start_cleaning(
     pid: uuid.UUID,
     did: uuid.UUID,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
@@ -171,7 +195,7 @@ async def start_cleaning(
     if parse_job is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有已完成的解析任务")
 
-    task_service = TaskService(db)
+    task_service = TaskService(db, request.app.state.redis)
     task = await task_service.create_task(pid, "clean", "document", did, current_user.id)
     await db.commit()
 
@@ -221,6 +245,7 @@ async def trigger_chunk(
     pid: uuid.UUID,
     did: uuid.UUID,
     body: ChunkRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
@@ -229,7 +254,7 @@ async def trigger_chunk(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
 
-    task_service = TaskService(db)
+    task_service = TaskService(db, request.app.state.redis)
     task = await task_service.create_task(pid, "chunk", "document", did, current_user.id)
     doc.status = "chunking"
     await db.commit()
@@ -280,6 +305,7 @@ async def trigger_generate_batch(
     pid: uuid.UUID,
     did: uuid.UUID,
     body: GenerateBatchRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
@@ -288,7 +314,7 @@ async def trigger_generate_batch(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
 
-    task_service = TaskService(db)
+    task_service = TaskService(db, request.app.state.redis)
     task = await task_service.create_task(pid, "generate_batch", "document", did, current_user.id)
     doc.status = "generating"
     await db.commit()

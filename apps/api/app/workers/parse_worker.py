@@ -14,7 +14,7 @@ from parsing import get_parser
 from storage import get_storage_client
 
 
-async def run_parse(task_id: uuid.UUID, document_id: uuid.UUID, parser_profile_id: uuid.UUID, db: AsyncSession, redis=None):
+async def run_parse(task_id: uuid.UUID, document_id: uuid.UUID, parser_profile_id: uuid.UUID, db: AsyncSession, redis=None, parse_job_id: uuid.UUID | None = None):
     task_service = TaskService(db, redis)
     storage = get_storage_client(settings.minio_endpoint, settings.minio_access_key, settings.minio_secret_key, settings.minio_secure)
 
@@ -25,11 +25,19 @@ async def run_parse(task_id: uuid.UUID, document_id: uuid.UUID, parser_profile_i
         profile = (await db.execute(select(ParserProfile).where(ParserProfile.id == parser_profile_id))).scalar_one()
 
         from datetime import datetime, timezone
-        parse_job = ParseJob(
-            document_id=document_id, parser_profile_id=parser_profile_id,
-            status="processing", started_at=datetime.now(timezone.utc),
-        )
-        db.add(parse_job)
+
+        # Use existing ParseJob if provided, otherwise create new one
+        if parse_job_id:
+            parse_job = (await db.execute(select(ParseJob).where(ParseJob.id == parse_job_id))).scalar_one()
+        else:
+            parse_job = ParseJob(
+                document_id=document_id, parser_profile_id=parser_profile_id,
+            )
+            db.add(parse_job)
+            await db.flush()
+
+        parse_job.status = "processing"
+        parse_job.started_at = datetime.now(timezone.utc)
         await db.flush()
 
         # Download PDF (sync IO → thread pool)

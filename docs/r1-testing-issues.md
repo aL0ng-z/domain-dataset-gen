@@ -283,3 +283,80 @@
 - 种子数据更新：默认解析器改为 `pymupdf4llm`
 
 **提交：** `1eb61c0 feat: redesign parser system with pymupdf4llm, MinerU, PaddleOCR support`
+
+---
+
+## Issue #17: 解析任务记录不实时显示 + 无进度条
+
+**反馈：** 点击"发起解析"后，解析任务记录面板不出现新记录，也看不到进度条。只有后端解析完成后刷新页面才能看到记录变为"已完成"。
+
+**根因（3个）：**
+1. **ParseJob 在 background worker 中才创建**（`parse_worker.py:28-33`），POST 返回后 `fetchData()` 查不到新记录
+2. **trigger_parse 中 `TaskService(db)` 没传 redis**（`documents.py:106`），`task.created` 事件未发送到 WebSocket，前端收不到任何 WS 消息
+3. **fetchData 每次都 `setLoading(true)`**，WS 触发的后台刷新也会让整个页面闪烁"加载中"
+
+**修复：**
+- 后端 `documents.py`: `trigger_parse` 中立即创建 ParseJob（status="queued"）并 commit；TaskService 传入 redis 连接使 `task.created` 发布到 WS
+- 后端 `parse_worker.py`: 新增 `parse_job_id` 参数，复用已有 ParseJob 记录而非重新创建
+- 前端 `documents/[did]/page.tsx`: `fetchData(silent)` 参数区分首次加载与 WS 静默刷新；新增 `taskProgress` state 跟踪 WS 推送的解析进度
+- 新增 `components/ui/progress.tsx` Progress 组件；解析任务记录表新增"进度"列，实时显示进度条
+
+**提交：** 未提交（与 Issue #18-#21 合并提交）
+
+---
+
+## Issue #18: 解析记录缺少删除功能
+
+**反馈：** 解析任务记录没有删除按钮，无法清理失败或过期的解析记录。删除时应同时清理 MinIO 中的产出文件。
+
+**修复：**
+- 后端 `document_service.py`: 新增 `delete_parse_job()` 方法——先删除 MinIO outputs 桶中 `raw_markdown_key` 和 `structured_json_key` 文件，再删除数据库记录
+- 后端 `documents.py`: 新增 `DELETE /{did}/parse-jobs/{jid}` 端点，需 editor 权限
+- 前端 `documents/[did]/page.tsx`: 解析任务表格新增垃圾桶删除按钮（进行中的任务禁用），点击弹出确认 Dialog
+
+**提交：** 未提交（与 Issue #17, #19-#21 合并提交）
+
+---
+
+## Issue #19: 删除所有解析记录后文档状态仍为"已解析"
+
+**反馈：** 删除文档的全部解析记录后，文档状态仍显示"已解析"，应回退为"已上传"。
+
+**根因：** `delete_parse_job()` 只删除了记录，没有检查是否还有剩余解析记录来决定文档状态。
+
+**修复：**
+- `document_service.py` `delete_parse_job()`: 删除后查询剩余 ParseJob 数量，若为 0 且文档状态为 `parsed`/`parsing`，则回退为 `uploaded`
+
+**提交：** 未提交（与 Issue #17-#18, #20-#21 合并提交）
+
+---
+
+## Issue #20: 文档列表操作栏冗余 + 页数无法识别
+
+**反馈：**
+1. 文档管理列表中每条记录的"操作"下有"发起解析""详情""删除"三个按钮，应只保留"详情"和删除图标
+2. 上传新 PDF 后页数显示为 `-`，`_extract_page_count` 功能失效
+
+**根因：**
+1. "发起解析"按钮功能已整合到文档详情页，文档列表页不再需要
+2. `import pymupdf as _pymupdf`（别名 `_pymupdf`），但函数中使用 `pymupdf.open()`，导致 `NameError` 被 `except Exception` 静默吞掉，返回 `None`
+
+**修复：**
+- `documents/page.tsx`: 移除"发起解析"按钮和无用的 `handleTriggerParse` 函数；"删除"文字改为垃圾桶图标按钮
+- `document_service.py`: `import pymupdf as _pymupdf` → `import pymupdf`，修复名称引用错误
+
+**提交：** 未提交（与 Issue #17-#19, #21 合并提交）
+
+---
+
+## Issue #21: 触发任务响应慢 — Redis 连接每次新建
+
+**反馈：** 点击"发起解析"按钮后，按钮转圈到下方出现解析记录的时间偏长。
+
+**根因：** trigger_parse / start_cleaning / trigger_chunk / trigger_generate_batch 四个端点内都调用 `_create_bg_redis()` 新建 Redis TCP 连接（DNS 解析 + 握手），用完立即关闭。每次请求都重复这一开销。
+
+**修复：**
+- 四个 trigger 端点改用 `request.app.state.redis`（应用启动时已创建的连接），零开销复用
+- Background worker 仍使用独立 `_create_bg_redis()` 连接（独立 DB session 生命周期）
+
+**提交：** 未提交（与 Issue #17-#20 合并提交）

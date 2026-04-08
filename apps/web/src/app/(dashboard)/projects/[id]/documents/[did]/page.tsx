@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
@@ -14,13 +14,23 @@ import {
 } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DataTable, type ColumnDef } from "@/components/data-table";
+import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { useWs } from "@/hooks/use-ws";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   FileTextIcon,
   PlayIcon,
   Loader2Icon,
   ArrowLeftIcon,
+  Trash2Icon,
 } from "lucide-react";
 
 interface DocumentDetail {
@@ -52,6 +62,14 @@ interface ProfileOption {
   is_default: boolean;
 }
 
+interface TaskProgress {
+  task_id: string;
+  task_type: string;
+  status: string;
+  progress: number | null;
+  entity_id: string;
+}
+
 export default function DocumentDetailPage() {
   const params = useParams<{ id: string; did: string }>();
   const projectId = params.id;
@@ -62,9 +80,14 @@ export default function DocumentDetailPage() {
   const [chunkProfiles, setChunkProfiles] = useState<ProfileOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
+  const [deleteJobId, setDeleteJobId] = useState<string | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const initialLoadDone = useRef(false);
 
-  const fetchData = useCallback(() => {
-    setLoading(true);
+  // Fetch all data; silent=true skips the loading spinner (used for WS refreshes)
+  const fetchData = useCallback((silent = false) => {
+    if (!silent) setLoading(true);
     Promise.all([
       api.get<DocumentDetail>(
         `/projects/${projectId}/documents/${docId}`
@@ -90,6 +113,7 @@ export default function DocumentDetailPage() {
         setParseJobs(jobsData);
         setParserProfiles(parserData.items);
         setChunkProfiles(chunkData.items);
+        initialLoadDone.current = true;
       })
       .catch(() => toast.error("加载文档详情失败"))
       .finally(() => setLoading(false));
@@ -102,11 +126,17 @@ export default function DocumentDetailPage() {
   // Subscribe to WebSocket for real-time task updates
   const { subscribe } = useWs();
   useEffect(() => {
-    const unsub = subscribe("*", () => {
-      fetchData();
+    const unsub = subscribe("*", (msg: unknown) => {
+      const data = msg as TaskProgress;
+      // Track progress for parse tasks targeting this document
+      if (data.entity_id === docId && data.task_type === "parse") {
+        setTaskProgress({ ...data });
+      }
+      // Silent refresh to pick up DB changes (new job record, status updates)
+      fetchData(true);
     });
     return unsub;
-  }, [subscribe, fetchData]);
+  }, [subscribe, fetchData, docId]);
 
   const getDefaultProfile = (profiles: ProfileOption[]) =>
     profiles.find((p) => p.is_default) || profiles[0];
@@ -133,8 +163,8 @@ export default function DocumentDetailPage() {
         { parser_profile_id: selectedParserId }
       );
       toast.success("解析任务已发起");
-      // Refresh immediately to show the new parse job, then again after a delay
-      fetchData();
+      setTaskProgress(null);
+      fetchData(true);
     } catch {
       toast.error("发起解析失败");
     } finally {
@@ -155,7 +185,7 @@ export default function DocumentDetailPage() {
         { chunk_profile_id: profile.id }
       );
       toast.success("切分任务已发起");
-      fetchData();
+      fetchData(true);
     } catch {
       toast.error("发起切分失败");
     } finally {
@@ -170,7 +200,7 @@ export default function DocumentDetailPage() {
         `/projects/${projectId}/documents/${docId}/cleaning/start`
       );
       toast.success("清洗任务已发起");
-      fetchData();
+      fetchData(true);
     } catch {
       toast.error("发起清洗失败");
     } finally {
@@ -178,11 +208,60 @@ export default function DocumentDetailPage() {
     }
   }, [projectId, docId, fetchData]);
 
+  const handleDeleteJob = useCallback(async () => {
+    if (!deleteJobId) return;
+    setDeleteLoading(true);
+    try {
+      await api.delete(
+        `/projects/${projectId}/documents/${docId}/parse-jobs/${deleteJobId}`
+      );
+      toast.success("解析记录已删除");
+      setDeleteJobId(null);
+      fetchData(true);
+    } catch {
+      toast.error("删除失败");
+    } finally {
+      setDeleteLoading(false);
+    }
+  }, [projectId, docId, deleteJobId, fetchData]);
+
+  // Determine real-time progress for active parse tasks
+  const activeProgress = taskProgress?.entity_id === docId && taskProgress?.task_type === "parse"
+    ? taskProgress
+    : null;
+
   const jobColumns: ColumnDef<ParseJob>[] = [
     {
       key: "status",
       header: "状态",
       render: (row) => <StatusBadge status={row.status} />,
+    },
+    {
+      key: "progress",
+      header: "进度",
+      render: (row) => {
+        // Show real-time progress for active (non-terminal) jobs
+        const isActive = row.status === "queued" || row.status === "processing";
+        const pct = isActive && activeProgress
+          ? (activeProgress.progress ?? 0)
+          : row.status === "completed"
+            ? 100
+            : row.status === "failed"
+              ? 0
+              : 0;
+        if (row.status === "completed") {
+          return <span className="text-xs text-green-600 font-medium">100%</span>;
+        }
+        if (row.status === "failed") {
+          return <span className="text-xs text-destructive font-medium">失败</span>;
+        }
+        return (
+          <div className="flex items-center gap-2 min-w-[120px]">
+            <Progress value={pct} className="h-2 flex-1" />
+            <span className="text-xs text-muted-foreground w-8">{pct}%</span>
+          </div>
+        );
+      },
     },
     {
       key: "parser_profile_id",
@@ -219,6 +298,25 @@ export default function DocumentDetailPage() {
         ) : (
           "-"
         ),
+    },
+    {
+      key: "actions",
+      header: "",
+      render: (row) => {
+        const isActive = row.status === "queued" || row.status === "processing";
+        return (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 text-muted-foreground hover:text-destructive"
+            disabled={isActive}
+            title={isActive ? "任务进行中，无法删除" : "删除解析记录"}
+            onClick={() => setDeleteJobId(row.id)}
+          >
+            <Trash2Icon className="size-4" />
+          </Button>
+        );
+      },
     },
   ];
 
@@ -402,6 +500,27 @@ export default function DocumentDetailPage() {
           />
         </CardContent>
       </Card>
+
+      {/* Delete parse job confirmation dialog */}
+      <Dialog open={deleteJobId !== null} onOpenChange={(open) => { if (!open) setDeleteJobId(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>确认删除解析记录</DialogTitle>
+            <DialogDescription>
+              删除后，该解析记录及其产出的 Markdown 文件将被永久移除，无法恢复。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteJobId(null)} disabled={deleteLoading}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteJob} disabled={deleteLoading}>
+              {deleteLoading && <Loader2Icon className="size-4 animate-spin" />}
+              确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

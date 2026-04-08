@@ -17,7 +17,7 @@ import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { usePagination } from "@/hooks/use-pagination";
 import { api, type PaginatedResponse } from "@/lib/api";
-import { UploadIcon, FileTextIcon, Loader2Icon } from "lucide-react";
+import { UploadIcon, FileTextIcon, Loader2Icon, Trash2Icon } from "lucide-react";
 
 interface Document {
   id: string;
@@ -97,19 +97,6 @@ export default function DocumentsPage() {
     [handleUpload]
   );
 
-  const handleTriggerParse = useCallback(
-    async (docId: string) => {
-      try {
-        await api.post(`/projects/${projectId}/documents/${docId}/parse`);
-        toast.success("已发起解析任务");
-        fetchDocuments();
-      } catch {
-        toast.error("发起解析失败");
-      }
-    },
-    [projectId, fetchDocuments]
-  );
-
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; filename: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -167,15 +154,6 @@ export default function DocumentsPage() {
       header: "操作",
       render: (row) => (
         <div className="flex gap-1">
-          {row.status === "uploaded" && (
-            <Button
-              variant="outline"
-              size="xs"
-              onClick={() => handleTriggerParse(row.id)}
-            >
-              发起解析
-            </Button>
-          )}
           <Link href={`/projects/${projectId}/documents/${row.id}`}>
             <Button variant="ghost" size="xs">
               详情
@@ -183,11 +161,12 @@ export default function DocumentsPage() {
           </Link>
           <Button
             variant="ghost"
-            size="xs"
-            className="text-destructive hover:text-destructive"
+            size="icon"
+            className="size-7 text-muted-foreground hover:text-destructive"
+            title="删除文档"
             onClick={() => setDeleteTarget({ id: row.id, filename: row.filename })}
           >
-            删除
+            <Trash2Icon className="size-4" />
           </Button>
         </div>
       ),

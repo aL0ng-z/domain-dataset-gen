@@ -11,7 +11,7 @@ from app.models.parse import ParseJob
 from storage import get_storage_client
 
 # Pre-load pymupdf at module level to avoid slow first-call initialization
-import pymupdf as _pymupdf  # noqa: F401
+import pymupdf  # noqa: F401
 
 
 def _extract_page_count(file_data: bytes) -> int | None:
@@ -132,3 +132,32 @@ class DocumentService:
     async def get_parse_job(self, job_id: uuid.UUID) -> ParseJob | None:
         result = await self.db.execute(select(ParseJob).where(ParseJob.id == job_id))
         return result.scalar_one_or_none()
+
+    async def delete_parse_job(self, job_id: uuid.UUID) -> bool:
+        job = await self.get_parse_job(job_id)
+        if job is None:
+            return False
+        document_id = job.document_id
+        # Delete associated files from MinIO outputs bucket
+        for key in (job.raw_markdown_key, job.structured_json_key):
+            if key:
+                try:
+                    await asyncio.to_thread(
+                        self._storage.delete_file, settings.minio_bucket_outputs, key,
+                    )
+                except Exception:
+                    pass  # file may already be gone
+        await self.db.delete(job)
+        await self.db.flush()
+
+        # If no parse jobs remain, revert document status to "uploaded"
+        remaining = await self.db.execute(
+            select(func.count()).select_from(ParseJob).where(ParseJob.document_id == document_id)
+        )
+        if remaining.scalar() == 0:
+            doc = await self.get_document(document_id)
+            if doc and doc.status in ("parsed", "parsing"):
+                doc.status = "uploaded"
+                await self.db.flush()
+
+        return True
