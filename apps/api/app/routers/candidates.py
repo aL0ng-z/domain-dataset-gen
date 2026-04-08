@@ -17,8 +17,23 @@ from app.schemas.candidate import (
 from app.schemas.curated import CuratedItemResponse
 from app.services.candidate_service import CandidateService
 from domain.enums import UserRole
+from domain.schemas import PaginatedResponse
 
 router = APIRouter(prefix="/api/candidates", tags=["candidates"])
+
+
+@router.get("", response_model=PaginatedResponse)
+async def list_candidates(
+    project_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _: Annotated[User, Depends(get_current_user)],
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 20,
+):
+    service = CandidateService(db)
+    items, total = await service.list_by_project(project_id, status=status, page=page, page_size=page_size)
+    return PaginatedResponse(items=[CandidateResponse.model_validate(i) for i in items], total=total, page=page, page_size=page_size)
 
 
 @router.get("/{cid}", response_model=CandidateResponse)

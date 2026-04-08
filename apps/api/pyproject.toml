@@ -35,6 +35,14 @@ dev = [
     "ruff>=0.8.0",
 ]
 
+[tool.uv.sources]
+domain = { workspace = true }
+storage = { workspace = true }
+parsing = { workspace = true }
+cleaning = { workspace = true }
+splitters = { workspace = true }
+llm = { workspace = true }
+
 [build-system]
 requires = ["setuptools>=75.0.0"]
 build-backend = "setuptools.build_meta"

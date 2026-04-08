@@ -137,6 +137,36 @@ class CandidateService:
         await self.db.refresh(curated_item)
         return curated_item
 
+    async def list_by_project(
+        self,
+        project_id: uuid.UUID,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[Candidate], int]:
+        offset = (page - 1) * page_size
+
+        base = (
+            select(Candidate)
+            .join(Chunk, Candidate.chunk_id == Chunk.id)
+            .join(Document, Chunk.document_id == Document.id)
+            .where(Document.project_id == project_id)
+        )
+        if status:
+            base = base.where(Candidate.status == status)
+
+        count_result = await self.db.execute(
+            select(func.count()).select_from(base.subquery())
+        )
+        total = count_result.scalar() or 0
+
+        result = await self.db.execute(
+            base.order_by(Candidate.created_at.desc())
+            .offset(offset)
+            .limit(page_size)
+        )
+        return list(result.scalars().all()), total
+
     async def list_by_chunk(
         self, chunk_id: uuid.UUID, page: int = 1, page_size: int = 20
     ) -> tuple[list[Candidate], int]:

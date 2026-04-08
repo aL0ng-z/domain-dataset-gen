@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
@@ -13,8 +14,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import {
-  ChevronLeftIcon,
-  ChevronRightIcon,
+  ArrowLeftIcon,
   LockIcon,
   SaveIcon,
   SendIcon,
@@ -25,6 +25,8 @@ import {
   PanelLeftOpenIcon,
 } from "lucide-react";
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
+
 // Dynamically import CodeMirror to avoid SSR issues
 const CodeMirrorEditor = dynamic(
   () => import("./codemirror-editor").then((m) => ({ default: m.CodeMirrorEditor })),
@@ -33,8 +35,8 @@ const CodeMirrorEditor = dynamic(
 
 interface Section {
   id: string;
-  title: string;
-  section_index: number;
+  ordinal: number;
+  heading_path: string;
   status: string;
   locked_by?: string;
   locked_by_name?: string;
@@ -45,7 +47,8 @@ interface Section {
 interface Comment {
   id: string;
   content: string;
-  author_name?: string;
+  comment_type: string;
+  user_id: string;
   created_at: string;
 }
 
@@ -64,73 +67,70 @@ export default function CleaningWorkbenchPage() {
   const [saving, setSaving] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [pdfUrl, setPdfUrl] = useState<string>("");
 
-  // Fetch sections list
+  // PDF URL: direct backend URL with auth token
+  const pdfUrl = useMemo(() => {
+    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+    if (!token) return "";
+    return `${API_BASE}/projects/${projectId}/documents/${docId}/file?token=${encodeURIComponent(token)}`;
+  }, [projectId, docId]);
+
+  // Fetch sections list (no selectedSectionId dep to avoid refetch loop)
   const fetchSections = useCallback(() => {
     api
       .get<{ items: Section[] }>(
-        `/projects/${projectId}/documents/${docId}/sections?page=1&page_size=200`
+        `/projects/${projectId}/documents/${docId}/sections?page=1&page_size=100`
       )
       .then((data) => {
         setSections(data.items);
-        if (!selectedSectionId && data.items.length > 0) {
-          setSelectedSectionId(data.items[0].id);
-        }
       })
       .catch(() => toast.error("加载章节列表失败"))
       .finally(() => setLoading(false));
-  }, [projectId, docId, selectedSectionId]);
+  }, [projectId, docId]);
 
   useEffect(() => {
     fetchSections();
-    // Fetch PDF URL
-    setPdfUrl(`/api/projects/${projectId}/documents/${docId}/file`);
-  }, [projectId, docId, fetchSections]);
+  }, [fetchSections]);
 
-  // Fetch selected section detail
+  // Auto-select first section when list loads and nothing is selected
+  useEffect(() => {
+    if (!selectedSectionId && sections.length > 0) {
+      setSelectedSectionId(sections[0].id);
+    }
+  }, [sections, selectedSectionId]);
+
+  // Fetch selected section detail + comments
   useEffect(() => {
     if (!selectedSectionId) return;
     api
-      .get<Section>(
-        `/sections/${selectedSectionId}`
-      )
+      .get<Section>(`/sections/${selectedSectionId}`)
       .then((section) => {
         setSelectedSection(section);
         setEditedMarkdown(section.cleaned_markdown || section.raw_markdown || "");
       })
       .catch(() => toast.error("加载章节详情失败"));
 
-    // Fetch comments
+    // Comments API returns list (not paginated)
     api
-      .get<{ items: Comment[] }>(
-        `/sections/${selectedSectionId}/comments?page=1&page_size=50`
-      )
-      .then((data) => setComments(data.items))
+      .get<Comment[]>(`/sections/${selectedSectionId}/comments`)
+      .then((data) => setComments(data))
       .catch(() => setComments([]));
-  }, [projectId, docId, selectedSectionId]);
+  }, [selectedSectionId]);
 
   // Heartbeat for lease
   useEffect(() => {
     if (!selectedSectionId) return;
     const interval = setInterval(() => {
-      api
-        .post(
-          `/sections/${selectedSectionId}/lease/heartbeat`
-        )
-        .catch(() => {});
+      api.post(`/sections/${selectedSectionId}/lease/heartbeat`).catch(() => {});
     }, 30000);
     return () => clearInterval(interval);
-  }, [projectId, docId, selectedSectionId]);
+  }, [selectedSectionId]);
 
   const handleSave = useCallback(async () => {
     if (!selectedSectionId) return;
     setSaving(true);
     try {
-      await api.patch(
-        `/sections/${selectedSectionId}`,
-        { cleaned_markdown: editedMarkdown }
-      );
+      await api.patch(`/sections/${selectedSectionId}`, { cleaned_markdown: editedMarkdown });
       toast.success("保存成功");
       fetchSections();
     } catch {
@@ -138,66 +138,52 @@ export default function CleaningWorkbenchPage() {
     } finally {
       setSaving(false);
     }
-  }, [projectId, docId, selectedSectionId, editedMarkdown, fetchSections]);
+  }, [selectedSectionId, editedMarkdown, fetchSections]);
 
   const handleSubmitReview = useCallback(async () => {
     if (!selectedSectionId) return;
     try {
-      await api.post(
-        `/sections/${selectedSectionId}/submit`
-      );
+      await api.post(`/sections/${selectedSectionId}/submit`);
       toast.success("已提交审核");
       fetchSections();
     } catch {
       toast.error("提交审核失败");
     }
-  }, [projectId, docId, selectedSectionId, fetchSections]);
+  }, [selectedSectionId, fetchSections]);
 
   const handleApprove = useCallback(async () => {
     if (!selectedSectionId) return;
     try {
-      await api.post(
-        `/sections/${selectedSectionId}/review`,
-        { action: "accept" }
-      );
+      await api.post(`/sections/${selectedSectionId}/review`, { action: "accept" });
       toast.success("已通过");
       fetchSections();
     } catch {
       toast.error("操作失败");
     }
-  }, [projectId, docId, selectedSectionId, fetchSections]);
+  }, [selectedSectionId, fetchSections]);
 
   const handleReject = useCallback(async () => {
     if (!selectedSectionId) return;
     try {
-      await api.post(
-        `/sections/${selectedSectionId}/review`,
-        { action: "reject" }
-      );
+      await api.post(`/sections/${selectedSectionId}/review`, { action: "reject" });
       toast.success("已驳回");
       fetchSections();
     } catch {
       toast.error("操作失败");
     }
-  }, [projectId, docId, selectedSectionId, fetchSections]);
+  }, [selectedSectionId, fetchSections]);
 
   const handleAddComment = useCallback(async () => {
     if (!selectedSectionId || !newComment.trim()) return;
     try {
-      await api.post(
-        `/sections/${selectedSectionId}/comments`,
-        { content: newComment }
-      );
+      await api.post(`/sections/${selectedSectionId}/comments`, { content: newComment });
       setNewComment("");
-      // Refetch comments
-      const data = await api.get<{ items: Comment[] }>(
-        `/sections/${selectedSectionId}/comments?page=1&page_size=50`
-      );
-      setComments(data.items);
+      const data = await api.get<Comment[]>(`/sections/${selectedSectionId}/comments`);
+      setComments(data);
     } catch {
       toast.error("评论失败");
     }
-  }, [projectId, docId, selectedSectionId, newComment]);
+  }, [selectedSectionId, newComment]);
 
   const filteredSections = useMemo(() => {
     if (statusFilter === "all") return sections;
@@ -211,9 +197,7 @@ export default function CleaningWorkbenchPage() {
   if (loading) {
     return (
       <div className="p-6">
-        <div className="py-12 text-center text-sm text-muted-foreground">
-          加载中...
-        </div>
+        <div className="py-12 text-center text-sm text-muted-foreground">加载中...</div>
       </div>
     );
   }
@@ -224,12 +208,14 @@ export default function CleaningWorkbenchPage() {
       {sidebarOpen && (
         <div className="w-56 shrink-0 border-r flex flex-col">
           <div className="p-2 border-b flex items-center justify-between">
-            <span className="text-sm font-medium">章节列表</span>
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setSidebarOpen(false)}
+            <Link
+              href={`/projects/${projectId}/documents/${docId}`}
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
             >
+              <ArrowLeftIcon className="size-3" />
+              返回文档
+            </Link>
+            <Button variant="ghost" size="icon-xs" onClick={() => setSidebarOpen(false)}>
               <PanelLeftCloseIcon className="size-3" />
             </Button>
           </div>
@@ -240,12 +226,11 @@ export default function CleaningWorkbenchPage() {
               onChange={(e) => setStatusFilter(e.target.value)}
             >
               <option value="all">全部状态</option>
-              <option value="raw">原始</option>
-              <option value="cleaning">清洗中</option>
-              <option value="cleaned">已清洗</option>
-              <option value="in_review">审核中</option>
-              <option value="approved">已通过</option>
-              <option value="rejected">已拒绝</option>
+              <option value="draft">草稿</option>
+              <option value="in_cleaning">清洗中</option>
+              <option value="review_pending">待审核</option>
+              <option value="accepted">已通过</option>
+              <option value="rejected">已驳回</option>
             </select>
           </div>
           <ScrollArea className="flex-1">
@@ -262,12 +247,9 @@ export default function CleaningWorkbenchPage() {
                 >
                   <div className="flex items-center gap-1 justify-between">
                     <span className="truncate flex-1">
-                      {section.section_index + 1}. {section.title || "无标题"}
+                      {section.ordinal + 1}. {section.heading_path || "无标题"}
                     </span>
-                    <StatusBadge
-                      status={section.status}
-                      className="text-[9px] px-1 py-0"
-                    />
+                    <StatusBadge status={section.status} className="text-[9px] px-1 py-0" />
                   </div>
                   {section.locked_by_name && (
                     <div className="flex items-center gap-0.5 text-[10px] text-orange-600 mt-0.5">
@@ -278,25 +260,19 @@ export default function CleaningWorkbenchPage() {
                 </button>
               ))}
               {filteredSections.length === 0 && (
-                <div className="px-2 py-4 text-center text-xs text-muted-foreground">
-                  无匹配章节
-                </div>
+                <div className="px-2 py-4 text-center text-xs text-muted-foreground">无匹配章节</div>
               )}
             </div>
           </ScrollArea>
         </div>
       )}
 
-      {/* Main 4-column workspace */}
+      {/* Main 3-column workspace */}
       <div className="flex-1 flex flex-col min-w-0">
         {/* Toolbar */}
         <div className="flex items-center gap-2 px-3 py-2 border-b">
           {!sidebarOpen && (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setSidebarOpen(true)}
-            >
+            <Button variant="ghost" size="icon-xs" onClick={() => setSidebarOpen(true)}>
               <PanelLeftOpenIcon className="size-3" />
             </Button>
           )}
@@ -307,20 +283,11 @@ export default function CleaningWorkbenchPage() {
             </Badge>
           )}
           <div className="flex-1" />
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleSave}
-            disabled={saving || isLockedByOther}
-          >
+          <Button variant="outline" size="sm" onClick={handleSave} disabled={saving || isLockedByOther}>
             <SaveIcon className="size-3" />
             保存
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleSubmitReview}
-          >
+          <Button variant="outline" size="sm" onClick={handleSubmitReview}>
             <SendIcon className="size-3" />
             提交审核
           </Button>
@@ -328,18 +295,14 @@ export default function CleaningWorkbenchPage() {
             <CheckIcon className="size-3" />
             通过
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleReject}
-          >
+          <Button variant="outline" size="sm" onClick={handleReject}>
             <XIcon className="size-3" />
             驳回
           </Button>
         </div>
 
-        {/* 4-column grid */}
-        <div className="flex-1 grid grid-cols-4 min-h-0">
+        {/* 3-column grid: PDF | Preview | Editor + Comments */}
+        <div className="flex-1 grid grid-cols-3 min-h-0">
           {/* Column 1: PDF viewer */}
           <div className="border-r flex flex-col min-h-0">
             <div className="px-2 py-1 border-b text-xs font-medium text-muted-foreground bg-muted/50">
@@ -347,11 +310,7 @@ export default function CleaningWorkbenchPage() {
             </div>
             <div className="flex-1 min-h-0">
               {pdfUrl ? (
-                <iframe
-                  src={pdfUrl}
-                  className="w-full h-full border-0"
-                  title="PDF预览"
-                />
+                <iframe src={pdfUrl} className="w-full h-full border-0" title="PDF预览" />
               ) : (
                 <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
                   无PDF文件
@@ -360,22 +319,32 @@ export default function CleaningWorkbenchPage() {
             </div>
           </div>
 
-          {/* Column 2: Raw markdown (read-only) */}
-          <div className="border-r flex flex-col min-h-0">
+          {/* Column 2: Live Markdown preview */}
+          <div className="border-r flex flex-col min-h-0 overflow-hidden">
             <div className="px-2 py-1 border-b text-xs font-medium text-muted-foreground bg-muted/50">
-              原始Markdown
+              Markdown 预览
             </div>
-            <ScrollArea className="flex-1">
-              <pre className="p-3 text-xs whitespace-pre-wrap font-mono leading-relaxed">
-                {selectedSection?.raw_markdown || "暂无内容"}
-              </pre>
+            <ScrollArea className="flex-1 min-h-0">
+              <div className="p-3 prose prose-sm max-w-none dark:prose-invert [&_ol]:list-decimal">
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={{
+                    ol: ({ node, start, ...props }) => {
+                      const s = typeof start === "number" ? start : undefined;
+                      return <ol start={s} style={s && s > 1 ? { counterReset: `list-item ${s - 1}` } : undefined} {...props} />;
+                    },
+                  }}
+                >
+                  {editedMarkdown || "暂无内容"}
+                </ReactMarkdown>
+              </div>
             </ScrollArea>
           </div>
 
-          {/* Column 3: CodeMirror editor */}
-          <div className="border-r flex flex-col min-h-0">
+          {/* Column 3: Editor + Comments */}
+          <div className="flex flex-col min-h-0">
             <div className="px-2 py-1 border-b text-xs font-medium text-muted-foreground bg-muted/50">
-              清洗编辑器
+              Markdown 编辑器
             </div>
             <div className="flex-1 min-h-0 overflow-auto">
               <CodeMirrorEditor
@@ -384,61 +353,40 @@ export default function CleaningWorkbenchPage() {
                 readOnly={isLockedByOther}
               />
             </div>
-          </div>
-
-          {/* Column 4: Preview + Comments */}
-          <div className="flex flex-col min-h-0">
-            <div className="px-2 py-1 border-b text-xs font-medium text-muted-foreground bg-muted/50">
-              预览 & 评论
-            </div>
-            <div className="flex-1 flex flex-col min-h-0">
-              {/* Markdown preview */}
-              <ScrollArea className="flex-1 border-b">
-                <div className="p-3 prose prose-sm max-w-none dark:prose-invert">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {editedMarkdown || "暂无内容"}
-                  </ReactMarkdown>
+            {/* Comments panel */}
+            <div className="h-48 shrink-0 border-t flex flex-col">
+              <div className="px-2 py-1 border-b text-xs font-medium text-muted-foreground bg-muted/50 flex items-center gap-1">
+                <MessageSquareIcon className="size-3" />
+                评论
+              </div>
+              <ScrollArea className="flex-1">
+                <div className="p-2 space-y-2">
+                  {comments.map((c) => (
+                    <div key={c.id} className="text-xs">
+                      <div className="flex items-center gap-1">
+                        <span className="font-medium">{c.user_id?.slice(0, 8) || "用户"}</span>
+                        <span className="text-muted-foreground">
+                          {new Date(c.created_at).toLocaleString("zh-CN")}
+                        </span>
+                      </div>
+                      <div className="mt-0.5">{c.content}</div>
+                    </div>
+                  ))}
+                  {comments.length === 0 && (
+                    <div className="text-xs text-muted-foreground text-center py-2">暂无评论</div>
+                  )}
                 </div>
               </ScrollArea>
-              {/* Comments */}
-              <div className="h-48 shrink-0 flex flex-col">
-                <div className="px-2 py-1 border-b text-xs font-medium text-muted-foreground bg-muted/50 flex items-center gap-1">
-                  <MessageSquareIcon className="size-3" />
-                  评论
-                </div>
-                <ScrollArea className="flex-1">
-                  <div className="p-2 space-y-2">
-                    {comments.map((c) => (
-                      <div key={c.id} className="text-xs">
-                        <div className="flex items-center gap-1">
-                          <span className="font-medium">
-                            {c.author_name || "用户"}
-                          </span>
-                          <span className="text-muted-foreground">
-                            {new Date(c.created_at).toLocaleString("zh-CN")}
-                          </span>
-                        </div>
-                        <div className="mt-0.5">{c.content}</div>
-                      </div>
-                    ))}
-                    {comments.length === 0 && (
-                      <div className="text-xs text-muted-foreground text-center py-2">
-                        暂无评论
-                      </div>
-                    )}
-                  </div>
-                </ScrollArea>
-                <div className="p-2 border-t flex gap-1">
-                  <Textarea
-                    value={newComment}
-                    onChange={(e) => setNewComment(e.target.value)}
-                    placeholder="输入评论..."
-                    className="min-h-6 h-6 text-xs"
-                  />
-                  <Button size="xs" onClick={handleAddComment}>
-                    发送
-                  </Button>
-                </div>
+              <div className="p-2 border-t flex gap-1">
+                <Textarea
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                  placeholder="输入评论..."
+                  className="min-h-6 h-6 text-xs"
+                />
+                <Button size="xs" onClick={handleAddComment}>
+                  发送
+                </Button>
               </div>
             </div>
           </div>

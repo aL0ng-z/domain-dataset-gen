@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { EditorView, basicSetup } from "codemirror";
 import { EditorState } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
@@ -21,6 +21,7 @@ export function CodeMirrorEditor({
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const [darkMode, setDarkMode] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -30,8 +31,8 @@ export function CodeMirrorEditor({
       extensions: [
         basicSetup,
         markdown(),
-        oneDark,
         EditorView.lineWrapping,
+        ...(darkMode ? [oneDark] : []),
         ...(readOnly ? [EditorState.readOnly.of(true)] : []),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && onChangeRef.current) {
@@ -52,9 +53,9 @@ export function CodeMirrorEditor({
       view.destroy();
       viewRef.current = null;
     };
-    // Only re-create on readOnly change, not on every value change
+    // Re-create on readOnly or darkMode change
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [readOnly]);
+  }, [readOnly, darkMode]);
 
   // Sync external value changes
   useEffect(() => {
@@ -72,5 +73,18 @@ export function CodeMirrorEditor({
     }
   }, [value]);
 
-  return <div ref={containerRef} className="h-full text-sm" />;
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex items-center justify-end px-2 py-0.5 border-b bg-muted/30">
+        <button
+          type="button"
+          className="text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded border"
+          onClick={() => setDarkMode((d) => !d)}
+        >
+          {darkMode ? "☀ 亮色" : "🌙 暗色"}
+        </button>
+      </div>
+      <div ref={containerRef} className="flex-1 min-h-0 overflow-auto text-sm" />
+    </div>
+  );
 }

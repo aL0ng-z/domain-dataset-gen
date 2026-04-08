@@ -37,7 +37,12 @@ export default function DashboardLayout({
   }
 
   if (!user) {
-    return null;
+    // Redirecting to login — show loading instead of blank
+    return (
+      <div className="flex min-h-screen items-center justify-center">
+        <div className="text-sm text-muted-foreground">正在跳转...</div>
+      </div>
+    );
   }
 
   return (

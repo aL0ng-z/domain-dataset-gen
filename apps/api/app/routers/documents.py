@@ -1,7 +1,9 @@
+import asyncio
 import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +24,7 @@ from app.services.document_service import DocumentService
 from app.services.task_service import TaskService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
+from storage import get_storage_client
 
 router = APIRouter(prefix="/api/projects/{pid}/documents", tags=["documents"])
 
@@ -76,6 +79,63 @@ async def get_document(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
     return doc
+
+
+@router.get("/{did}/file")
+async def get_document_file(
+    pid: uuid.UUID,
+    did: uuid.UUID,
+    request: Request,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    token: str | None = Query(None),
+):
+    """Serve PDF file. Supports both Authorization header and ?token= query param (for iframe)."""
+    from jose import JWTError, jwt as jose_jwt
+
+    # Extract token from Authorization header or query param
+    raw_token = token
+    if not raw_token:
+        auth_header = request.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            raw_token = auth_header[7:]
+
+    if not raw_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
+
+    try:
+        payload = jose_jwt.decode(raw_token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
+    except JWTError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
+
+    doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+
+    storage = get_storage_client(
+        settings.minio_endpoint, settings.minio_access_key,
+        settings.minio_secret_key, settings.minio_secure,
+    )
+    try:
+        pdf_data = await asyncio.to_thread(
+            storage.download_file, settings.minio_bucket_documents, doc.minio_key,
+        )
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+
+    # RFC 5987: use filename* with UTF-8 encoding for non-ASCII filenames
+    from urllib.parse import quote
+    encoded_filename = quote(doc.filename)
+    return Response(
+        content=pdf_data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{encoded_filename}",
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
 
 
 @router.delete("/{did}", status_code=status.HTTP_204_NO_CONTENT)
@@ -182,18 +242,28 @@ async def start_cleaning(
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
+    body: dict | None = None,
 ):
     doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
 
-    # Find latest completed parse job
-    result = await db.execute(
-        select(ParseJob).where(ParseJob.document_id == did, ParseJob.status == "completed").order_by(ParseJob.created_at.desc())
-    )
-    parse_job = result.scalars().first()
-    if parse_job is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有已完成的解析任务")
+    # Use specified parse job or fall back to latest completed
+    parse_job_id = (body or {}).get("parse_job_id")
+    if parse_job_id:
+        result = await db.execute(
+            select(ParseJob).where(ParseJob.id == uuid.UUID(parse_job_id), ParseJob.document_id == did, ParseJob.status == "completed")
+        )
+        parse_job = result.scalars().first()
+        if parse_job is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="指定的解析任务不存在或未完成")
+    else:
+        result = await db.execute(
+            select(ParseJob).where(ParseJob.document_id == did, ParseJob.status == "completed").order_by(ParseJob.created_at.desc())
+        )
+        parse_job = result.scalars().first()
+        if parse_job is None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有已完成的解析任务")
 
     task_service = TaskService(db, request.app.state.redis)
     task = await task_service.create_task(pid, "clean", "document", did, current_user.id)

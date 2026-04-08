@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -72,6 +72,7 @@ interface TaskProgress {
 
 export default function DocumentDetailPage() {
   const params = useParams<{ id: string; did: string }>();
+  const router = useRouter();
   const projectId = params.id;
   const docId = params.did;
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
@@ -83,6 +84,8 @@ export default function DocumentDetailPage() {
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
   const [deleteJobId, setDeleteJobId] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [showCleanPicker, setShowCleanPicker] = useState(false);
+  const [selectedCleanJobId, setSelectedCleanJobId] = useState<string>("");
   const initialLoadDone = useRef(false);
 
   // Fetch all data; silent=true skips the loading spinner (used for WS refreshes)
@@ -193,20 +196,45 @@ export default function DocumentDetailPage() {
     }
   }, [projectId, docId, chunkProfiles, fetchData]);
 
-  const handleCleanStart = useCallback(async () => {
+  const startCleanAndNavigate = useCallback(async (parseJobId?: string) => {
+    const cleanUrl = `/projects/${projectId}/documents/${docId}/clean`;
     setActionLoading("clean");
     try {
       await api.post(
-        `/projects/${projectId}/documents/${docId}/cleaning/start`
+        `/projects/${projectId}/documents/${docId}/cleaning/start`,
+        parseJobId ? { parse_job_id: parseJobId } : undefined
       );
-      toast.success("清洗任务已发起");
-      fetchData(true);
+      toast.success("清洗任务已发起，正在跳转...");
+      router.push(cleanUrl);
     } catch {
       toast.error("发起清洗失败");
     } finally {
       setActionLoading(null);
     }
-  }, [projectId, docId, fetchData]);
+  }, [projectId, docId, router]);
+
+  const handleClean = useCallback(() => {
+    const cleanUrl = `/projects/${projectId}/documents/${docId}/clean`;
+    // Already in cleaning/cleaned state — go directly to workbench
+    if (doc && ["cleaning", "cleaned"].includes(doc.status)) {
+      router.push(cleanUrl);
+      return;
+    }
+    // Check completed parse jobs
+    const completedJobs = parseJobs.filter((j) => j.status === "completed");
+    if (completedJobs.length === 0) {
+      toast.error("没有已完成的解析记录，请先解析文档");
+      return;
+    }
+    if (completedJobs.length === 1) {
+      // Only one — use it directly
+      startCleanAndNavigate(completedJobs[0].id);
+      return;
+    }
+    // Multiple — let user choose
+    setSelectedCleanJobId(completedJobs[0].id);
+    setShowCleanPicker(true);
+  }, [projectId, docId, doc, parseJobs, router, startCleanAndNavigate]);
 
   const handleDeleteJob = useCallback(async () => {
     if (!deleteJobId) return;
@@ -434,21 +462,14 @@ export default function DocumentDetailPage() {
             </div>
             <Button
               variant="outline"
-              onClick={handleCleanStart}
-              disabled={actionLoading !== null || doc.status !== "parsed"}
+              onClick={handleClean}
+              disabled={actionLoading !== null || !["parsed", "cleaning", "cleaned"].includes(doc.status)}
             >
               {actionLoading === "clean" && (
                 <Loader2Icon className="size-4 animate-spin" />
               )}
-              开始清洗
+              文档清洗
             </Button>
-            <Link
-              href={`/projects/${projectId}/documents/${docId}/clean`}
-            >
-              <Button variant="outline" disabled={!["cleaning", "cleaned"].includes(doc.status)}>
-                清洗工作台
-              </Button>
-            </Link>
             <Button
               variant="outline"
               onClick={handleChunk}
@@ -517,6 +538,50 @@ export default function DocumentDetailPage() {
             <Button variant="destructive" onClick={handleDeleteJob} disabled={deleteLoading}>
               {deleteLoading && <Loader2Icon className="size-4 animate-spin" />}
               确认删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Parse job picker for cleaning */}
+      <Dialog open={showCleanPicker} onOpenChange={(open) => { if (!open) setShowCleanPicker(false); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>选择解析结果</DialogTitle>
+            <DialogDescription>
+              该文档有多条已完成的解析记录，请选择要基于哪条进行清洗。
+            </DialogDescription>
+          </DialogHeader>
+          <select
+            className="w-full rounded border px-3 py-2 text-sm bg-transparent"
+            value={selectedCleanJobId}
+            onChange={(e) => setSelectedCleanJobId(e.target.value)}
+          >
+            {parseJobs
+              .filter((j) => j.status === "completed")
+              .map((j) => {
+                const p = parserProfiles.find((pp) => pp.id === j.parser_profile_id);
+                const time = j.completed_at ? new Date(j.completed_at).toLocaleString("zh-CN") : "";
+                return (
+                  <option key={j.id} value={j.id}>
+                    {p?.name ?? "未知解析器"} — {time}
+                  </option>
+                );
+              })}
+          </select>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCleanPicker(false)}>
+              取消
+            </Button>
+            <Button
+              onClick={() => {
+                setShowCleanPicker(false);
+                startCleanAndNavigate(selectedCleanJobId);
+              }}
+              disabled={!selectedCleanJobId || actionLoading !== null}
+            >
+              {actionLoading === "clean" && <Loader2Icon className="size-4 animate-spin" />}
+              开始清洗
             </Button>
           </DialogFooter>
         </DialogContent>

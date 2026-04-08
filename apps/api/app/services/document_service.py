@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.document import Document
 from app.models.parse import ParseJob
+from app.models.section import CleaningJob
 from storage import get_storage_client
 
 # Pre-load pymupdf at module level to avoid slow first-call initialization
@@ -115,10 +116,30 @@ class DocumentService:
         doc = await self.get_document(document_id)
         if doc is None:
             return False
-        # Run MinIO delete in thread pool
-        await asyncio.to_thread(
-            self._storage.delete_file, settings.minio_bucket_documents, doc.minio_key,
+
+        # Delete parse job output files from MinIO outputs bucket
+        parse_jobs = await self.db.execute(
+            select(ParseJob).where(ParseJob.document_id == document_id)
         )
+        for job in parse_jobs.scalars().all():
+            for key in (job.raw_markdown_key, job.structured_json_key):
+                if key:
+                    try:
+                        await asyncio.to_thread(
+                            self._storage.delete_file, settings.minio_bucket_outputs, key,
+                        )
+                    except Exception:
+                        pass
+
+        # Delete PDF from documents bucket
+        try:
+            await asyncio.to_thread(
+                self._storage.delete_file, settings.minio_bucket_documents, doc.minio_key,
+            )
+        except Exception:
+            pass
+
+        # DB cascade handles parse_jobs, cleaning_jobs, sections, etc.
         await self.db.delete(doc)
         await self.db.flush()
         return True
@@ -138,6 +159,15 @@ class DocumentService:
         if job is None:
             return False
         document_id = job.document_id
+
+        # Delete cleaning jobs that reference this parse job (cascades to sections)
+        cleaning_jobs = await self.db.execute(
+            select(CleaningJob).where(CleaningJob.parse_job_id == job_id)
+        )
+        for cj in cleaning_jobs.scalars().all():
+            await self.db.delete(cj)
+        await self.db.flush()
+
         # Delete associated files from MinIO outputs bucket
         for key in (job.raw_markdown_key, job.structured_json_key):
             if key:

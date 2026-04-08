@@ -13,20 +13,19 @@ import { ArrowLeftIcon } from "lucide-react";
 
 interface Chunk {
   id: string;
-  chunk_index: number;
+  ordinal: number;
   section_id?: string;
-  section_title?: string;
   heading_path?: string;
+  content: string;
   token_count: number;
   status: string;
-  content_preview?: string;
   created_at: string;
 }
 
 interface Section {
   id: string;
-  title: string;
-  section_index: number;
+  ordinal: number;
+  heading_path: string;
 }
 
 export default function ChunksPage() {
@@ -43,7 +42,7 @@ export default function ChunksPage() {
   useEffect(() => {
     api
       .get<{ items: Section[] }>(
-        `/projects/${projectId}/documents/${docId}/sections?page=1&page_size=200`
+        `/projects/${projectId}/documents/${docId}/sections?page=1&page_size=100`
       )
       .then((data) => setSections(data.items))
       .catch(() => {});
@@ -73,12 +72,12 @@ export default function ChunksPage() {
     {
       key: "index",
       header: "序号",
-      render: (row) => row.chunk_index + 1,
+      render: (row) => row.ordinal + 1,
     },
     {
       key: "section",
       header: "所属章节",
-      render: (row) => row.section_title || row.heading_path || "-",
+      render: (row) => row.heading_path || "-",
     },
     {
       key: "content",
@@ -89,14 +88,14 @@ export default function ChunksPage() {
           href={`/projects/${projectId}/documents/${docId}/chunks/${row.id}`}
           className="text-primary hover:underline truncate block max-w-xs"
         >
-          {row.content_preview || "(空)"}
+          {row.content?.slice(0, 80) || "(空)"}
         </Link>
       ),
     },
     {
       key: "token_count",
       header: "Token数",
-      render: (row) => row.token_count,
+      render: (row) => String(row.token_count),
     },
     {
       key: "status",
@@ -147,7 +146,7 @@ export default function ChunksPage() {
               <option value="all">全部章节</option>
               {sections.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.section_index + 1}. {s.title || "无标题"}
+                  {s.ordinal + 1}. {s.heading_path || "无标题"}
                 </option>
               ))}
             </select>

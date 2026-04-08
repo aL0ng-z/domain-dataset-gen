@@ -44,23 +44,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // On mount, check for existing token and fetch user
+  // On mount, check for existing token and fetch user (with timeout fallback)
   useEffect(() => {
     const stored = localStorage.getItem("access_token");
     if (stored) {
       setToken(stored);
+
+      // Safety timeout: if /auth/me takes > 10s, treat as failed
+      const timeout = setTimeout(() => {
+        authLogout();
+        setToken(null);
+        setUser(null);
+        setLoading(false);
+      }, 10000);
+
       api
         .get<User>("/auth/me")
         .then((u) => {
           setUser(u);
         })
         .catch(() => {
-          // Token invalid, clear
           authLogout();
           setToken(null);
           setUser(null);
         })
-        .finally(() => setLoading(false));
+        .finally(() => {
+          clearTimeout(timeout);
+          setLoading(false);
+        });
     } else {
       setLoading(false);
     }

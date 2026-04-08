@@ -360,3 +360,218 @@
 - Background worker 仍使用独立 `_create_bg_redis()` 连接（独立 DB session 生命周期）
 
 **提交：** 未提交（与 Issue #17-#20 合并提交）
+
+---
+
+## Issue #22: 清洗工作台 — PDF 无法加载
+
+**反馈：** 进入清洗工作台后，PDF 原文栏显示空白。
+
+**根因：** 后端不存在 `GET /projects/{pid}/documents/{did}/file` 端点，PDF 文件无法通过 HTTP 提供给 iframe。此外，iframe 无法在请求中携带 `Authorization` header，传统的 JWT header 认证方案不适用于嵌入场景。
+
+**修复：**
+- 后端 `documents.py`: 新增 `GET /{did}/file` 端点，从 MinIO 下载 PDF 并返回 `Response(media_type="application/pdf")`
+- 该端点同时支持 `Authorization: Bearer` header 和 `?token=` query param 两种认证方式，后者供 iframe 使用
+- 前端 `clean/page.tsx`: PDF URL 改为直连后端 `${API_BASE}/projects/.../file?token=...`，从 localStorage 取 JWT 拼入 query param
+
+**提交：** 未提交（与 Issue #23-#26 合并提交）
+
+---
+
+## Issue #23: "开始清洗"和"清洗工作台"按钮拆分不合理
+
+**反馈：** 文档详情页有"开始清洗"和"清洗工作台"两个按钮，操作分散，用户需要先点一个再点另一个。
+
+**修复：**
+- 合并为单个「文档清洗」按钮
+- 文档状态为 `parsed` → 自动调用 `cleaning/start` 然后跳转工作台
+- 文档状态为 `cleaning`/`cleaned` → 直接跳转工作台
+- 引入 `useRouter` 实现编程式导航
+
+**提交：** 未提交（与 Issue #22, #24-#26 合并提交）
+
+---
+
+## Issue #24: 清洗工作台四栏布局冗余 + 多处字段不匹配
+
+**反馈：** 四栏布局中"原始 Markdown（只读）"栏与编辑器功能重叠，实际只需 PDF + 预览 + 编辑器三栏。同时 Markdown 预览和编辑器无内容显示。
+
+**根因（多个）：**
+1. **布局冗余**：原始 MD 只读栏无实际用途，用户需要的是编辑器内容的实时渲染预览
+2. **字段不匹配**：前端 Section 接口用 `title` / `section_index`，后端返回 `heading_path` / `ordinal`
+3. **状态筛选不匹配**：前端 option 值 `raw`/`cleaning`/`cleaned`/`in_review`/`approved`/`rejected` 与后端枚举 `draft`/`in_cleaning`/`review_pending`/`accepted`/`rejected` 不一致
+4. **Comments API 格式**：前端按分页响应 `{items:[]}` 解析，后端实际返回 `list[]`
+5. **PDF URL**：使用 `/api/...`（Next.js 代理路径），应直连后端
+
+**修复：** 全面重写 `clean/page.tsx`：
+- 布局从 4 栏改为 3 栏：PDF 原文 | Markdown 实时预览 | CodeMirror 编辑器 + 评论
+- Section 接口对齐：`title` → `heading_path`，`section_index` → `ordinal`
+- 状态筛选选项对齐后端枚举值
+- Comments API 直接解析为 `Comment[]`
+- 侧边栏新增"返回文档"链接
+
+**提交：** 未提交（与 Issue #22-#23, #25-#26 合并提交）
+
+---
+
+## Issue #25: 清洗工作台 Markdown 编辑器和预览无内容
+
+**反馈：** 进入清洗工作台后，左侧 Section 列表正常，但中间预览和右侧编辑器均为空白。
+
+**根因：** `fetchSections` 回调的依赖数组包含 `selectedSectionId`。首次加载时：
+1. `fetchSections()` 获取 sections 列表并设置 `selectedSectionId`（从 null → 第一个 section ID）
+2. `selectedSectionId` 变化导致 `fetchSections` 被重新创建
+3. `useEffect(() => fetchSections(), [fetchSections])` 再次触发
+4. `fetchSections()` 内部调用 `setLoading(true)`，导致整个工作台被卸载（显示"加载中..."）
+5. Section 详情 API 的结果被丢弃，`editedMarkdown` 始终为空字符串
+
+**修复：**
+- 将 `selectedSectionId` 从 `fetchSections` 依赖中移除
+- "自动选中第一个 section"逻辑拆到独立的 `useEffect` 中
+- sections 列表加载只触发一次，不再干扰 section 详情获取
+
+**提交：** 未提交（与 Issue #22-#24, #26 合并提交）
+
+---
+
+## Issue #26: 多条解析记录时清洗目标不明确
+
+**反馈：** 一个文档允许多条解析记录（不同解析器），点击"文档清洗"时无法确定基于哪条记录进行清洗。
+
+**根因：** `POST /cleaning/start` 硬编码取最新的已完成 ParseJob（`order_by(created_at.desc()).first()`），不接受用户指定。
+
+**修复：**
+- 后端 `documents.py`: `cleaning/start` 新增可选 `parse_job_id` body 参数，传了用指定的，没传 fallback 到最新
+- 前端 `documents/[did]/page.tsx`:
+  - 0 条已完成解析 → toast 提示
+  - 1 条已完成解析 → 直接使用
+  - 多条已完成解析 → 弹出选择 Dialog（显示解析器名 + 完成时间），用户选择后开始清洗
+
+**提交：** 未提交（与 Issue #22-#25 合并提交）
+
+---
+
+## Issue #27: PDF 文件端点 500 — 中文文件名编码错误
+
+**反馈：** 清洗工作台 PDF 原文栏显示 "Internal Server Error"，后端报 `UnicodeEncodeError: 'latin-1' codec can't encode characters`。
+
+**根因：** `Content-Disposition` header 中直接嵌入中文文件名 `filename="AFC2026 最佳论文&优秀论文统计分析.pdf"`，Starlette 用 latin-1 编码 header 值，中文字符超出 latin-1 范围。
+
+**修复：**
+- 使用 RFC 5987 标准：`Content-Disposition: inline; filename*=UTF-8''<url-encoded-filename>`
+- 用 `urllib.parse.quote()` 对文件名进行 URL 编码
+
+**提交：** 未提交（与 Issue #28 合并提交）
+
+---
+
+## Issue #28: 清洗工作台 "加载章节列表失败" — page_size 超限
+
+**反馈：** 进入清洗工作台弹出 "加载章节列表失败" toast。
+
+**根因：** 前端请求 `sections?page_size=200`，但后端 `list_sections` 端点限制 `page_size: int = Query(50, ge=1, le=100)`，200 超过上限返回 422 校验错误。
+
+**修复：**
+- 前端 `clean/page.tsx`: `page_size=200` → `page_size=100`
+
+**提交：** 未提交（与 Issue #27 合并提交）
+
+---
+
+## Issue #29: 删除解析记录失败 — 外键约束 + 删除文档后 MinIO outputs 残留
+
+**反馈：**
+1. 已做过清洗的解析记录，点击删除弹窗显示"删除失败"
+2. 直接删除文档成功，但 MinIO outputs 桶中仍残留该文档的解析产出文件（raw.md、structured.json）
+
+**根因：**
+1. **外键约束**：`cleaning_jobs.parse_job_id` → `parse_jobs.id` 没有 `ondelete="CASCADE"`。已做清洗的 ParseJob 被 CleaningJob 引用，直接删除触发外键约束错误
+2. **outputs 未清理**：`delete_document()` 只删 documents 桶的 PDF 源文件，未清理 outputs 桶中解析产出的 markdown/json 文件
+
+**修复：**
+- `document_service.py` `delete_parse_job()`: 删除 ParseJob 前，先查找并删除所有引用它的 CleaningJob（会级联删除 sections、comments、revisions、leases）
+- `document_service.py` `delete_document()`: 删除文档前，遍历所有关联的 ParseJob，逐一删除 outputs 桶中的 `raw_markdown_key` 和 `structured_json_key` 文件
+
+**提交：** 未提交
+
+---
+
+## Issue #31: PDF 加载慢 — 后端无缓存头 + Markdown 预览无独立滚动 + 编辑器默认暗色
+
+**反馈：**
+1. 清洗工作台 PDF 加载需要较长时间，每次切换 section 或重新进入都要重新下载
+2. Markdown 预览栏内容过长时没有独立滚动条，导致整个页面被撑长需要不断下滑
+3. CodeMirror 编辑器默认黑色背景（oneDark 主题），应默认白色并支持手动切换
+
+**根因：**
+1. PDF 文件端点未设置 `Cache-Control` header，浏览器每次都重新向后端请求完整 PDF
+2. 预览栏的父 div 缺少 `overflow: hidden`，`ScrollArea` 无法在受限高度内生效
+3. CodeMirror 硬编码使用 `oneDark` 主题，无切换机制
+
+**修复：**
+- 后端 `documents.py` `/file` 端点：添加 `Cache-Control: private, max-age=3600`，浏览器缓存 1 小时
+- 前端 `clean/page.tsx`: 预览栏父 div 加 `overflow-hidden`，`ScrollArea` 加 `min-h-0`
+- `codemirror-editor.tsx`: 默认无主题（白色背景），新增 `darkMode` state + 切换按钮（亮色/暗色），`oneDark` 仅在暗色模式下加载；编辑器在 `darkMode` 变化时重新创建
+
+**提交：** 未提交
+
+---
+
+## Issue #30: 页面导航偶发空白卡死 — 无超时保护 + 重定向空白
+
+**反馈：** 切换页面、返回主页、刷新时偶尔页面空白卡死，浏览器显示已加载完成但无内容。有时正常有时卡住。
+
+**根因（3个）：**
+1. **Auth 初始化无超时**：`AuthProvider` 挂载时调用 `api.get("/auth/me")` 验证 token，如果后端慢或网络波动，该请求可能长时间无响应，`loading` 永远不变 false，整个 Dashboard 卡在空白
+2. **API 层无请求超时**：`api.ts` 内所有 `fetch()` 调用无超时机制，网络异常时请求永远挂起。token 刷新 `refreshToken()` 也可能挂起，层层阻塞
+3. **Dashboard layout 返回 null**：`!user` 时触发 `router.push("/login")` 重定向，但组件返回 `null`（空白），如果重定向未立即完成，用户看到空白页
+
+**修复：**
+- `lib/api.ts`: 新增 `fetchWithTimeout()` 封装，所有请求 15 秒超时（使用 `AbortController`）
+- `contexts/auth-context.tsx`: `/auth/me` 初始化增加 10 秒安全超时，超时后自动清除 token 并跳转登录
+- `(dashboard)/layout.tsx`: `!user` 时不再返回 `null`，改为显示"正在跳转..."提示
+
+**提交：** 未提交
+
+---
+
+## Issue #32: Markdown 预览数字标号错乱 — 有序列表起始编号丢失
+
+**反馈：** 解析产出的 markdown 中包含论文编号列表（如 `46. **论文名**`、`53. **论文名**`），预览渲染后编号全部变成从 1 开始递增（1、2、3...），原始编号丢失。
+
+**根因：** 标准 markdown 规范中，有序列表 `数字. 文本` 的数字仅影响首项，后续自动递增。`react-markdown` 默认行为遵循此规范：解析出 `<ol start="46">` 但浏览器默认 CSS 和 Tailwind `prose` 类会重置 `counter-reset`，导致始终从 1 开始渲染。
+
+**修复：**
+- `clean/page.tsx`: 给 `ReactMarkdown` 添加 `components.ol` 自定义渲染器，保留 `start` 属性并设置 `counterReset: list-item ${start - 1}`，确保浏览器从正确编号开始计数
+- 后续修复：`start` 增加 `typeof === "number"` 类型检查，防止 `undefined - 1 = NaN` 传入 DOM
+
+**提交：** 未提交
+
+---
+
+## Issue #33: 分块列表页 NaN 错误 + 字段名不匹配
+
+**反馈：** 点击"查看分块"后，控制台报 `Received NaN for the children attribute`，页面序号列显示 NaN。
+
+**根因：** 前端 Chunk 接口使用 `chunk_index`、Section 接口使用 `section_index` / `title`，但后端返回的字段名是 `ordinal` / `heading_path`。`undefined + 1 = NaN` 被传给 `<td>` 元素。另外 `content_preview` 字段不存在，后端返回的是完整 `content`。sections 请求 `page_size=200` 也超过后端限制 100。
+
+**修复：**
+- `chunks/page.tsx`: Chunk 接口 `chunk_index` → `ordinal`，`content_preview` → `content`（截取前 80 字符显示）
+- Section 接口 `section_index` → `ordinal`，`title` → `heading_path`
+- `token_count` 渲染用 `String()` 包裹防止数字直接传入 DOM
+- sections 请求 `page_size=200` → `100`
+
+**提交：** 未提交
+
+---
+
+## Issue #34: Next.js dev server 反复崩溃 — Turbopack HMR 内存泄漏
+
+**反馈：** 开发过程中 Next.js dev server 频繁报 `RangeError: Map maximum size exceeded` 后退出运行，需要反复手动重启。
+
+**根因：** Next.js 16 默认启用 Turbopack 编译器。Turbopack 的 HMR（热更新）模块中 `subscribeToClientHmrEvents` 函数使用 `Map` 跟踪异步操作，但从不清理已完成的条目，在长时间运行的 dev session 中 Map 超过 V8 引擎上限而崩溃。这是 Next.js 已知 bug，与项目代码无关。
+
+**修复：**
+- `package.json`: `"dev": "next dev"` → `"next dev --no-turbopack"`，回退使用 Webpack dev server，稳定性更好
+
+**提交：** 未提交

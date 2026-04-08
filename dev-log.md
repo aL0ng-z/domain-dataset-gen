@@ -8,7 +8,7 @@
 
 | Release | 名称 | 状态 | 备注 |
 |---------|------|------|------|
-| R1 | Lab Pilot | 代码完成，待测试 | 主链路 MVP |
+| R1 | Lab Pilot | 测试进行中 | 主链路 MVP，已修复 34 个 issue |
 | R2 | Lab Team | 未开始 | 多人协作、评测中心 |
 | R3 | Quality Automation | 未开始 | 质量自动化 |
 | R4 | Optional Extensions | 未开始 | 多轮对话、Arena 等 |
@@ -87,20 +87,48 @@
 
 ---
 
-### 测试阶段：待进行
+### 测试阶段：进行中 (2026-04-07 ~ 至今)
 
-下一步需要进行 R1 端到端集成测试，验证主链路闭环：
+**34 个 Issue 已修复 | 14 个文件变更待提交**
 
-1. **认证全流程** — 注册用户、登录、角色权限校验
-2. **项目配置** — 创建项目、配置 ModelConfig / ParserProfile / ChunkProfile
-3. **文档上传 → 解析** — 上传真实 PDF → 触发解析 → 确认产出 markdown
-4. **清洗工作台** — Section 自动划分 → 编辑 → 提交审核 → 通过
-5. **切分** — accepted Section → 执行切分 → 确认 Chunk 产出
-6. **LLM 生成** — 配置 LLM 端点 → 选模板 → 单 Chunk 生成 → 确认 Candidate 产出
-7. **审核 → 提升** — Candidate 审核 → promote 为 CuratedItem
-8. **导出** — CuratedItem 编组为 Dataset → 选 ExportProfile → 导出 → 下载验证
-9. **任务中心** — 确认 Task 状态推送、WebSocket 实时更新
-10. **前端联调** — 浏览器访问前端，验证各页面与 API 交互
+详见 `docs/r1-testing-issues.md`。
+
+#### 测试进度
+
+| # | 测试项 | 状态 | 修复的 Issue |
+|---|--------|------|-------------|
+| 1 | 认证全流程 | ✅ 已通过 | #1 (登录跳转) |
+| 2 | 项目配置 | ✅ 已通过 | #2~#9 (项目列表、模型配置、Provider 预设) |
+| 3 | 文档上传 → 解析 | ✅ 已通过 | #10~#21 (上传性能、解析器、进度显示、删除) |
+| 4 | 清洗工作台 | ✅ 已通过 | #22~#29, #31~#32 (PDF加载、三栏布局、字段对齐、滚动、编辑器主题) |
+| 5 | 切分 | ✅ 已通过 | #33 (分块列表字段不匹配) |
+| 6 | LLM 生成 | ⏳ 待测试 | — |
+| 7 | 审核 → 提升 | ⏳ 待测试 | — |
+| 8 | 导出 | ⏳ 待测试 | — |
+| 9 | 任务中心 | ✅ 部分通过 | WebSocket 实时推送已验证 |
+| 10 | 前端联调 | 🔄 持续进行 | 每阶段均验证前后端交互 |
+
+#### 主要改进（测试期间）
+
+- **PDF 文件端点**：新增 `GET /documents/{did}/file`，支持 iframe 嵌入 (token query param 认证 + 浏览器缓存)
+- **解析实时进度**：ParseJob 立即创建 + WebSocket 推送 + 前端进度条
+- **清洗工作台重构**：四栏 → 三栏 (PDF | Markdown预览 | 编辑器+评论)，CodeMirror 亮/暗主题切换
+- **级联删除修复**：删除解析记录时清理 CleaningJob + MinIO 文件；删除文档时清理全部产出
+- **API 响应优化**：Redis 连接复用、Storage 单例、PDF 缓存头
+
+#### 已知问题
+
+- `bcrypt` 需要 <4.1 版本以兼容 passlib（已在环境中降级，但 pyproject.toml 未固定版本）
+- Docker 端口映射使用非标准端口 (PG:5433, Redis:6380, MinIO:9002/9003)
+- Next.js 16 Turbopack dev server 长时间运行偶发内存泄漏崩溃（重启即恢复，不影响生产）
+- 清洗工作台 sections 分页上限 100，超长文档需后续优化
+
+#### 下一步
+
+继续测试主链路后半段：
+1. **LLM 生成** — 配置 LLM 端点 → 选模板 → 单 Chunk 生成 → 确认 Candidate 产出
+2. **审核 → 提升** — Candidate 审核 → promote 为 CuratedItem
+3. **导出** — CuratedItem 编组为 Dataset → 选 ExportProfile → 导出 → 下载验证
 
 ---
 
