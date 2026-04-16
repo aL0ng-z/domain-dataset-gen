@@ -63,6 +63,7 @@ htmlcov/
 # Logs
 *.log
 logs/
+!docs/logs/
 
 # MinIO / PostgreSQL local data
 data/

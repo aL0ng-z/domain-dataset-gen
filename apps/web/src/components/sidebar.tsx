@@ -15,7 +15,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-import { api } from "@/lib/api";
+import { api, isAbortError } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 
 interface Project {
@@ -35,12 +35,17 @@ export function Sidebar() {
   const [projects, setProjects] = useState<Project[]>([]);
 
   useEffect(() => {
+    const controller = new AbortController();
     api
-      .get<ProjectListResponse>("/projects?page=1&page_size=50")
+      .get<ProjectListResponse>("/projects?page=1&page_size=50", {
+        signal: controller.signal,
+      })
       .then((data) => setProjects(data.items))
-      .catch(() => {
+      .catch((err) => {
+        if (isAbortError(err)) return;
         // silently fail - user may not be logged in
       });
+    return () => controller.abort();
   }, []);
 
   // Extract active project id from path

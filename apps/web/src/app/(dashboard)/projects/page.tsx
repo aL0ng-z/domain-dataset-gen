@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/lib/api";
+import { api, isAbortError } from "@/lib/api";
 import { FolderOpenIcon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 
@@ -44,21 +44,28 @@ export default function ProjectsPage() {
   const [newDesc, setNewDesc] = useState("");
   const [creating, setCreating] = useState(false);
 
-  const fetchProjects = useCallback(() => {
+  const fetchProjects = useCallback((signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     api
-      .get<ProjectListResponse>("/projects/?page=1&page_size=50")
+      .get<ProjectListResponse>("/projects/?page=1&page_size=50", { signal })
       .then((data) => setProjects(data.items))
       .catch((err) => {
+        if (isAbortError(err)) return;
         console.error("Failed to fetch projects:", err);
-        setError(err.message);
+        setError(err instanceof Error ? err.message : "加载失败");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!signal?.aborted) {
+          setLoading(false);
+        }
+      });
   }, []);
 
   useEffect(() => {
-    fetchProjects();
+    const controller = new AbortController();
+    fetchProjects(controller.signal);
+    return () => controller.abort();
   }, [fetchProjects]);
 
   async function handleCreate() {

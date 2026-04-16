@@ -17,9 +17,9 @@
 
 ## R1: Lab Pilot
 
-### 开发阶段：已完成 (2026-04-05)
+### 初版开发完成，进入测试修复 (2026-04-05 ~ 至今)
 
-**27 次提交 | 191 个文件 | 28 张数据库表 | 130 条 API 路由 | 21 个前端页面**
+**27 次提交 | 191 个文件 | 28 张数据库表 | 133 条 FastAPI 路由 | 21 个前端页面**
 
 #### 后端 (apps/api/)
 
@@ -29,8 +29,8 @@
 | 认证 | JWT 登录 + 4 角色权限 (admin/reviewer/editor/viewer) | 已完成 |
 | 项目管理 | 项目 CRUD + 成员管理 + 配置克隆 | 已完成 |
 | 配置中心 | 5 类 Profile (ModelConfig/Parser/Chunk/Export/TaskPolicy) | 已完成 |
-| 文档接入 | PDF 上传 + SHA256 去重 + MinIO 存储 | 已完成 |
-| 文档解析 | Mock 解析器 (pymupdf4llm) + MinerU 接口预留 | 已完成 |
+| 文档接入 | PDF 上传 + SHA256 记录 + 允许重复上传 + MinIO 存储 | 已完成 |
+| 文档解析 | `pymupdf4llm` 默认解析 + MinerU / PaddleOCR API 解析器 | 已完成 |
 | 清洗 | Section 自动划分 + 编辑/提交/审核 + 租约 + 评论 | 已完成 |
 | 切分 | hybrid_heading_recursive 策略 + tiktoken 计数 | 已完成 |
 | Prompt 模板 | CRUD + 版本历史 + 复制 + 试跑 | 已完成 |
@@ -48,7 +48,7 @@
 |----|------|------|
 | domain | 15 枚举 + BaseSchema + PaginatedResponse | 已完成 |
 | storage | MinIO S3 封装 | 已完成 |
-| parsing | BaseParser + MockParser (pymupdf4llm) + MinerU stub | 已完成 |
+| parsing | BaseParser + `pymupdf4llm` 默认解析器 + MinerU / PaddleOCR API 解析器 | 已完成 |
 | cleaning | split_into_sections (H1→H2→全文 fallback) | 已完成 |
 | splitters | HybridHeadingRecursiveChunker + tiktoken | 已完成 |
 | llm | OpenAI 兼容客户端 + 3x 重试 + 用量回调 | 已完成 |
@@ -57,10 +57,10 @@
 
 | 模块 | 内容 | 状态 |
 |------|------|------|
-| 框架 | Next.js 15 + TypeScript + Tailwind + shadcn/ui (15 组件) | 已完成 |
+| 框架 | Next.js 16 + TypeScript + Tailwind + shadcn/ui (15 组件) | 已完成 |
 | 核心 | API Client (JWT 自动刷新) + WebSocket (自动重连) + Auth Context | 已完成 |
 | 布局 | 侧边栏 + 项目 Tab 导航 + 任务浮窗 + 状态徽章 | 已完成 |
-| 页面 | 21 个页面 (含四栏清洗工作台 + CodeMirror + PDF 预览) | 已完成 |
+| 页面 | 21 个页面 (含三栏清洗工作台 + CodeMirror + PDF 预览) | 已完成 |
 | 构建 | npm run build 零错误通过 | 已完成 |
 
 #### 基础设施 (infra/)
@@ -73,7 +73,7 @@
 
 #### 已验证
 
-- API 启动正常，130 条路由加载
+- API 启动正常，133 条路由加载
 - `POST /api/auth/login` 登录成功，返回 JWT
 - `GET /api/auth/me` 认证端点正常
 - `GET /api/projects/` 返回种子项目"压气机知识抽取"
@@ -83,15 +83,21 @@
 
 - `bcrypt` 需要 <4.1 版本以兼容 passlib（已在环境中降级，但 pyproject.toml 未固定版本）
 - Docker 端口映射使用非标准端口 (PG:5433, Redis:6380, MinIO:9002/9003)，因本机已有占用
-- MinerU 解析器为 stub，实际 PDF 解析使用 pymupdf4llm mock
+- 外部解析器（MinerU / PaddleOCR）虽已接入 ParserProfile，但真实服务联调仍依赖具体部署环境
 
 ---
 
-### 测试阶段：进行中 (2026-04-07 ~ 至今)
+### 测试修复阶段：进行中 (2026-04-07 ~ 至今)
 
-**34 个 Issue 已修复 | 14 个文件变更待提交**
+**34 个 Issue 已记录并回灌到 R1 基线**
 
 详见 `docs/r1-testing-issues.md`。
+
+#### 当前判定
+
+- R1 不再以“初版开发完成”作为完成定义，而以“主链路端到端验收完成”作为完成定义。
+- 已通过测试并完成大量修复的部分集中在认证、配置、文档上传/解析、清洗工作台、切分。
+- 尚未完成最终验收的部分为 LLM 生成、审核→提升、导出下载验证。
 
 #### 测试进度
 

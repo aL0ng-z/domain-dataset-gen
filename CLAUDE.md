@@ -6,12 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Compressor Knowledge Extraction Platform** — a web-based platform for extracting domain knowledge from PDF textbooks/manuals on compressor (压气机) design, producing fine-tuning datasets and evaluation benchmarks. Designed for university research labs (3-20 users), not commercial SaaS.
 
-The engineering plan is in `compressor-knowledge-platform-engineering-plan.md` (V2).
+The engineering plan is in `docs/plans/compressor-knowledge-platform-engineering-plan.md` (V2.1).
+
+Current status: R1 initial implementation is complete, but the project is still in test-hardening. Authentication, configuration, upload/parse, cleaning, and chunking have been exercised heavily; generation, review/promotion, and export still define final R1 acceptance.
 
 ### Core Pipeline
 
 ```
-Upload PDF → Parse (MinerU) → Clean/Verify (Section-level) → Chunk → LLM Generate Candidates → Human Review → CuratedItem → Dataset/Benchmark Export
+Upload PDF → Parse (via ParserProfile: `pymupdf4llm` / MinerU / PaddleOCR) → Clean/Verify (Section-level) → Chunk → LLM Generate Candidates → Human Review → CuratedItem → Dataset/Benchmark Export
 ```
 
 ### Key Domain Objects
@@ -27,28 +29,28 @@ Document → Section → Chunk → Candidate → CuratedItem → Dataset / Bench
 
 ## Tech Stack
 
-- **Frontend**: Next.js (App Router) + TypeScript + Tailwind CSS + shadcn/ui — in `apps/web/`
+- **Frontend**: Next.js 16 (App Router) + TypeScript + Tailwind CSS + shadcn/ui — in `apps/web/`
 - **Backend**: FastAPI + Pydantic + SQLAlchemy 2.x + Alembic — in `apps/api/`
 - **Database**: PostgreSQL
 - **Cache/Tasks**: Redis + FastAPI BackgroundTasks (MVP); Celery for Phase 2
 - **File Storage**: MinIO (S3-compatible)
-- **Document Parsing**: MinerU (primary); PaddleOCR/PP-StructureV3 (Phase 2 fallback)
+- **Document Parsing**: `pymupdf4llm` default local parser; MinerU / PaddleOCR available through `ParserProfile`
 - **LLM**: OpenAI-compatible gateway (vLLM or external providers)
 
-## Planned Repository Structure
+## Repository Structure
 
 ```
 apps/web/          # Next.js frontend
 apps/api/          # FastAPI backend
-workers/           # Async task runners (parse, cleaning, generation, export)
 libs/domain/       # DTOs, schemas, domain objects
-libs/parsing/      # MinerU / PaddleOCR wrappers
+libs/parsing/      # pymupdf4llm / MinerU / PaddleOCR wrappers
 libs/cleaning/     # Section splitting, markdown rendering, LLM check
 libs/splitters/    # Chunking strategies
 libs/llm/          # LLM provider adapter
 libs/storage/      # MinIO / S3 wrapper
 infra/docker/      # Docker Compose deployment
-infra/migrations/  # Alembic migrations
+apps/api/app/workers/ # Async task runners (parse, cleaning, generation, export)
+apps/api/migrations/  # Alembic migrations
 ```
 
 ## Architecture Decisions
@@ -68,7 +70,7 @@ infra/migrations/  # Alembic migrations
 
 ## Development Log
 
-每次完成开发任务（阶段性里程碑，非微小步骤）后，必须更新项目根目录的 `dev-log.md`，内容包括：
+每次完成开发任务（阶段性里程碑，非微小步骤）后，必须更新 `docs/logs/dev-log.md`，内容包括：
 - 项目总览状态表（R1/R2/R3/R4）
 - 当前 Release 的逐模块详细进度
 - 已知问题

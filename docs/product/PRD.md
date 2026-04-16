@@ -1,9 +1,10 @@
 # 领域知识抽取与数据资产平台 — 产品需求文档
 
-> Version: 1.0
-> Date: 2026-04-04
-> Status: Final
+> Version: 1.1
+> Date: 2026-04-13
+> Status: Active Baseline
 > Base: PRD-enhanced-platform-claude.md + PRD-enhanced-platform-codex.md 合并
+> Alignment: 已根据 R1 初版实现后的测试与缺陷修复结果更新，反映当前 R1 真实基线
 
 ---
 
@@ -53,7 +54,7 @@
 ### 2.2 典型场景
 
 **场景 A：从教材中抽取"设计流程"知识**
-上传《航空发动机风扇压气机设计》→ MinerU 解析 → 按章节清洗校核 → 按标题切分 → 生成"设计流程步骤""关键考虑因素"等知识条目 → 专家修订 → 导出为 QA 数据集。
+上传《航空发动机风扇压气机设计》→ 按 ParserProfile 解析（默认 `pymupdf4llm`，也可对接 MinerU / PaddleOCR）→ 按章节清洗校核 → 按标题切分 → 生成"设计流程步骤""关键考虑因素"等知识条目 → 专家修订 → 导出为 QA 数据集。
 
 **场景 B：从手册中抽取"参数选取原则"构建评测基准**
 从手册中抽取某类设计参数的选取原则 → 保留页码与原文证据 → 生成规范表述的知识条目 → 整理成 benchmark case → 配置 rubric → 运行 LLM Judge 自动评测 → 对比不同模型表现。
@@ -183,10 +184,10 @@ Document → ParseJob → Section → Chunk → Candidate → CuratedItem → Da
 
 ```
 1. 创建项目 → 配置 parser / model / prompt / chunk profile
-2. 上传 PDF → 系统计算 hash 去重 → 持久化到对象存储
-3. 选择 ParserProfile → 异步解析 → 产出 raw markdown + 结构信息 + 页面映射
+2. 上传 PDF → 系统计算 hash 并记录 → 持久化到对象存储（允许重复上传，同名自动重命名）
+3. 选择 ParserProfile（默认 `pymupdf4llm`，也可配置 MinerU / PaddleOCR）→ 异步解析 → 产出 raw markdown + 结构信息 + 页面映射
 4. 自动按 heading 生成 Section → 进入清洗工作台
-5. 用户认领 section → 四栏对照清洗 → 评论 → 提交 → reviewer 审核
+5. 用户认领 section → 三栏工作台清洗 → 评论 → 提交 → reviewer 审核
 6. 基于通过审核的 section → 选择 ChunkProfile → 执行切分
 7. 选择 PromptTemplate + ModelConfig → LLM 按模板生成 Candidate → 记录证据跨度
 8. reviewer 对 Candidate 做证据判定（supported / partially / unsupported / out_of_scope）
@@ -265,7 +266,7 @@ queued → processing → completed / failed / cancelled
 **能力清单**：
 
 - **模型配置（ModelConfig）**：多 Provider（OpenAI-compatible / Ollama / vLLM）、多用途（text / judge / embedding）、连通性测试、项目默认模型
-- **解析器配置（ParserProfile）**：MinerU / PaddleOCR 参数配置、项目默认 parser
+- **解析器配置（ParserProfile）**：`pymupdf4llm` / MinerU / PaddleOCR 参数配置、项目默认 parser
 - **切分配置（ChunkProfile）**：多策略选择（hybrid_heading_recursive / fixed_length / recursive_separator / custom）、参数调整、表格/公式保留开关
 - **导出配置（ExportProfile）**：格式选择、字段映射、平衡策略、train/test 分割、下游框架配置、审核门控
 - **任务策略（TaskPolicy）**：并发数、重试次数、超时、优先级
@@ -373,11 +374,15 @@ POST       /api/projects/{pid}/clone-config-from/{source_pid}
 **能力清单**：
 
 - PDF 上传 + magic bytes 校验 + 大小限制
-- 文件 SHA256 去重
+- 文件 SHA256 记录
+- 允许重复上传同一 PDF，同名文件自动重命名
+- 上传阶段快速提取页数
 - 原始文件持久化到 MinIO
 - 选择 ParserProfile 发起异步解析
 - 解析产出：raw markdown + JSON 结构 + 页面映射
+- 默认解析器为 `pymupdf4llm`；MinerU / PaddleOCR 通过 API 方式接入
 - 解析失败重试
+- 多条已完成 ParseJob 时，可显式选择其中一条进入清洗
 - Parser 对比视图（同文档多次 parse 结果并排对比，R3）
 
 **数据模型**：
@@ -430,20 +435,20 @@ GET  /api/parse-jobs/{jid}
 
 清洗工作台是本平台最核心的差异化页面。解析结果必须经过人工确认，再进入切分。
 
-**四栏布局**：
+**三栏布局**：
 
 | 栏 | 内容 | 交互 |
 |----|------|------|
-| 左栏 | 原 PDF（PDF.js 渲染） | 页码跳转，当前 section 页面高亮 |
-| 中左 | 原始 Markdown（只读） | 解析器原始输出，用于对照 |
-| 中右 | 清洗后 Markdown（可编辑） | 语法高亮，接受/拒绝 LLM 建议 |
-| 右栏 | 预览 + 评论 + 审核操作 | Markdown 渲染预览，评论列表，accept/reject |
+| 左栏 | 原 PDF（iframe / PDF 预览） | 页码跳转，当前 section 页面高亮 |
+| 中栏 | Markdown 实时预览 | 渲染当前清洗结果，用于快速校对 |
+| 右栏 | 编辑器 + 评论 + 审核操作 | 编辑 cleaned markdown、查看评论、提交 / accept / reject |
 
 **能力清单**：
 
 - 自动按一级 heading 切分为 Section
 - Section 列表 + 状态展示 + 批量状态视图
 - Section 认领 / 租约（同一时刻只有一人可编辑）
+- 多条解析记录时可先选择清洗来源 ParseJob
 - Section 评论（parse_issue / ocr_issue / layout_issue / general）
 - Section revision 记录（human_edit / llm_suggestion / merge）
 - reviewer accept / reject
@@ -1187,7 +1192,7 @@ body: {
 /projects/[id]/settings                    # 项目控制中心（Tab: 模型/解析器/切分/导出/任务策略）
 /projects/[id]/documents                   # 文档列表
 /projects/[id]/documents/[did]             # 文档详情（解析状态、section 列表、chunk 列表）
-/projects/[id]/documents/[did]/clean       # 清洗工作台（四栏）
+/projects/[id]/documents/[did]/clean       # 清洗工作台（三栏）
 /projects/[id]/documents/[did]/chunks      # Chunk 列表
 /projects/[id]/documents/[did]/chunks/[cid]# Chunk 详情 + 生成面板
 /projects/[id]/templates                   # Prompt Template 中心
@@ -1220,12 +1225,12 @@ body: {
 
 | 层 | 技术 |
 |----|------|
-| 前端 | Next.js 15 (App Router) + TypeScript + Tailwind CSS + shadcn/ui |
+| 前端 | Next.js 16 (App Router) + TypeScript + Tailwind CSS + shadcn/ui |
 | 后端 | FastAPI + Pydantic v2 + SQLAlchemy 2.x + Alembic |
 | 数据库 | PostgreSQL 16 |
 | 缓存/任务 | Redis 7 + FastAPI BackgroundTasks（R1）→ Celery（R2+） |
 | 文件存储 | MinIO（S3-compatible） |
-| 文档解析 | MinerU（主）→ PaddleOCR（R3 兜底） |
+| 文档解析 | `pymupdf4llm`（默认本地解析） / MinerU / PaddleOCR（通过 ParserProfile 配置） |
 | LLM | OpenAI-compatible gateway |
 | 认证 | JWT（PyJWT） |
 | Python 包管理 | uv workspace |
@@ -1271,9 +1276,9 @@ body: {
 |------|---------|
 | 认证与项目 | JWT 登录、项目 CRUD |
 | 项目控制中心 | ModelConfig / ParserProfile / ChunkProfile / ExportProfile / TaskPolicy CRUD + 设置页面 |
-| 文档接入 | PDF 上传、hash 去重、MinIO 持久化 |
-| 文档解析 | MinerU 集成、异步解析、状态追踪 |
-| 清洗工作台 | 四栏布局、Section 自动划分、编辑/提交/审核 |
+| 文档接入 | PDF 上传、hash 记录、允许重复上传（同名自动重命名）、MinIO 持久化 |
+| 文档解析 | `pymupdf4llm` 默认解析 + MinerU / PaddleOCR 接入、异步解析、状态追踪 |
+| 清洗工作台 | 三栏布局、Section 自动划分、编辑/提交/审核 |
 | Chunking | hybrid_heading_recursive 默认策略 + ChunkProfile 绑定 |
 | Prompt Template 中心 | knowledge_extraction + qa_generation + benchmark_case 模板，版本化 + 试跑 |
 | Candidate 生成 | single_chunk 模式生成 + 证据审核 |
@@ -1285,6 +1290,11 @@ body: {
 | Docker Compose | 一键部署 |
 
 **不含**（后移到 R2）：Taxonomy 分类树、Playground、评测中心、AI 质量评分、section_context 模式
+
+**当前状态对齐（2026-04-13）**：
+- R1 初版实现已完成，并在真实测试中进入集中修复阶段。
+- 已完成实测修复的重点集中在认证、项目配置、文档上传/解析、清洗工作台、切分链路。
+- R1 的最终验收仍以主链路后半段联调通过为准：LLM 生成、审核→提升、导出下载验证。
 
 ### Release 2: Lab Team
 
@@ -1336,7 +1346,7 @@ body: {
 | 项目控制中心 | 首发核心 | R1 |
 | 模型配置中心 | 首发核心 | R1 |
 | Prompt Template 中心 | 首发核心 | R1 |
-| 四栏清洗工作台 | 首发核心 | R1 |
+| 三栏清洗工作台 | 首发核心 | R1 |
 | Candidate 审核 + CuratedItem | 首发核心 | R1 |
 | 任务中心 | 首发核心 | R1 |
 | Token 用量追踪 | 首发核心 | R1 |

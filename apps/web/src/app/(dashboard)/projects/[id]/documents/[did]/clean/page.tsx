@@ -117,13 +117,59 @@ export default function CleaningWorkbenchPage() {
       .catch(() => setComments([]));
   }, [selectedSectionId]);
 
-  // Heartbeat for lease
+  // Acquire lease on selection, then keep it alive; release on switch/unmount.
   useEffect(() => {
     if (!selectedSectionId) return;
-    const interval = setInterval(() => {
-      api.post(`/sections/${selectedSectionId}/lease/heartbeat`).catch(() => {});
-    }, 30000);
-    return () => clearInterval(interval);
+
+    let isActive = true;
+    let leaseAcquired = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const stopHeartbeat = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+
+    const releaseLease = async () => {
+      if (!leaseAcquired) return;
+      leaseAcquired = false;
+      try {
+        await api.post(`/sections/${selectedSectionId}/lease/release`);
+      } catch {
+        // Ignore release failures during navigation/unmount.
+      }
+    };
+
+    const acquireLease = async () => {
+      try {
+        await api.post(`/sections/${selectedSectionId}/lease/acquire`);
+        leaseAcquired = true;
+
+        if (!isActive) {
+          await releaseLease();
+          return;
+        }
+
+        interval = setInterval(() => {
+          api.post(`/sections/${selectedSectionId}/lease/heartbeat`).catch(() => {
+            stopHeartbeat();
+            leaseAcquired = false;
+          });
+        }, 30000);
+      } catch {
+        // If acquire fails, do not start heartbeat polling.
+      }
+    };
+
+    void acquireLease();
+
+    return () => {
+      isActive = false;
+      stopHeartbeat();
+      void releaseLease();
+    };
   }, [selectedSectionId]);
 
   const handleSave = useCallback(async () => {

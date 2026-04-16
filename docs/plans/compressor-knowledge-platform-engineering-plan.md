@@ -1,9 +1,10 @@
 # 领域知识抽取与数据资产平台 — 工程开发计划
 
-> Version: 2.0
-> Date: 2026-04-04
-> Status: Draft
-> 基于: PRD.md V1.0
+> Version: 2.1
+> Date: 2026-04-13
+> Status: Active Baseline
+> 基于: docs/product/PRD.md V1.1
+> Alignment: 已回灌 R1 测试阶段的问题修复结果，用于同步实际落地状态
 
 ---
 
@@ -16,19 +17,19 @@
 ### 1.2 核心链路
 
 ```
-Upload PDF → Parse (MinerU) → Clean/Verify (Section) → Chunk → LLM Generate → Human Review → CuratedItem → Dataset/Benchmark Export
+Upload PDF → Parse (`pymupdf4llm` / MinerU / PaddleOCR via ParserProfile) → Clean/Verify (Section) → Chunk → LLM Generate → Human Review → CuratedItem → Dataset/Benchmark Export
 ```
 
 ### 1.3 技术栈
 
 | 层 | 技术 |
 |----|------|
-| 前端 | Next.js 15 (App Router) + TypeScript + Tailwind CSS + shadcn/ui |
+| 前端 | Next.js 16 (App Router) + TypeScript + Tailwind CSS + shadcn/ui |
 | 后端 | FastAPI + Pydantic v2 + SQLAlchemy 2.x + Alembic |
 | 数据库 | PostgreSQL 16 |
 | 缓存/任务 | Redis 7 + FastAPI BackgroundTasks (R1) → Celery (R2+) |
 | 文件存储 | MinIO (S3-compatible) |
-| 文档解析 | MinerU (主) → PaddleOCR (R3 兜底) |
+| 文档解析 | `pymupdf4llm`（默认本地解析） / MinerU / PaddleOCR（通过 ParserProfile 配置） |
 | LLM | OpenAI-compatible gateway |
 | 认证 | JWT (PyJWT) |
 | 包管理 | uv workspace |
@@ -59,6 +60,13 @@ infra/migrations/   # Alembic 迁移
 | R3 | Quality Automation | ~9 周 (4 Sprint) | 质量自动化，不扩大边界 |
 | R4 | Optional Extensions | 待定 | 多轮对话、GA 多样性、Arena 盲测 |
 
+### 1.6 当前执行状态（截至 2026-04-13）
+
+- R1 初版开发已经完成，当前处于测试回灌与缺陷修复期，而不是稳定验收完成状态。
+- `docs/r1-testing-issues.md` 已记录 34 个测试问题；问题主要集中在前后端接口契约、页面状态流转、性能阻塞、解析与清洗链路 UX。
+- 当前已验证通过的链路集中在认证、项目配置、文档上传、解析、清洗、切分。
+- 当前仍作为 R1 收尾验收项的链路为：LLM 生成、Candidate 审核→CuratedItem 提升、Dataset/Benchmark 导出下载验证。
+
 ---
 
 ## 2. Release 1: Lab Pilot（~13 周）
@@ -69,9 +77,9 @@ infra/migrations/   # Alembic 迁移
 |------|---------|
 | 认证与项目 | JWT 登录、项目 CRUD、角色权限 |
 | 项目控制中心 | ModelConfig / ParserProfile / ChunkProfile / ExportProfile / TaskPolicy CRUD + 设置页 |
-| 文档接入 | PDF 上传、SHA256 去重、MinIO 持久化 |
-| 文档解析 | MinerU 集成、异步解析、状态追踪 |
-| 清洗工作台 | 四栏布局、Section 自动划分、编辑/提交/审核、租约、评论 |
+| 文档接入 | PDF 上传、SHA256 记录、允许重复上传（同名自动重命名）、MinIO 持久化 |
+| 文档解析 | `pymupdf4llm` 默认解析 + MinerU / PaddleOCR API 接入、异步解析、状态追踪 |
+| 清洗工作台 | 三栏布局、Section 自动划分、编辑/提交/审核、租约、评论 |
 | Chunking | hybrid_heading_recursive 默认策略 + ChunkProfile 绑定 |
 | Prompt Template 中心 | knowledge_extraction + qa_generation + benchmark_case 模板，版本化 + 试跑 |
 | Candidate 生成 | single_chunk 模式生成 + 证据审核 |
@@ -84,6 +92,11 @@ infra/migrations/   # Alembic 迁移
 
 **R1 不含**（后移到 R2）：Taxonomy 分类树、Playground、评测中心、AI 质量评分、section_context 模式
 
+**R1 当前判定**：
+- “初版实现完成”不等于“R1 验收完成”。
+- 以 `docs/r1-testing-issues.md` 为准，R1 已进入测试回灌阶段，前半段链路完成了大批修复。
+- 生成、审核、导出链路仍保留为 R1 收尾项，需在测试通过后才能视为 R1 完成。
+
 ---
 
 ### 2.2 Sprint 0：基础设施与项目骨架（第 1~1.5 周）
@@ -94,7 +107,7 @@ infra/migrations/   # Alembic 迁移
 
 **仓库初始化**
 - `uv` workspace 初始化：根 `pyproject.toml` + 各 `libs/` 和 `apps/api` 子包
-- Next.js 15 App Router 初始化：`apps/web/`，配置 TypeScript + Tailwind CSS + shadcn/ui
+- Next.js 16 App Router 初始化：`apps/web/`，配置 TypeScript + Tailwind CSS + shadcn/ui
 - ESLint / Ruff / pre-commit 配置
 - `.gitignore`、`README.md`
 
@@ -197,18 +210,19 @@ infra/migrations/   # Alembic 迁移
 
 ### 2.5 Sprint 3：文档解析 + 任务中心 + WebSocket（第 4.5~6 周）
 
-**目标**：PDF 能被 MinerU 异步解析，用户能在任务中心看到实时进度。
+**目标**：PDF 能按 ParserProfile 异步解析，用户能在任务中心看到实时进度。
 
 #### 交付物
 
-**MinerU 集成** (`libs/parsing/`)
-- MinerU Python wrapper：PDF → raw markdown + JSON 结构 + page mapping
-- MinerU Docker 容器配置（GPU 可选）
+**解析器系统集成** (`libs/parsing/`)
+- `pymupdf4llm` 本地解析器：默认路径，直接处理 PDF bytes
+- MinerU / PaddleOCR API parser：通过 `ParserProfile` 配置 API 地址和密钥
+- 统一 parser interface：PDF → raw markdown + JSON 结构 + page mapping
 - 错误处理 + 超时控制
 
 **异步解析流程** (`workers/`)
 - `POST /api/documents/{did}/parse`：创建 ParseJob + Task → BackgroundTask
-- Worker：从 MinIO 下载 PDF → 调用 MinerU → 上传结果 → 更新状态
+- Worker：从 MinIO 下载 PDF → 调用选定 parser → 上传结果 → 更新状态
 - Document 状态机：uploaded → parsing → parsed / parse_failed
 - `GET /api/documents/{did}/parse-jobs` + `GET /api/parse-jobs/{jid}`
 
@@ -227,15 +241,15 @@ infra/migrations/   # Alembic 迁移
 - WebSocket 连接 + 实时状态更新
 
 #### 风险
-MinerU 环境搭建可能遇到依赖问题（尤其 GPU 驱动）。**建议在 Sprint 0 就开始调研 MinerU Docker 镜像**。
+外部解析器（MinerU / PaddleOCR）联调可能受服务部署、网络和鉴权影响。**默认保留 `pymupdf4llm` 作为本地可用基线路径**。
 
 ---
 
 ### 2.6 Sprint 4：清洗工作台（第 6~7.5 周）
 
-**目标**：解析完成后自动生成 Section，用户能在四栏工作台中编辑、提交、审核。
+**目标**：解析完成后自动生成 Section，用户能在清洗工作台中编辑、提交、审核。
 
-> 这是 R1 中 UI 最复杂的页面，也是平台最核心的差异化功能。
+> 这是 R1 中 UI 最复杂的页面，也是平台最核心的差异化功能。测试阶段已从四栏收敛为三栏实现。
 
 #### 交付物
 
@@ -262,17 +276,16 @@ MinerU 环境搭建可能遇到依赖问题（尤其 GPU 驱动）。**建议在
 - `POST/GET /api/sections/{sid}/comments`
 - 评论类型：parse_issue / ocr_issue / layout_issue / general
 
-**前端：四栏清洗工作台**
+**前端：三栏清洗工作台**
 - `/projects/[id]/documents/[did]/clean`
-- 左栏：PDF.js 渲染原始 PDF（页码跳转，section 对应页高亮）
-- 中左栏：原始 Markdown 只读展示
-- 中右栏：cleaned_markdown 可编辑（CodeMirror / Monaco）
-- 右栏：Markdown 渲染预览 + 评论列表 + 审核操作
+- 左栏：原 PDF 预览（支持页码跳转，section 对应页高亮）
+- 中栏：Markdown 实时预览
+- 右栏：cleaned_markdown 编辑器 + 评论列表 + 审核操作
 - Section 列表侧边栏 + 状态筛选
 - 租约 UI：编辑锁定提示、心跳保活
 
 #### 风险
-四栏布局的响应式设计和 PDF.js 集成复杂度较高。**建议前端在 Sprint 3 就开始 PDF.js 技术预研**。
+三栏工作台仍然涉及 PDF 预览、Markdown 渲染与编辑器联动，复杂度较高。测试阶段需要持续关注滚动、缓存和大文档性能。
 
 ---
 
@@ -449,7 +462,7 @@ Sprint 0 → Sprint 1 → Sprint 2 → Sprint 3 → Sprint 4 → Sprint 5 → Sp
 | 时间点 | 验证内容 |
 |--------|---------|
 | Sprint 2 结束 | Auth 全流程 + 项目配置 CRUD + PDF 上传到 MinIO |
-| Sprint 3 结束 | PDF 上传 → MinerU 解析 → 产出 markdown（**首次端到端贯通**） |
+| Sprint 3 结束 | PDF 上传 → 选定 ParserProfile 解析 → 产出 markdown（**首次端到端贯通**） |
 | Sprint 4 结束 | 解析 → Section 自动划分 → 编辑提交审核（清洗链路贯通） |
 | Sprint 5 结束 | Section → Chunk 切分 + Prompt 试跑调通 LLM 调用 |
 | Sprint 6 结束 | Chunk → Generate → Review → CuratedItem（**知识生产闭环贯通**） |
@@ -463,8 +476,8 @@ Sprint 0 → Sprint 1 → Sprint 2 → Sprint 3 → Sprint 4 → Sprint 5 → Sp
 | S0 | FastAPI 骨架 + Alembic | Next.js 骨架 + shadcn | Docker Compose + libs/ |
 | S1 | Auth API + Project API | 登录页 + 项目列表 | DB 迁移 + domain DTOs |
 | S2 | 控制中心 5 个 Profile API | 设置页 Tab UI + 文档上传 | Storage wrapper + 文档 API |
-| S3 | 解析 Worker + ParseJob API | 任务面板 + WebSocket 前端 | libs/parsing/ MinerU wrapper |
-| S4 | Section API + 租约 + 评论 | 四栏清洗工作台 UI | libs/cleaning/ heading 切分 |
+| S3 | 解析 Worker + ParseJob API | 任务面板 + WebSocket 前端 | libs/parsing/ parser system |
+| S4 | Section API + 租约 + 评论 | 三栏清洗工作台 UI | libs/cleaning/ heading 切分 |
 | S5 | Chunking API + Template API | Chunk 列表 + Template 编辑页 | libs/splitters/ + libs/llm/ |
 | S6 | 生成 Worker + Candidate API | 生成面板 + 审核 UI | CuratedItem API + Evidence |
 | S7 | 导出引擎 + Snapshot | 导出页 + 监控页 | Dataset/Benchmark API |
@@ -630,7 +643,7 @@ Sprint 0 → Sprint 1 → Sprint 2 → Sprint 3 → Sprint 4 → Sprint 5 → Sp
 | 风险 | 影响 Sprint | 应对措施 |
 |------|------------|---------|
 | MinerU 环境/GPU 依赖复杂 | R1-S3 | Sprint 0 提前调研 Docker 镜像；准备无 GPU fallback 模式 |
-| PDF.js 四栏布局复杂度 | R1-S4 | Sprint 3 前端做 PDF.js 技术 spike；考虑先用简化两栏再迭代 |
+| 清洗工作台布局与 PDF 预览联动复杂度 | R1-S4 | 先保证三栏版本稳定，再逐步优化滚动、缓存与长文档体验 |
 | LLM 结构化输出不稳定 | R1-S6 | libs/llm/ 加入输出解析 + 重试 + fallback；Pydantic 校验 |
 | WebSocket 连接管理 | R1-S3~S7 | Redis pub/sub 解耦；前端重连机制 |
 | 大文档（500+ 页）性能 | R1-S3~S5 | 流式处理；分页加载；异步任务避免阻塞 |
