@@ -22,6 +22,12 @@ from app.schemas.chunk import ChunkResponse
 from app.config import settings
 from app.services.document_service import DocumentService
 from app.services.task_service import TaskService
+from app.schemas.cleaned_version import (
+    CleanedDocumentVersionResponse, CleanedFinalReviewRequest,
+)
+from app.schemas.section import BulkAssignRequest
+from app.services.clean_version_service import CleanVersionService
+from app.services.section_service import SectionService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
 from storage import get_storage_client
@@ -408,3 +414,75 @@ async def trigger_generate_batch(
 
     background_tasks.add_task(_run)
     return {"task_id": str(task.id), "message": "批量生成任务已创建"}
+
+
+@router.post("/{did}/cleaning/assign", status_code=status.HTTP_200_OK)
+async def bulk_assign_sections(
+    pid: uuid.UUID,
+    did: uuid.UUID,
+    body: BulkAssignRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
+):
+    doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+
+    service = SectionService(db)
+    total_assigned = 0
+    for assignment in body.assignments:
+        n = await service.bulk_assign(assignment.section_ids, assignment.assignee_id, current_user.id)
+        total_assigned += n
+
+    # Flip document.clean_status if still not_started
+    if doc.clean_status == "not_started":
+        doc.clean_status = "section_planned"
+
+    await db.commit()
+    return {"assigned": total_assigned}
+
+
+@router.post("/{did}/cleaning/merge", response_model=CleanedDocumentVersionResponse, status_code=status.HTTP_201_CREATED)
+async def merge_clean_version(
+    pid: uuid.UUID,
+    did: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
+):
+    service = CleanVersionService(db)
+    try:
+        version = await service.create_merged_version(did, current_user.id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    await db.commit()
+    return version
+
+
+@router.post("/{did}/cleaning/final-review", response_model=CleanedDocumentVersionResponse)
+async def final_review_clean_version(
+    pid: uuid.UUID,
+    did: uuid.UUID,
+    body: CleanedFinalReviewRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
+):
+    service = CleanVersionService(db)
+    try:
+        version = await service.final_review(
+            body.version_id, current_user.id, body.action, body.reason, body.comment,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    await db.commit()
+    return version
+
+
+@router.get("/{did}/cleaning/versions", response_model=list[CleanedDocumentVersionResponse])
+async def list_clean_versions(
+    pid: uuid.UUID,
+    did: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
+):
+    service = CleanVersionService(db)
+    return await service.list_versions(did)
