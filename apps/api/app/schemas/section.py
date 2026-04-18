@@ -17,6 +17,12 @@ class SectionResponse(BaseSchema):
     cleaned_markdown: str | None
     status: str
     cleaned_by: uuid.UUID | None
+    assignment_status: str
+    assigned_to: uuid.UUID | None
+    assigned_by: uuid.UUID | None
+    assigned_at: datetime | None
+    completed_at: datetime | None
+    return_reason: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -60,3 +66,20 @@ class SectionLeaseResponse(BaseSchema):
     acquired_at: datetime
     expires_at: datetime
     released_at: datetime | None
+
+
+class SectionAssignRequest(BaseModel):
+    assignee_id: uuid.UUID
+
+
+class BulkAssignmentItem(BaseModel):
+    section_ids: list[uuid.UUID]
+    assignee_id: uuid.UUID
+
+
+class BulkAssignRequest(BaseModel):
+    assignments: list[BulkAssignmentItem]
+
+
+class SectionReturnRequest(BaseModel):
+    reason: str

@@ -13,6 +13,9 @@ class DocumentResponse(BaseSchema):
     status: str
     page_count: int | None
     uploaded_by: uuid.UUID
+    clean_status: str
+    active_clean_version_id: uuid.UUID | None
+    active_chunk_set_id: uuid.UUID | None
     created_at: datetime
     updated_at: datetime
 
