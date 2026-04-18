@@ -11,6 +11,7 @@ from app.schemas.section import (
     SectionCommentCreate, SectionCommentResponse, SectionLeaseResponse,
     SectionResponse, SectionRevisionResponse, SectionReview, SectionUpdate,
 )
+from app.schemas.section import SectionAssignRequest, SectionReturnRequest
 from app.services.section_service import SectionService
 from domain.enums import UserRole
 
@@ -147,3 +148,48 @@ async def list_revisions(
 ):
     service = SectionService(db)
     return await service.list_revisions(sid)
+
+
+@router.post("/{sid}/assign", response_model=SectionResponse)
+async def assign_section_endpoint(
+    sid: uuid.UUID,
+    body: SectionAssignRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_role(UserRole.reviewer))],
+):
+    service = SectionService(db)
+    section = await service.assign_section(sid, body.assignee_id, current_user.id)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
+    return section
+
+
+@router.post("/{sid}/complete", response_model=SectionResponse)
+async def complete_section_endpoint(
+    sid: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    service = SectionService(db)
+    is_admin = current_user.role in ("admin", "reviewer")
+    try:
+        section = await service.complete_section(sid, current_user.id, is_admin)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
+    return section
+
+
+@router.post("/{sid}/return", response_model=SectionResponse)
+async def return_section_endpoint(
+    sid: uuid.UUID,
+    body: SectionReturnRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_role(UserRole.reviewer))],
+):
+    service = SectionService(db)
+    section = await service.return_section(sid, body.reason)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
+    return section
