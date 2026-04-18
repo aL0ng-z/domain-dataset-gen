@@ -10,6 +10,10 @@ from app.database import Base
 cleaning_job_status_enum = ENUM("queued", "processing", "completed", "failed", name="cleaning_job_status", create_type=True)
 section_status_enum = ENUM("draft", "in_cleaning", "review_pending", "accepted", "rejected", name="section_status", create_type=True)
 comment_type_enum = ENUM("parse_issue", "ocr_issue", "layout_issue", "general", name="comment_type", create_type=True)
+section_assignment_status_enum = ENUM(
+    "unassigned", "assigned", "in_progress", "completed", "returned",
+    name="section_assignment_status", create_type=True,
+)
 
 
 class CleaningJob(Base):
@@ -37,6 +41,12 @@ class Section(Base):
     cleaned_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(section_status_enum, nullable=False, default="draft")
     cleaned_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    assignment_status: Mapped[str] = mapped_column(section_assignment_status_enum, nullable=False, server_default="unassigned")
+    assigned_to: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    assigned_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    return_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

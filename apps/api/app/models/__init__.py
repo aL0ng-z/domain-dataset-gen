@@ -11,3 +11,7 @@ from app.models.curated import CuratedItem, CuratedRevision, EvidenceLink  # noq
 from app.models.dataset import Dataset, DatasetItem, Benchmark, BenchmarkCase  # noqa: F401
 from app.models.export import Export, SnapshotManifest  # noqa: F401
 from app.models.task import Task, LlmUsageLog  # noqa: F401
+from app.models.cleaned_document_version import CleanedDocumentVersion  # noqa: F401
+from app.models.chunk_set import ChunkSet  # noqa: F401
+from app.models.generation_batch import GenerationBatch  # noqa: F401
+from app.models.review_record import ReviewRecord  # noqa: F401
