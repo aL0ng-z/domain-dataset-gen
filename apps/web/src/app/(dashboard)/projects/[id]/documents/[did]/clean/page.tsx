@@ -42,6 +42,9 @@ interface Section {
   locked_by_name?: string;
   raw_markdown?: string;
   cleaned_markdown?: string;
+  assignment_status: "unassigned" | "assigned" | "in_progress" | "completed" | "returned";
+  assigned_to: string | null;
+  return_reason?: string | null;
 }
 
 interface Comment {
@@ -50,6 +53,30 @@ interface Comment {
   comment_type: string;
   user_id: string;
   created_at: string;
+}
+
+interface CleanedVersion {
+  id: string;
+  document_id: string;
+  version: number;
+  section_count: number;
+  status: "draft" | "review_pending" | "accepted" | "rejected";
+  created_by: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  created_at: string;
+}
+
+interface ProjectMember {
+  user_id: string;
+  role: string;
+  username?: string;  // server sometimes returns this; guard for undefined
+}
+
+interface CurrentUser {
+  id: string;
+  username: string;
+  role: "admin" | "reviewer" | "editor" | "viewer";
 }
 
 export default function CleaningWorkbenchPage() {
@@ -67,6 +94,12 @@ export default function CleaningWorkbenchPage() {
   const [saving, setSaving] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [members, setMembers] = useState<ProjectMember[]>([]);
+  const [versions, setVersions] = useState<CleanedVersion[]>([]);
+  const [assignFilter, setAssignFilter] = useState<"all" | "mine" | "mine_pending" | "unassigned">("all");
+  const [selectedForAssign, setSelectedForAssign] = useState<Set<string>>(new Set());
+  const [assigneePick, setAssigneePick] = useState<string>("");
 
   // PDF URL: direct backend URL with auth token
   const pdfUrl = useMemo(() => {
@@ -91,6 +124,26 @@ export default function CleaningWorkbenchPage() {
   useEffect(() => {
     fetchSections();
   }, [fetchSections]);
+
+  useEffect(() => {
+    api.get<CurrentUser>("/auth/me")
+      .then((u) => {
+        setCurrentUser(u);
+        if (u.role === "editor") setAssignFilter("mine");
+      })
+      .catch(() => {});
+    api.get<ProjectMember[]>(`/projects/${projectId}/members`)
+      .then((m) => setMembers(m))
+      .catch(() => setMembers([]));
+  }, [projectId]);
+
+  const fetchVersions = useCallback(() => {
+    api.get<CleanedVersion[]>(`/projects/${projectId}/documents/${docId}/cleaning/versions`)
+      .then((v) => setVersions(v))
+      .catch(() => setVersions([]));
+  }, [projectId, docId]);
+
+  useEffect(() => { fetchVersions(); }, [fetchVersions]);
 
   // Auto-select first section when list loads and nothing is selected
   useEffect(() => {
@@ -117,13 +170,59 @@ export default function CleaningWorkbenchPage() {
       .catch(() => setComments([]));
   }, [selectedSectionId]);
 
-  // Heartbeat for lease
+  // Acquire lease on selection, then keep it alive; release on switch/unmount.
   useEffect(() => {
     if (!selectedSectionId) return;
-    const interval = setInterval(() => {
-      api.post(`/sections/${selectedSectionId}/lease/heartbeat`).catch(() => {});
-    }, 30000);
-    return () => clearInterval(interval);
+
+    let isActive = true;
+    let leaseAcquired = false;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const stopHeartbeat = () => {
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    };
+
+    const releaseLease = async () => {
+      if (!leaseAcquired) return;
+      leaseAcquired = false;
+      try {
+        await api.post(`/sections/${selectedSectionId}/lease/release`);
+      } catch {
+        // Ignore release failures during navigation/unmount.
+      }
+    };
+
+    const acquireLease = async () => {
+      try {
+        await api.post(`/sections/${selectedSectionId}/lease/acquire`);
+        leaseAcquired = true;
+
+        if (!isActive) {
+          await releaseLease();
+          return;
+        }
+
+        interval = setInterval(() => {
+          api.post(`/sections/${selectedSectionId}/lease/heartbeat`).catch(() => {
+            stopHeartbeat();
+            leaseAcquired = false;
+          });
+        }, 30000);
+      } catch {
+        // If acquire fails, do not start heartbeat polling.
+      }
+    };
+
+    void acquireLease();
+
+    return () => {
+      isActive = false;
+      stopHeartbeat();
+      void releaseLease();
+    };
   }, [selectedSectionId]);
 
   const handleSave = useCallback(async () => {
@@ -185,10 +284,103 @@ export default function CleaningWorkbenchPage() {
     }
   }, [selectedSectionId, newComment]);
 
+  const toggleAssignSelect = (sid: string) => {
+    setSelectedForAssign((prev) => {
+      const next = new Set(prev);
+      if (next.has(sid)) next.delete(sid); else next.add(sid);
+      return next;
+    });
+  };
+
+  const handleBulkAssign = useCallback(async () => {
+    if (!assigneePick || selectedForAssign.size === 0) {
+      toast.error("请选择章节和指派对象");
+      return;
+    }
+    try {
+      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/assign`, {
+        assignments: [{ section_ids: Array.from(selectedForAssign), assignee_id: assigneePick }],
+      });
+      toast.success("已分派");
+      setSelectedForAssign(new Set());
+      fetchSections();
+    } catch {
+      toast.error("分派失败");
+    }
+  }, [assigneePick, selectedForAssign, projectId, docId, fetchSections]);
+
+  const handleComplete = useCallback(async () => {
+    if (!selectedSectionId) return;
+    try {
+      await api.post(`/sections/${selectedSectionId}/complete`);
+      toast.success("已标记完成");
+      fetchSections();
+    } catch {
+      toast.error("标记完成失败");
+    }
+  }, [selectedSectionId, fetchSections]);
+
+  const handleReturn = useCallback(async () => {
+    if (!selectedSectionId) return;
+    const reason = window.prompt("请输入退回原因：");
+    if (!reason) return;
+    try {
+      await api.post(`/sections/${selectedSectionId}/return`, { reason });
+      toast.success("已退回");
+      fetchSections();
+    } catch {
+      toast.error("退回失败");
+    }
+  }, [selectedSectionId, fetchSections]);
+
+  const handleMerge = useCallback(async () => {
+    try {
+      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/merge`);
+      toast.success("已生成合并版本");
+      fetchVersions();
+    } catch {
+      toast.error("合并失败");
+    }
+  }, [projectId, docId, fetchVersions]);
+
+  const isAdmin = currentUser?.role === "admin" || currentUser?.role === "reviewer";
+
   const filteredSections = useMemo(() => {
-    if (statusFilter === "all") return sections;
-    return sections.filter((s) => s.status === statusFilter);
-  }, [sections, statusFilter]);
+    let base = sections;
+    if (assignFilter === "mine" && currentUser) {
+      base = base.filter((s) => s.assigned_to === currentUser.id);
+    } else if (assignFilter === "mine_pending" && currentUser) {
+      base = base.filter(
+        (s) => s.assigned_to === currentUser.id && s.assignment_status !== "completed"
+      );
+    } else if (assignFilter === "unassigned") {
+      base = base.filter((s) => s.assignment_status === "unassigned");
+    }
+    if (statusFilter !== "all") base = base.filter((s) => s.status === statusFilter);
+    return base;
+  }, [sections, assignFilter, statusFilter, currentUser]);
+
+  const completionStats = useMemo(() => {
+    const total = sections.length;
+    const completed = sections.filter((s) => s.assignment_status === "completed").length;
+    return { total, completed };
+  }, [sections]);
+
+  const latestVersion = versions[0];
+
+  const handleFinalReview = useCallback(async (action: "accept" | "reject") => {
+    if (!latestVersion) return;
+    const reason = action === "reject" ? window.prompt("驳回原因：") ?? undefined : undefined;
+    try {
+      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/final-review`, {
+        version_id: latestVersion.id, action, reason,
+      });
+      toast.success(action === "accept" ? "已通过" : "已驳回");
+      fetchVersions();
+    } catch {
+      toast.error("操作失败");
+    }
+  }, [latestVersion, projectId, docId, fetchVersions]);
 
   const isLockedByOther =
     selectedSection?.locked_by != null &&
@@ -219,6 +411,46 @@ export default function CleaningWorkbenchPage() {
               <PanelLeftCloseIcon className="size-3" />
             </Button>
           </div>
+          <div className="p-2 border-b space-y-2">
+            <div className="flex flex-wrap gap-1">
+              {(["all", "mine", "mine_pending", "unassigned"] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setAssignFilter(v)}
+                  className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                    assignFilter === v ? "bg-accent text-accent-foreground" : "bg-transparent"
+                  }`}
+                >
+                  {v === "all" ? "全部" : v === "mine" ? "分派给我" : v === "mine_pending" ? "我未完成" : "未分派"}
+                </button>
+              ))}
+            </div>
+            {isAdmin && (
+              <div className="space-y-1">
+                <select
+                  className="w-full rounded border px-2 py-1 text-xs bg-transparent"
+                  value={assigneePick}
+                  onChange={(e) => setAssigneePick(e.target.value)}
+                >
+                  <option value="">选择指派对象...</option>
+                  {members.map((m) => (
+                    <option key={m.user_id} value={m.user_id}>
+                      {m.username || m.user_id.slice(0, 8)} ({m.role})
+                    </option>
+                  ))}
+                </select>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="w-full text-xs"
+                  disabled={selectedForAssign.size === 0 || !assigneePick}
+                  onClick={handleBulkAssign}
+                >
+                  分派 {selectedForAssign.size} 个章节
+                </Button>
+              </div>
+            )}
+          </div>
           <div className="p-2 border-b">
             <select
               className="w-full rounded border px-2 py-1 text-xs bg-transparent"
@@ -235,30 +467,50 @@ export default function CleaningWorkbenchPage() {
           </div>
           <ScrollArea className="flex-1">
             <div className="p-1">
-              {filteredSections.map((section) => (
-                <button
-                  key={section.id}
-                  className={`w-full text-left rounded px-2 py-1.5 text-xs transition-colors ${
-                    selectedSectionId === section.id
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-muted"
-                  }`}
-                  onClick={() => setSelectedSectionId(section.id)}
-                >
-                  <div className="flex items-center gap-1 justify-between">
-                    <span className="truncate flex-1">
-                      {section.ordinal + 1}. {section.heading_path || "无标题"}
-                    </span>
-                    <StatusBadge status={section.status} className="text-[9px] px-1 py-0" />
+              {filteredSections.map((section) => {
+                const assignee = members.find((m) => m.user_id === section.assigned_to);
+                return (
+                  <div key={section.id} className="flex items-center gap-1 px-1">
+                    {isAdmin && (
+                      <input
+                        type="checkbox"
+                        checked={selectedForAssign.has(section.id)}
+                        onChange={() => toggleAssignSelect(section.id)}
+                        className="shrink-0"
+                      />
+                    )}
+                    <button
+                      className={`flex-1 text-left rounded px-2 py-1.5 text-xs transition-colors ${
+                        selectedSectionId === section.id ? "bg-accent text-accent-foreground" : "hover:bg-muted"
+                      }`}
+                      onClick={() => setSelectedSectionId(section.id)}
+                    >
+                      <div className="flex items-center gap-1 justify-between">
+                        <span className="truncate flex-1">{section.ordinal + 1}. {section.heading_path || "无标题"}</span>
+                        <StatusBadge status={section.status} className="text-[9px] px-1 py-0" />
+                      </div>
+                      <div className="flex items-center gap-2 text-[10px] mt-0.5">
+                        <span className={`px-1 rounded ${
+                          section.assignment_status === "completed" ? "bg-green-100 text-green-700" :
+                          section.assignment_status === "in_progress" ? "bg-blue-100 text-blue-700" :
+                          section.assignment_status === "assigned" ? "bg-yellow-100 text-yellow-700" :
+                          section.assignment_status === "returned" ? "bg-red-100 text-red-700" :
+                          "bg-gray-100 text-gray-600"
+                        }`}>
+                          {section.assignment_status}
+                        </span>
+                        {assignee && <span className="text-muted-foreground">{assignee.username || assignee.user_id.slice(0, 8)}</span>}
+                      </div>
+                      {section.locked_by_name && (
+                        <div className="flex items-center gap-0.5 text-[10px] text-orange-600 mt-0.5">
+                          <LockIcon className="size-2.5" />
+                          {section.locked_by_name}
+                        </div>
+                      )}
+                    </button>
                   </div>
-                  {section.locked_by_name && (
-                    <div className="flex items-center gap-0.5 text-[10px] text-orange-600 mt-0.5">
-                      <LockIcon className="size-2.5" />
-                      {section.locked_by_name}
-                    </div>
-                  )}
-                </button>
-              ))}
+                );
+              })}
               {filteredSections.length === 0 && (
                 <div className="px-2 py-4 text-center text-xs text-muted-foreground">无匹配章节</div>
               )}
@@ -291,6 +543,18 @@ export default function CleaningWorkbenchPage() {
             <SendIcon className="size-3" />
             提交审核
           </Button>
+          {selectedSection?.assigned_to === currentUser?.id && selectedSection?.assignment_status !== "completed" && (
+            <Button variant="outline" size="sm" onClick={handleComplete}>
+              <CheckIcon className="size-3" />
+              完成 (分派)
+            </Button>
+          )}
+          {isAdmin && selectedSection?.assignment_status === "completed" && (
+            <Button variant="outline" size="sm" onClick={handleReturn}>
+              <XIcon className="size-3" />
+              退回
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={handleApprove}>
             <CheckIcon className="size-3" />
             通过
@@ -299,6 +563,53 @@ export default function CleaningWorkbenchPage() {
             <XIcon className="size-3" />
             驳回
           </Button>
+        </div>
+
+        {/* Completion bar + merged-version controls */}
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b bg-muted/30 text-xs">
+          <span>完成进度：{completionStats.completed} / {completionStats.total}</span>
+          {isAdmin && (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={handleMerge}
+              disabled={completionStats.completed === 0}
+            >
+              生成合并版本
+            </Button>
+          )}
+          {latestVersion && (
+            <>
+              <Badge variant="secondary">
+                v{latestVersion.version} · {latestVersion.status}
+              </Badge>
+              {isAdmin && latestVersion.status === "review_pending" && (
+                <>
+                  <Button size="xs" variant="outline" onClick={() => handleFinalReview("accept")}>
+                    <CheckIcon className="size-3" /> 通过
+                  </Button>
+                  <Button size="xs" variant="outline" onClick={() => handleFinalReview("reject")}>
+                    <XIcon className="size-3" /> 驳回
+                  </Button>
+                  <Link
+                    href={`#`}
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      const ver = await api.get<CleanedVersion & { merged_markdown: string }>(`/cleaned-versions/${latestVersion.id}`);
+                      const w = window.open("", "_blank");
+                      if (w) {
+                        w.document.write(`<pre style="white-space:pre-wrap;padding:16px;font-family:ui-monospace,monospace">${ver.merged_markdown.replace(/</g, "&lt;")}</pre>`);
+                        w.document.title = `合并版本 v${latestVersion.version}`;
+                      }
+                    }}
+                    className="text-xs text-blue-600 underline"
+                  >
+                    查看全文
+                  </Link>
+                </>
+              )}
+            </>
+          )}
         </div>
 
         {/* 3-column grid: PDF | Preview | Editor + Comments */}
