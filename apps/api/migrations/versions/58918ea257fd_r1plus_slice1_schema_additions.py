@@ -174,6 +174,12 @@ def upgrade() -> None:
     op.add_column("snapshot_manifests", sa.Column("cleaned_version_id", sa.UUID(), sa.ForeignKey("cleaned_document_versions.id"), nullable=True))
     op.add_column("snapshot_manifests", sa.Column("generation_batch_id", sa.UUID(), sa.ForeignKey("generation_batches.id"), nullable=True))
 
+    # --- Explicit backfill for clarity (server_default already covers new rows,
+    #     but spec §2.3 asks for explicit data migration) ---
+    op.execute("UPDATE documents SET clean_status = 'not_started' WHERE clean_status IS NULL")
+    op.execute("UPDATE sections SET assignment_status = 'unassigned' WHERE assignment_status IS NULL")
+    op.execute("UPDATE candidates SET review_status = 'pending' WHERE review_status IS NULL")
+
 
 def downgrade() -> None:
     op.drop_column("snapshot_manifests", "generation_batch_id")

@@ -32,7 +32,7 @@ class SectionService:
         section.cleaned_markdown = cleaned_markdown
         section.cleaned_by = user_id
         section.status = "in_cleaning"
-        if section.assignment_status == "assigned":
+        if section.assignment_status in ("assigned", "returned"):
             section.assignment_status = "in_progress"
         await self.db.flush()
         await self.db.refresh(section)
