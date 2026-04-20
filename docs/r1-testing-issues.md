@@ -575,3 +575,29 @@
 - `package.json`: `"dev": "next dev"` → `"next dev --no-turbopack"`，回退使用 Webpack dev server，稳定性更好
 
 **提交：** 未提交
+
+---
+
+## Issue #35: R1+ Slice 1 — code-reviewer 发现的 2 处预合入修复（2026-04-18）
+
+**背景：** R1+ Slice 1（Clean 协作升级）实现完毕，commit `efa160f..b91906a`。code-reviewer subagent 裁定 APPROVE WITH NITS，两条重要建议已在 merge 前修复：
+
+**修复 1：迁移缺少显式 UPDATE 回填语句**
+
+- 根因：`ADD COLUMN ... DEFAULT ... NOT NULL` 虽然会让 Postgres 自动把默认值回写到旧行，但 spec §2.3 明确要求显式 UPDATE 语句。如果将来拆分成 DDL/DML 两步或部分数据库版本行为不同，缺 UPDATE 就会让旧行 `clean_status` / `assignment_status` / `review_status` 为 NULL。
+- 修复：迁移 `upgrade()` 末尾加 3 条 `UPDATE ... WHERE ... IS NULL`，确保幂等兜底。
+
+**修复 2：`update_section` 未处理 `returned → in_progress` 转换**
+
+- 根因：spec §2.4 定义 `completed → returned → in_progress`。原实现只在 `assignment_status == "assigned"` 时自动推进到 `in_progress`，导致 section 被 admin 退回后，编辑者即使已经改了内容，侧栏徽章仍旧停留在 `returned`。
+- 修复：`apps/api/app/services/section_service.py:35-36` 条件扩展为 `if section.assignment_status in ("assigned", "returned"):`。
+
+**其他 3 条 nit 判为已知限制，非 blocker：**
+- `/api/cleaned-versions/{vid}` 用 `get_current_user` 未做项目成员校验（flat route 的权衡）
+- `/cleaning/final-review` 的 reject 分支对已 completed 文档的 clean_status 降级（极边缘，P4 再改）
+- `complete_section` 非 existent section 返回 404（reviewer 自纠，其实正确）
+
+**提交：** `0f6da40 fix(r1plus): address review nits — returned→in_progress on edit, explicit backfill in migration`
+
+**冒烟结论：** 迁移应用成功，8 个新端点全部 HTTP 200，状态机端到端走通，MinIO artifact 写入正确。前端 UI 目检仍待手工验证（见 `docs/logs/dev-log.md` "下一步测试清单"）。
+

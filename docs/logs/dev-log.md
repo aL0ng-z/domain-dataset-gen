@@ -9,6 +9,7 @@
 | Release | 名称 | 状态 | 备注 |
 |---------|------|------|------|
 | R1 | Lab Pilot | 测试进行中 | 主链路 MVP，已修复 34 个 issue |
+| R1+ | Slice 1: Clean 协作升级 | 后端冒烟通过，前端 UI 待目检 | 数据模型扩展 + Clean 分派/合并/终审工作流 |
 | R2 | Lab Team | 未开始 | 多人协作、评测中心 |
 | R3 | Quality Automation | 未开始 | 质量自动化 |
 | R4 | Optional Extensions | 未开始 | 多轮对话、Arena 等 |
@@ -135,6 +136,153 @@
 1. **LLM 生成** — 配置 LLM 端点 → 选模板 → 单 Chunk 生成 → 确认 Candidate 产出
 2. **审核 → 提升** — Candidate 审核 → promote 为 CuratedItem
 3. **导出** — CuratedItem 编组为 Dataset → 选 ExportProfile → 导出 → 下载验证
+
+---
+
+## R1+: 面向新 R1 方案的改进 —— Slice 1 已完成 (2026-04-18)
+
+依据 `domain-dataset-gen_R1_改进清单.md` 对主链路做协作治理升级。本切片覆盖 P1（数据模型基础）+ P2（Clean 工作流）。后续切片 Chunk / Generate / Export 留待下一轮。
+
+**10 次提交 | 24 个文件改动 | +3170 / -32 行 | 1 个 Alembic 迁移**
+
+#### 数据模型（P1）
+
+新增 4 张表：
+
+| 表 | 用途 | 本切片使用 |
+|----|------|-----------|
+| `cleaned_document_versions` | 整篇合并后的 cleaned markdown 版本 + 管理员终审 | ✅ 已接入 |
+| `chunk_sets` | 分块结果集的版本化（为 P3 预留） | 仅建表 |
+| `generation_batches` | 批次生成（为 P4 预留） | 仅建表 |
+| `review_records` | 结构化审核记录（polymorphic entity_type） | 接入 cleaned_document_version |
+
+新增列（加性，全部 nullable 或含 server_default）：
+
+- `documents`: `clean_status`（新枚举）+ `active_clean_version_id` + `active_chunk_set_id`
+- `sections`: `assignment_status`（新枚举）+ `assigned_to/by/at` + `completed_at` + `return_reason`
+- `chunks`: `chunk_set_id`
+- `candidates`: `author_id` + `source_generation_batch_id` + `review_status` + `thinking_text`
+- `snapshot_manifests`: `chunk_set_id` + `cleaned_version_id` + `generation_batch_id`
+
+迁移文件：`apps/api/migrations/versions/58918ea257fd_r1plus_slice1_schema_additions.py`
+- 6 个新枚举全部先建
+- ADD COLUMN 用 server_default 隐式回填 + 显式 UPDATE 语句二次兜底
+- downgrade 完整逆序
+
+#### 后端接口（P2）
+
+新增服务：`apps/api/app/services/clean_version_service.py`
+- `create_merged_version()` — 按 ordinal 合并所有 section 的 cleaned_markdown（fallback 到 raw_markdown），上传 MinIO `outputs/cleaned/{doc_id}/v{n}.md`，新建 CleanedDocumentVersion 行
+- `final_review()` — 写 review_records + 更新 version status + 联动 document.clean_status
+
+Section 服务扩展：`bulk_assign / assign_section / complete_section / return_section`。
+`update_section` 现在会把 `assigned` 或 `returned` 状态自动推进到 `in_progress`。
+
+新增 8 条路由：
+
+```
+POST  /api/projects/{pid}/documents/{did}/cleaning/assign         reviewer+
+POST  /api/projects/{pid}/documents/{did}/cleaning/merge          reviewer+
+POST  /api/projects/{pid}/documents/{did}/cleaning/final-review   reviewer+
+GET   /api/projects/{pid}/documents/{did}/cleaning/versions       viewer+
+GET   /api/cleaned-versions/{vid}                                  authenticated
+POST  /api/sections/{sid}/assign                                   reviewer+
+POST  /api/sections/{sid}/complete                                 editor（受分派约束）
+POST  /api/sections/{sid}/return                                   reviewer+
+```
+
+`app.main.py` 注册新路由后总路由数 133 → 141。
+
+#### 前端（P2）
+
+`projects/[id]/documents/[did]/clean/page.tsx` 从 443 行扩到 708 行（+265）：
+
+- 新分派筛选 chip：全部 / 分派给我 / 我未完成 / 未分派（editor 默认 "分派给我"）
+- 管理员专属批量分派面板：多选 + assignee 下拉 + 一键分派
+- section 列表行显示 `assignment_status` 彩色徽章和 assignee
+- 顶部完成进度条：`X / Y sections completed` + `生成合并版本` 按钮
+- 最新合并版本徽章 + 管理员 `通过 / 驳回 / 查看全文` 按钮
+- 工具栏增加 `完成 (分派)` 和 `退回` 按钮，按角色和状态显示
+
+`npm run build` 零错误通过。所有新 UI 通过 `isAdmin` 门控。
+
+#### 代码评审
+
+code-reviewer subagent 检查后裁定 **APPROVE WITH NITS**，两条重要建议已一起修复：
+1. 迁移补上显式 UPDATE 回填语句（对齐 spec §2.3）
+2. `update_section` 扩展条件 `assigned` → `assigned | returned`（对齐 spec §2.4 `completed → returned → in_progress`）
+
+详细记录在 `docs/r1-testing-issues.md` Issue #35。
+
+#### 冒烟测试（2026-04-18 本地环境）
+
+测试 PDF：`Active Control of Compressor Surge Using a Real Time Observer.pdf`（744KB / 11 页）
+
+**后端 curl 冒烟（8/8 通过）**
+
+| 端点 | HTTP | 验证要点 |
+|------|------|----------|
+| `POST /cleaning/assign` | 200 | `{assigned:1}`，section.assignment_status → `assigned`，document.clean_status → `section_planned` |
+| `POST /sections/{sid}/complete` | 200 | `assignment_status → completed`，`completed_at` 自动填充 |
+| `POST /sections/{sid}/return` | 200 | `assignment_status → returned`，`return_reason` 保存，`completed_at` 清空 |
+| `POST /sections/{sid}/assign` | 200 | 重新分派生效 |
+| `POST /cleaning/merge` | 200 | 创建 v1，status=`review_pending`，MinIO `outputs/cleaned/{did}/v1.md` 写入 (32B) |
+| `GET /cleaning/versions` | 200 | 返回版本列表 |
+| `GET /cleaned-versions/{vid}` | 200 | 返回含 `merged_markdown` 的详情 |
+| `POST /cleaning/final-review` (accept) | 200 | status → `accepted`，document.clean_status → `completed`，document.active_clean_version_id 绑定，review_records 写入 action=`approve` |
+
+状态机联动验证：
+- `section.assignment_status`：`unassigned → assigned → in_progress → completed → returned → in_progress → completed` 全路径走通（含 reviewer 修复的 `returned → in_progress` 编辑自动转换）
+- `document.clean_status`：`not_started → section_planned → review_pending → completed` 端到端
+- `review_records` polymorphic entity_type=`cleaned_document_version` 写入正确
+- MinIO artifact_key 指向正确且内容匹配 section.cleaned_markdown
+
+**测试 PDF 注记**：由于该 PDF 无 H1 标题，`split_into_sections` fallback 成单 section，本轮只测试了 1 个 section 的分派/完成/合并。多 section 批量分派、并行完成路径需后续用带标题的 PDF 补测。
+
+#### 开发环境一键启动脚本
+
+`scripts/dev-start.{sh,ps1}` + `scripts/dev-stop.{sh,ps1}`：
+- PowerShell 版原生，Git Bash 版等价
+- 一键起 Docker / 迁移 / API / Web 到两个独立窗口
+- stop 脚本按 PID 文件杀整个进程树（Windows Terminal 标签合并问题的兜底）
+
+#### 下一步测试清单
+
+**前端 UI 目检（未自动化）**：
+- 3 列布局：PDF iframe / Markdown 预览 / CodeMirror 编辑器 渲染正常
+- Section 列表行显示 `assignment_status` 彩色徽章 + assignee 名字
+- 分派筛选 chip：`全部 / 分派给我 / 我未完成 / 未分派`（editor 默认 "分派给我"）
+- 管理员专属：多选 checkbox + assignee 下拉 + "批量分派" 按钮
+- 完成进度条：`X / Y sections completed` + "生成合并版本" 按钮禁用/可点
+- 版本徽章：`v1 · review_pending` 显示 + 通过/驳回按钮
+- "查看全文" 新窗口显示合并 markdown
+- 工具栏 "完成 (分派)" 按钮条件显示（assigned_to=self 且 status!=completed）
+- 工具栏 "退回" 按钮条件显示（admin 且 status=completed）
+
+**角色权限目检**：
+- 用非 admin editor 账号登录：应只看到 "分派给我" 且无分派面板
+- editor 调用 `/cleaning/assign` 应返回 403（`require_project_member(UserRole.reviewer)`）
+- editor 调用 `/sections/{其他人section}/complete` 应返回 403
+
+**未覆盖路径（代码已实现，逻辑对称，可选补测）**：
+- `POST /cleaning/final-review` 的 `action=reject` 分支 + 重新 merge v2 的循环
+- 带 H1 标题的 PDF 产生多 section 时的批量分派
+- 多轮 section 并行完成 → 合并后某一 section 被退回 → 重新合并 v2
+
+**Slice 2 — P3 Chunk 工作流**（下一迭代）：
+- ChunkSet 生成 worker 接入
+- Chunk 统计（token 总数/平均/分布）接口
+- 管理员确认 ChunkSet 流程
+- 新 `chunks/workbench` 页面
+
+**Slice 3 — P4 Generate 工作流**：
+- GenerationBatch 创建 + 勾选 chunk 批量生成
+- Candidate `author_id` + thinking_text 全链路
+- 非作者审核约束（服务层 + DB 约束）
+
+**Slice 4 — P5 Export Bundle**：
+- manifest 版本链扩展
+- 新 bundle 结构（raw / cleaned / chunks / generation / summary）
 
 ---
 
