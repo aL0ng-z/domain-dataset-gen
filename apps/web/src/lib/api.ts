@@ -4,19 +4,83 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 const DEFAULT_TIMEOUT = 15000; // 15s for normal reads
 const LONG_TIMEOUT = 300000;   // 5min for uploads/writes
 
-function fetchWithTimeout(url: string, options?: RequestInit, timeout?: number): Promise<Response> {
-  if (!timeout) return fetch(url, options);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeout);
-  return fetch(url, { ...options, signal: controller.signal }).finally(() =>
-    clearTimeout(timer)
-  );
+export interface ApiRequestOptions {
+  signal?: AbortSignal;
+  timeout?: number;
+}
+
+export function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
+function createTimeoutError(timeout: number): Error {
+  const error = new Error(`请求超时（${Math.ceil(timeout / 1000)}s）`);
+  error.name = "TimeoutError";
+  return error;
+}
+
+function fetchWithTimeout(
+  url: string,
+  options?: RequestInit,
+  timeout?: number,
+  externalSignal?: AbortSignal,
+): Promise<Response> {
+  if (!timeout && !externalSignal) return fetch(url, options);
+
+  const timeoutController = timeout ? new AbortController() : null;
+  const combinedController =
+    timeoutController && externalSignal ? new AbortController() : null;
+  let didTimeout = false;
+
+  const timer = timeoutController
+    ? setTimeout(() => {
+        didTimeout = true;
+        timeoutController.abort();
+      }, timeout)
+    : null;
+
+  let cleanup = () => {};
+  let signal = externalSignal ?? timeoutController?.signal;
+
+  if (timeoutController && externalSignal && combinedController) {
+    const forwardAbort = () => {
+      if (!combinedController.signal.aborted) {
+        combinedController.abort();
+      }
+    };
+
+    if (externalSignal.aborted || timeoutController.signal.aborted) {
+      forwardAbort();
+    } else {
+      externalSignal.addEventListener("abort", forwardAbort, { once: true });
+      timeoutController.signal.addEventListener("abort", forwardAbort, { once: true });
+      cleanup = () => {
+        externalSignal.removeEventListener("abort", forwardAbort);
+        timeoutController.signal.removeEventListener("abort", forwardAbort);
+      };
+    }
+
+    signal = combinedController.signal;
+  }
+
+  return fetch(url, { ...options, signal })
+    .catch((error) => {
+      if (didTimeout && timeout) {
+        throw createTimeoutError(timeout);
+      }
+      throw error;
+    })
+    .finally(() => {
+      if (timer) clearTimeout(timer);
+      cleanup();
+    });
 }
 
 async function fetchApi<T>(
   path: string,
   options?: RequestInit,
-  timeout?: number
+  timeout?: number,
+  signal?: AbortSignal,
 ): Promise<T> {
   const token =
     typeof window !== "undefined"
@@ -31,13 +95,23 @@ async function fetchApi<T>(
     headers["Content-Type"] = "application/json";
   }
 
-  let res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers }, timeout);
+  let res = await fetchWithTimeout(
+    `${API_BASE}${path}`,
+    { ...options, headers },
+    timeout,
+    signal,
+  );
 
   if (res.status === 401) {
     const refreshed = await refreshToken();
     if (refreshed) {
       headers["Authorization"] = `Bearer ${localStorage.getItem("access_token")}`;
-      res = await fetchWithTimeout(`${API_BASE}${path}`, { ...options, headers }, timeout);
+      res = await fetchWithTimeout(
+        `${API_BASE}${path}`,
+        { ...options, headers },
+        timeout,
+        signal,
+      );
     }
   }
 
@@ -58,7 +132,13 @@ export interface PaginatedResponse<T> {
 }
 
 export const api = {
-  get: <T>(path: string) => fetchApi<T>(path, undefined, DEFAULT_TIMEOUT),
+  get: <T>(path: string, requestOptions?: ApiRequestOptions) =>
+    fetchApi<T>(
+      path,
+      undefined,
+      requestOptions?.timeout ?? DEFAULT_TIMEOUT,
+      requestOptions?.signal,
+    ),
   post: <T>(path: string, body?: unknown) =>
     fetchApi<T>(path, {
       method: "POST",
