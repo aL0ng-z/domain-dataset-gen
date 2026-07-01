@@ -2,7 +2,7 @@
 name = "compressor-knowledge-platform"
 version = "0.1.0"
 description = "Web platform for extracting domain knowledge from PDF textbooks on compressor design"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 
 [tool.uv.workspace]
 members = [

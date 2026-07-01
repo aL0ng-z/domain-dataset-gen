@@ -31,8 +31,32 @@ class ParseJobResponse(BaseSchema):
     created_at: datetime
 
 
+class CleaningJobResponse(BaseSchema):
+    id: uuid.UUID
+    document_id: uuid.UUID
+    parse_job_id: uuid.UUID
+    status: str
+    started_by: uuid.UUID
+    parser_profile_id: uuid.UUID
+    parser_profile_name: str | None
+    parse_completed_at: datetime | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
 class ParseRequest(BaseSchema):
     parser_profile_id: uuid.UUID
+
+
+class CleaningStartRequest(BaseSchema):
+    parse_job_id: uuid.UUID | None = None
+
+
+class CleaningStartResponse(BaseSchema):
+    task_id: uuid.UUID | None
+    cleaning_job_id: uuid.UUID
+    reused: bool
+    message: str
 
 
 class ChunkRequest(BaseSchema):

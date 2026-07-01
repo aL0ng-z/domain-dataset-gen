@@ -12,6 +12,9 @@ pip-wheel-metadata/
 
 # Virtual environments
 .venv/
+.venv-mineru-service/
+.venv-paddleocr-service/
+.venv-paddleocr-mlx-service/
 venv/
 ENV/
 env/
@@ -20,6 +23,10 @@ env/
 .env
 .env.*
 !.env.example
+
+# Local model weights
+models/
+models/models_api.md
 
 # Node / Next.js
 node_modules/

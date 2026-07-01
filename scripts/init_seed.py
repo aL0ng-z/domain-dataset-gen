@@ -1,4 +1,5 @@
 """Initialize database with admin user, default project, and seed data."""
+
 import asyncio
 import os
 import sys
@@ -12,10 +13,37 @@ sys.path.insert(0, os.getcwd())
 
 from sqlalchemy import select  # noqa: E402
 
-from app.config import settings  # noqa: E402
-from app.database import async_session_factory, engine, Base  # noqa: E402
-from app.models import *  # noqa: E402, F401, F403
+from app.database import async_session_factory  # noqa: E402
+from app.models.config import ChunkProfile, ExportProfile, ParserProfile, TaskPolicy  # noqa: E402
+from app.models.project import Project, ProjectMember  # noqa: E402
+from app.models.prompt_template import PromptTemplate  # noqa: E402
+from app.models.user import User  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
+
+MINERU_LOCAL_OPTIONS = {
+    "model_path": "models/MinerU2.5-Pro-2604-1.2B",
+    "device_map": "auto",
+    "render_dpi": "160",
+    "image_analysis": False,
+}
+MINERU_LOCAL_SERVICE_OPTIONS = {
+    "base_url": "http://127.0.0.1:9010",
+    "backend": "vlm-auto-engine",
+    "auto_start": True,
+    "startup_timeout_seconds": "30",
+    "poll_interval_seconds": "1",
+    "max_wait_seconds": "1800",
+    "image_analysis": False,
+}
+PADDLEOCR_LOCAL_SERVICE_OPTIONS = {
+    "base_url": "http://127.0.0.1:9020/layout-parsing",
+    "vlm_base_url": "http://127.0.0.1:9021",
+    "auto_start": True,
+    "startup_timeout_seconds": "90",
+    "parse_timeout_seconds": "1800",
+    "use_layout_detection": True,
+    "visualize": False,
+}
 
 
 SEED_TEMPLATES = [
@@ -31,9 +59,7 @@ SEED_TEMPLATES = [
             "- prerequisites: 前置知识（如有）"
         ),
         "user_prompt_template": (
-            "请从以下文本中抽取知识点：\n\n"
-            "**章节路径**: {{heading_path}}\n\n"
-            "**文本内容**:\n{{content}}"
+            "请从以下文本中抽取知识点：\n\n**章节路径**: {{heading_path}}\n\n**文本内容**:\n{{content}}"
         ),
     },
     {
@@ -48,9 +74,7 @@ SEED_TEMPLATES = [
             "- evidence: 答案在原文中的依据"
         ),
         "user_prompt_template": (
-            "请基于以下文本生成问答对：\n\n"
-            "**章节路径**: {{heading_path}}\n\n"
-            "**文本内容**:\n{{content}}"
+            "请基于以下文本生成问答对：\n\n**章节路径**: {{heading_path}}\n\n**文本内容**:\n{{content}}"
         ),
     },
     {
@@ -65,12 +89,53 @@ SEED_TEMPLATES = [
             "- evidence: 原文依据"
         ),
         "user_prompt_template": (
-            "请基于以下文本生成评测用例：\n\n"
-            "**章节路径**: {{heading_path}}\n\n"
-            "**文本内容**:\n{{content}}"
+            "请基于以下文本生成评测用例：\n\n**章节路径**: {{heading_path}}\n\n**文本内容**:\n{{content}}"
         ),
     },
 ]
+
+
+async def ensure_mineru_local_profiles(db) -> int:
+    projects = (await db.execute(select(Project))).scalars().all()
+    added = 0
+    for project in projects:
+        local_profiles = (
+            (
+                "mineru_local",
+                "MinerU2.5-Pro（本地模型）",
+                MINERU_LOCAL_OPTIONS,
+            ),
+            (
+                "mineru_local_service",
+                "MinerU（本地部署服务 / MLX）",
+                MINERU_LOCAL_SERVICE_OPTIONS,
+            ),
+            (
+                "paddleocr_local_service",
+                "PaddleOCR-VL（本地部署服务 / MLX）",
+                PADDLEOCR_LOCAL_SERVICE_OPTIONS,
+            ),
+        )
+        for parser_name, name, parser_options in local_profiles:
+            existing = (
+                await db.execute(
+                    select(ParserProfile).where(
+                        ParserProfile.project_id == project.id,
+                        ParserProfile.parser_name == parser_name,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                db.add(
+                    ParserProfile(
+                        project_id=project.id,
+                        name=name,
+                        parser_name=parser_name,
+                        parser_options=parser_options,
+                    )
+                )
+                added += 1
+    return added
 
 
 async def seed():
@@ -78,7 +143,9 @@ async def seed():
         # Check if already seeded
         result = await db.execute(select(User).where(User.username == "admin"))
         if result.scalar_one_or_none():
-            print("Database already seeded. Skipping.")
+            added = await ensure_mineru_local_profiles(db)
+            await db.commit()
+            print(f"Database already seeded. Added {added} missing local parser profile(s).")
             return
 
         # Create admin user
@@ -98,26 +165,71 @@ async def seed():
 
         # Seed config profiles
         parser_pymupdf = ParserProfile(
-            project_id=project.id, name="PyMuPDF4LLM（本地）", parser_name="pymupdf4llm", is_default=True,
+            project_id=project.id,
+            name="PyMuPDF4LLM（本地）",
+            parser_name="pymupdf4llm",
+            is_default=True,
         )
         parser_mineru = ParserProfile(
-            project_id=project.id, name="MinerU（API）", parser_name="mineru",
-            parser_options={"base_url": "https://mineru.net/api/v4/extract/task"},
+            project_id=project.id,
+            name="MinerU（API）",
+            parser_name="mineru",
+            parser_options={"base_url": "https://mineru.net/api/v4/extract/task", "model_version": "vlm"},
+        )
+        parser_mineru_local = ParserProfile(
+            project_id=project.id,
+            name="MinerU2.5-Pro（本地模型）",
+            parser_name="mineru_local",
+            parser_options=MINERU_LOCAL_OPTIONS,
+        )
+        parser_mineru_local_service = ParserProfile(
+            project_id=project.id,
+            name="MinerU（本地部署服务 / MLX）",
+            parser_name="mineru_local_service",
+            parser_options=MINERU_LOCAL_SERVICE_OPTIONS,
         )
         parser_paddle = ParserProfile(
-            project_id=project.id, name="PaddleOCR（API）", parser_name="paddleocr",
+            project_id=project.id,
+            name="PaddleOCR（API）",
+            parser_name="paddleocr",
             parser_options={"base_url": "https://bea4c9v5r2i52ba7.aistudio-app.com/layout-parsing"},
         )
+        parser_paddle_local_service = ParserProfile(
+            project_id=project.id,
+            name="PaddleOCR-VL（本地部署服务 / MLX）",
+            parser_name="paddleocr_local_service",
+            parser_options=PADDLEOCR_LOCAL_SERVICE_OPTIONS,
+        )
         chunk_profile = ChunkProfile(
-            project_id=project.id, name="混合标题递归（默认）", is_default=True,
+            project_id=project.id,
+            name="混合标题递归（默认）",
+            is_default=True,
         )
         export_profile = ExportProfile(
-            project_id=project.id, name="SFT JSONL（默认）", format="sft_jsonl", is_default=True,
+            project_id=project.id,
+            name="SFT JSONL（默认）",
+            format="sft_jsonl",
+            is_default=True,
         )
         task_policy = TaskPolicy(
-            project_id=project.id, name="默认任务策略", task_type="parse", is_default=True,
+            project_id=project.id,
+            name="默认任务策略",
+            task_type="parse",
+            is_default=True,
         )
-        db.add_all([parser_pymupdf, parser_mineru, parser_paddle, chunk_profile, export_profile, task_policy])
+        db.add_all(
+            [
+                parser_pymupdf,
+                parser_mineru,
+                parser_mineru_local,
+                parser_mineru_local_service,
+                parser_paddle,
+                parser_paddle_local_service,
+                chunk_profile,
+                export_profile,
+                task_policy,
+            ]
+        )
 
         # Seed prompt templates
         for tmpl_data in SEED_TEMPLATES:

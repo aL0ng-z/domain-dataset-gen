@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# dev-stop.sh — 停止 dev-start.sh 启动的 API / Web 进程
+# dev-stop.sh — stop application processes and any on-demand local parser services.
 #
-# 用法：
-#   ./scripts/dev-stop.sh             # 停止 API 和 Web（保留 Docker）
-#   ./scripts/dev-stop.sh --all       # 上面 + 停止 Docker 基础设施
+# Usage:
+#   ./scripts/dev-stop.sh        # stop API/Web, keep Docker services
+#   ./scripts/dev-stop.sh --all  # stop API/Web and Docker services
 
-set -e
+set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -14,8 +14,18 @@ STOP_DOCKER=0
 for arg in "$@"; do
   case "$arg" in
     --all) STOP_DOCKER=1 ;;
+    -h|--help)
+      sed -n '2,7p' "${BASH_SOURCE[0]}" | sed 's/^# //; s/^#$//'
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $arg"
+      exit 1
+      ;;
   esac
 done
+
+LOG_DIR="$REPO_ROOT/logs"
 
 is_windows() {
   case "$(uname -s 2>/dev/null)" in
@@ -24,30 +34,42 @@ is_windows() {
   esac
 }
 
-echo "==> 停止 API (PowerShell 窗口 R1plus-API) ..."
-if is_windows; then
-  # 按窗口标题杀掉（PowerShell 窗口内部 $Host.UI.RawUI.WindowTitle 设置过）
-  # 加 /T 杀整个进程树（PowerShell → conda → python uvicorn）
-  taskkill //F //T //FI "WINDOWTITLE eq R1plus-API*" 2>/dev/null || true
-else
-  if [ -f "$REPO_ROOT/logs/R1plus-API.pid" ]; then
-    kill "$(cat "$REPO_ROOT/logs/R1plus-API.pid")" 2>/dev/null || true
-    rm -f "$REPO_ROOT/logs/R1plus-API.pid"
-  fi
-fi
+stop_by_pid_file() {
+  local label="$1"
+  local pid_file="$LOG_DIR/${label}.pid"
+  local pid
 
-echo "==> 停止 Web (PowerShell 窗口 R1plus-Web) ..."
-if is_windows; then
-  taskkill //F //T //FI "WINDOWTITLE eq R1plus-Web*" 2>/dev/null || true
-else
-  if [ -f "$REPO_ROOT/logs/R1plus-Web.pid" ]; then
-    kill "$(cat "$REPO_ROOT/logs/R1plus-Web.pid")" 2>/dev/null || true
-    rm -f "$REPO_ROOT/logs/R1plus-Web.pid"
+  if [ ! -f "$pid_file" ]; then
+    echo "   ($label 未找到 PID 文件，跳过 PID 停止)"
+    return
   fi
-fi
+
+  pid="$(tr -d '[:space:]' < "$pid_file")"
+  rm -f "$pid_file"
+
+  if [ -z "$pid" ]; then
+    echo "   ($label PID 文件为空)"
+    return
+  fi
+
+  echo "   停止 $label PID=$pid ..."
+  if is_windows; then
+    taskkill //F //T //PID "$pid" 2>/dev/null || true
+  else
+    pkill -P "$pid" 2>/dev/null || true
+    kill "$pid" 2>/dev/null || true
+  fi
+}
+
+echo "==> 停止 API / Web / 本地解析服务进程..."
+stop_by_pid_file "R1plus-API"
+stop_by_pid_file "R1plus-Web"
+stop_by_pid_file "MinerU-Service"
+stop_by_pid_file "PaddleOCR-API"
+stop_by_pid_file "PaddleOCR-VLM"
 
 if [ "$STOP_DOCKER" = "1" ]; then
-  echo "==> 停止 Docker 基础设施 ..."
+  echo "==> 停止 Docker 基础设施..."
   docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env down
 fi
 

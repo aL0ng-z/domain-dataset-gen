@@ -52,15 +52,15 @@ export default function TasksPage() {
   const params = useParams<{ id: string }>();
   const projectId = params.id;
   const { page, pageSize, setPage } = usePagination();
-  const { subscribe } = useWs();
+  const { lastMessage } = useWs();
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
 
-  const fetchTasks = useCallback(() => {
-    setLoading(true);
+  const fetchTasks = useCallback((silent = false) => {
+    if (!silent) setLoading(true);
     const typeParam =
       typeFilter !== "all" ? `&task_type=${typeFilter}` : "";
     const statusParam =
@@ -74,20 +74,21 @@ export default function TasksPage() {
         setTotal(data.total);
       })
       .catch(() => toast.error("加载任务列表失败"))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!silent) setLoading(false);
+      });
   }, [projectId, page, pageSize, typeFilter, statusFilter]);
 
   useEffect(() => {
-    fetchTasks();
+    const refreshTimer = window.setTimeout(() => fetchTasks(), 0);
+    return () => window.clearTimeout(refreshTimer);
   }, [fetchTasks]);
 
-  // WebSocket live updates
   useEffect(() => {
-    const unsub = subscribe("task_update", () => {
-      fetchTasks();
-    });
-    return unsub;
-  }, [subscribe, fetchTasks]);
+    if (!lastMessage) return;
+    const refreshTimer = window.setTimeout(() => fetchTasks(true), 0);
+    return () => window.clearTimeout(refreshTimer);
+  }, [lastMessage, fetchTasks]);
 
   const handleCancel = useCallback(
     async (taskId: string) => {
@@ -133,8 +134,18 @@ export default function TasksPage() {
     },
     {
       key: "progress",
-      header: "进度",
+      header: "执行情况",
       render: (row) => {
+        if (row.task_type === "parse") {
+          const text = {
+            queued: "等待解析",
+            processing: "解析处理中",
+            completed: "解析结果已生成",
+            failed: "解析失败",
+            cancelled: "已取消",
+          }[row.status] ?? row.status;
+          return <span className="text-xs text-muted-foreground">{text}</span>;
+        }
         const pct = Math.min(row.progress ?? 0, 100);
         return (
           <div className="flex items-center gap-2">
@@ -254,7 +265,7 @@ export default function TasksPage() {
               </option>
             ))}
           </select>
-          <Button variant="outline" size="sm" onClick={fetchTasks}>
+          <Button variant="outline" size="sm" onClick={() => fetchTasks()}>
             <RefreshCwIcon className="size-3" />
             刷新
           </Button>

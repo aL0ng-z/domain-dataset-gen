@@ -30,6 +30,10 @@ interface TaskListResponse {
   total: number;
 }
 
+interface TaskFloatingPanelProps {
+  projectId: string;
+}
+
 const TASK_TYPE_LABELS: Record<string, string> = {
   parse: "文档解析",
   clean: "文档清洗",
@@ -38,33 +42,38 @@ const TASK_TYPE_LABELS: Record<string, string> = {
   export: "数据导出",
 };
 
-export function TaskFloatingPanel() {
+export function TaskFloatingPanel({ projectId }: TaskFloatingPanelProps) {
   const [tasks, setTasks] = useState<TaskItem[]>([]);
-  const { subscribe } = useWs();
+  const { lastMessage } = useWs();
 
   const fetchTasks = useCallback(() => {
-    api
-      .get<TaskListResponse>("/tasks?page=1&page_size=20&status=running&status=pending")
-      .then((data) => setTasks(data.items))
+    Promise.all([
+      api.get<TaskListResponse>(`/projects/${projectId}/tasks?page=1&page_size=20&status=queued`),
+      api.get<TaskListResponse>(`/projects/${projectId}/tasks?page=1&page_size=20&status=processing`),
+    ])
+      .then(([queued, processing]) => {
+        const activeTasks = [...queued.items, ...processing.items]
+          .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+          .slice(0, 20);
+        setTasks(activeTasks);
+      })
       .catch(() => {
         // ignore errors
       });
-  }, []);
+  }, [projectId]);
 
   useEffect(() => {
     fetchTasks();
   }, [fetchTasks]);
 
-  // Listen for task updates via WebSocket
   useEffect(() => {
-    const unsub = subscribe("task_update", () => {
+    if (lastMessage) {
       fetchTasks();
-    });
-    return unsub;
-  }, [subscribe, fetchTasks]);
+    }
+  }, [lastMessage, fetchTasks]);
 
   const runningCount = tasks.filter(
-    (t) => t.status === "running" || t.status === "pending"
+    (t) => t.status === "queued" || t.status === "processing"
   ).length;
 
   return (
@@ -115,16 +124,20 @@ export function TaskFloatingPanel() {
                       </span>
                       <StatusBadge status={task.status} />
                     </div>
-                    {task.progress != null && task.progress > 0 && (
+                    {task.task_type === "parse" ? (
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        {task.status === "queued" ? "等待开始解析" : "解析处理中，完成后更新结果状态"}
+                      </div>
+                    ) : task.progress != null && task.progress > 0 && (
                       <div className="mt-2">
                         <div className="flex justify-between text-xs text-muted-foreground mb-1">
                           <span>进度</span>
-                          <span>{Math.round(task.progress * 100)}%</span>
+                          <span>{Math.min(task.progress, 100)}%</span>
                         </div>
                         <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
                           <div
                             className="h-full rounded-full bg-primary transition-all"
-                            style={{ width: `${task.progress * 100}%` }}
+                            style={{ width: `${Math.min(task.progress, 100)}%` }}
                           />
                         </div>
                       </div>

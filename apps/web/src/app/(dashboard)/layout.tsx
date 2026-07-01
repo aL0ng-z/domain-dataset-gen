@@ -50,7 +50,7 @@ export default function DashboardLayout({
       <div className="flex h-screen overflow-hidden">
         <Sidebar />
         <main className="flex-1 overflow-y-auto">{children}</main>
-        <TaskFloatingPanel />
+        {projectId && <TaskFloatingPanel projectId={projectId} />}
       </div>
     </WsProvider>
   );

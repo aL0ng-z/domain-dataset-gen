@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer, field_validator
 
 from domain.schemas import BaseSchema
 
@@ -46,16 +46,29 @@ class ModelConfigResponse(BaseSchema):
 
 
 # --- ParserProfile ---
+PARSER_SECRET_KEYS = {"api_key", "access_token", "token"}
+
+
+def _validate_parser_options(options: dict | None) -> dict | None:
+    if options and PARSER_SECRET_KEYS.intersection(options):
+        raise ValueError("解析器 API 密钥必须配置在后端环境变量中，不能保存到 ParserProfile")
+    return options
+
+
 class ParserProfileCreate(BaseModel):
     name: str
     parser_name: str = "mock"
     parser_options: dict | None = None
+
+    _no_embedded_secrets = field_validator("parser_options")(_validate_parser_options)
 
 
 class ParserProfileUpdate(BaseModel):
     name: str | None = None
     parser_name: str | None = None
     parser_options: dict | None = None
+
+    _no_embedded_secrets = field_validator("parser_options")(_validate_parser_options)
 
 
 class ParserProfileResponse(BaseSchema):
@@ -68,6 +81,16 @@ class ParserProfileResponse(BaseSchema):
     parser_options: dict | None
     created_at: datetime
     updated_at: datetime
+
+    @field_serializer("parser_options")
+    def redact_parser_options(self, options: dict | None) -> dict | None:
+        if not options:
+            return options
+        sanitized = dict(options)
+        had_secret = any(sanitized.pop(key, None) is not None for key in PARSER_SECRET_KEYS)
+        if had_secret:
+            sanitized["credential_configured"] = True
+        return sanitized
 
 
 # --- ChunkProfile ---

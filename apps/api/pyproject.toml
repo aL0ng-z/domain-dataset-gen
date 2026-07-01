@@ -2,7 +2,7 @@
 name = "compressor-api"
 version = "0.1.0"
 description = "FastAPI backend for the Compressor Knowledge Extraction Platform"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.7.0",
     "python-jose[cryptography]>=3.3.0",
     "passlib[bcrypt]>=1.7.4",
+    "bcrypt>=4.0.1,<4.1",
     "python-multipart>=0.0.18",
     "minio>=7.2.0",
     "redis>=5.2.0",

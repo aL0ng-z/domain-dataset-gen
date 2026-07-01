@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## 基本规则
 

@@ -17,4 +17,5 @@
 - 测试问题记录：[docs/r1-testing-issues.md](docs/r1-testing-issues.md)
 - 测试指南：[docs/r1-testing-guide.md](docs/r1-testing-guide.md)
 - 新机器部署指南：[docs/runbooks/new-machine-runbook.md](docs/runbooks/new-machine-runbook.md)
+- MinerU 本地解析指南：[docs/runbooks/mineru-local-parser.md](docs/runbooks/mineru-local-parser.md)
 - 文档目录说明：[docs/README.md](docs/README.md)

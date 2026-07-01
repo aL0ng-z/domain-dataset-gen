@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,32 +17,45 @@ class CleanVersionService:
     def __init__(self, db: AsyncSession):
         self.db = db
         self._storage = get_storage_client(
-            settings.minio_endpoint, settings.minio_access_key,
-            settings.minio_secret_key, settings.minio_secure,
+            settings.minio_endpoint,
+            settings.minio_access_key,
+            settings.minio_secret_key,
+            settings.minio_secure,
         )
 
     async def _next_version(self, document_id: uuid.UUID) -> int:
         result = await self.db.execute(
-            select(func.coalesce(func.max(CleanedDocumentVersion.version), 0))
-            .where(CleanedDocumentVersion.document_id == document_id)
+            select(func.coalesce(func.max(CleanedDocumentVersion.version), 0)).where(
+                CleanedDocumentVersion.document_id == document_id
+            )
         )
         return (result.scalar() or 0) + 1
 
-    async def _latest_cleaning_job(self, document_id: uuid.UUID) -> CleaningJob | None:
-        result = await self.db.execute(
-            select(CleaningJob)
-            .where(CleaningJob.document_id == document_id)
-            .order_by(CleaningJob.created_at.desc())
-        )
-        return result.scalars().first()
-
-    async def create_merged_version(self, document_id: uuid.UUID, user_id: uuid.UUID) -> CleanedDocumentVersion:
+    async def create_merged_version(
+        self, document_id: uuid.UUID, cleaning_job_id: uuid.UUID, user_id: uuid.UUID
+    ) -> CleanedDocumentVersion:
         doc = (await self.db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
         if doc is None:
             raise ValueError("document not found")
 
+        cleaning_job = (
+            await self.db.execute(
+                select(CleaningJob).where(
+                    CleaningJob.id == cleaning_job_id,
+                    CleaningJob.document_id == document_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if cleaning_job is None:
+            raise ValueError("cleaning job not found")
+
         sections_result = await self.db.execute(
-            select(Section).where(Section.document_id == document_id).order_by(Section.ordinal)
+            select(Section)
+            .where(
+                Section.document_id == document_id,
+                Section.cleaning_job_id == cleaning_job_id,
+            )
+            .order_by(Section.ordinal)
         )
         sections = list(sections_result.scalars().all())
         if not sections:
@@ -57,17 +70,19 @@ class CleanVersionService:
         merged = "\n\n".join(parts) + "\n"
 
         version = await self._next_version(document_id)
-        cleaning_job = await self._latest_cleaning_job(document_id)
 
         artifact_key = f"cleaned/{document_id}/v{version}.md"
         await asyncio.to_thread(
             self._storage.upload_file,
-            settings.minio_bucket_outputs, artifact_key, merged.encode("utf-8"), "text/markdown",
+            settings.minio_bucket_outputs,
+            artifact_key,
+            merged.encode("utf-8"),
+            "text/markdown",
         )
 
         row = CleanedDocumentVersion(
             document_id=document_id,
-            source_cleaning_job_id=cleaning_job.id if cleaning_job else None,
+            source_cleaning_job_id=cleaning_job.id,
             version=version,
             section_count=len(sections),
             merged_markdown=merged,
@@ -84,15 +99,24 @@ class CleanVersionService:
         return row
 
     async def final_review(
-        self, version_id: uuid.UUID, user_id: uuid.UUID,
-        action: str, reason: str | None = None, comment: str | None = None,
+        self,
+        version_id: uuid.UUID,
+        user_id: uuid.UUID,
+        action: str,
+        reason: str | None = None,
+        comment: str | None = None,
+        document_id: uuid.UUID | None = None,
+        cleaning_job_id: uuid.UUID | None = None,
     ) -> CleanedDocumentVersion:
         if action not in ("accept", "reject"):
             raise ValueError("action must be 'accept' or 'reject'")
 
-        version = (
-            await self.db.execute(select(CleanedDocumentVersion).where(CleanedDocumentVersion.id == version_id))
-        ).scalar_one_or_none()
+        query = select(CleanedDocumentVersion).where(CleanedDocumentVersion.id == version_id)
+        if document_id is not None:
+            query = query.where(CleanedDocumentVersion.document_id == document_id)
+        if cleaning_job_id is not None:
+            query = query.where(CleanedDocumentVersion.source_cleaning_job_id == cleaning_job_id)
+        version = (await self.db.execute(query)).scalar_one_or_none()
         if version is None:
             raise ValueError("version not found")
 
@@ -109,7 +133,7 @@ class CleanVersionService:
 
         version.status = "accepted" if action == "accept" else "rejected"
         version.reviewed_by = user_id
-        version.reviewed_at = datetime.now(timezone.utc)
+        version.reviewed_at = datetime.now(UTC)
 
         doc = (await self.db.execute(select(Document).where(Document.id == version.document_id))).scalar_one()
         if action == "accept":
@@ -122,16 +146,15 @@ class CleanVersionService:
         await self.db.refresh(version)
         return version
 
-    async def list_versions(self, document_id: uuid.UUID) -> list[CleanedDocumentVersion]:
-        result = await self.db.execute(
-            select(CleanedDocumentVersion)
-            .where(CleanedDocumentVersion.document_id == document_id)
-            .order_by(CleanedDocumentVersion.version.desc())
-        )
+    async def list_versions(
+        self, document_id: uuid.UUID, cleaning_job_id: uuid.UUID | None = None
+    ) -> list[CleanedDocumentVersion]:
+        query = select(CleanedDocumentVersion).where(CleanedDocumentVersion.document_id == document_id)
+        if cleaning_job_id is not None:
+            query = query.where(CleanedDocumentVersion.source_cleaning_job_id == cleaning_job_id)
+        result = await self.db.execute(query.order_by(CleanedDocumentVersion.version.desc()))
         return list(result.scalars().all())
 
     async def get_version(self, version_id: uuid.UUID) -> CleanedDocumentVersion | None:
-        result = await self.db.execute(
-            select(CleanedDocumentVersion).where(CleanedDocumentVersion.id == version_id)
-        )
+        result = await self.db.execute(select(CleanedDocumentVersion).where(CleanedDocumentVersion.id == version_id))
         return result.scalar_one_or_none()

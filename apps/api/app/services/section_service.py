@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import redis.asyncio as aioredis
 from sqlalchemy import select
@@ -23,7 +23,8 @@ class SectionService:
             return None
 
         revision = SectionRevision(
-            section_id=section_id, revised_by=user_id,
+            section_id=section_id,
+            revised_by=user_id,
             cleaned_markdown=section.cleaned_markdown or section.raw_markdown,
             revision_note="编辑前自动保存",
         )
@@ -69,7 +70,7 @@ class SectionService:
             if existing and existing != str(user_id):
                 raise ValueError("该 Section 已被其他用户锁定")
 
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=120)
+        expires_at = datetime.now(UTC) + timedelta(seconds=120)
         lease = SectionLease(section_id=section_id, user_id=user_id, expires_at=expires_at)
         self.db.add(lease)
         await self.db.flush()
@@ -82,17 +83,19 @@ class SectionService:
 
     async def heartbeat_lease(self, section_id: uuid.UUID, user_id: uuid.UUID) -> SectionLease | None:
         result = await self.db.execute(
-            select(SectionLease).where(
+            select(SectionLease)
+            .where(
                 SectionLease.section_id == section_id,
                 SectionLease.user_id == user_id,
                 SectionLease.released_at.is_(None),
-            ).order_by(SectionLease.acquired_at.desc())
+            )
+            .order_by(SectionLease.acquired_at.desc())
         )
         lease = result.scalars().first()
         if lease is None:
             return None
 
-        lease.expires_at = datetime.now(timezone.utc) + timedelta(seconds=120)
+        lease.expires_at = datetime.now(UTC) + timedelta(seconds=120)
         await self.db.flush()
 
         if self.redis:
@@ -103,17 +106,19 @@ class SectionService:
 
     async def release_lease(self, section_id: uuid.UUID, user_id: uuid.UUID) -> bool:
         result = await self.db.execute(
-            select(SectionLease).where(
+            select(SectionLease)
+            .where(
                 SectionLease.section_id == section_id,
                 SectionLease.user_id == user_id,
                 SectionLease.released_at.is_(None),
-            ).order_by(SectionLease.acquired_at.desc())
+            )
+            .order_by(SectionLease.acquired_at.desc())
         )
         lease = result.scalars().first()
         if lease is None:
             return False
 
-        lease.released_at = datetime.now(timezone.utc)
+        lease.released_at = datetime.now(UTC)
         await self.db.flush()
 
         if self.redis:
@@ -122,7 +127,9 @@ class SectionService:
         return True
 
     # --- Comments ---
-    async def add_comment(self, section_id: uuid.UUID, user_id: uuid.UUID, comment_type: str, content: str) -> SectionComment:
+    async def add_comment(
+        self, section_id: uuid.UUID, user_id: uuid.UUID, comment_type: str, content: str
+    ) -> SectionComment:
         comment = SectionComment(section_id=section_id, user_id=user_id, comment_type=comment_type, content=content)
         self.db.add(comment)
         await self.db.flush()
@@ -138,21 +145,28 @@ class SectionService:
     # --- Revisions ---
     async def list_revisions(self, section_id: uuid.UUID) -> list[SectionRevision]:
         result = await self.db.execute(
-            select(SectionRevision).where(SectionRevision.section_id == section_id).order_by(SectionRevision.created_at.desc())
+            select(SectionRevision)
+            .where(SectionRevision.section_id == section_id)
+            .order_by(SectionRevision.created_at.desc())
         )
         return list(result.scalars().all())
 
     # --- Assignment ---
     async def bulk_assign(
-        self, section_ids: list[uuid.UUID], assignee_id: uuid.UUID, assigner_id: uuid.UUID,
+        self,
+        section_ids: list[uuid.UUID],
+        assignee_id: uuid.UUID,
+        assigner_id: uuid.UUID,
+        cleaning_job_id: uuid.UUID | None = None,
     ) -> int:
         if not section_ids:
             return 0
-        result = await self.db.execute(
-            select(Section).where(Section.id.in_(section_ids))
-        )
+        query = select(Section).where(Section.id.in_(section_ids))
+        if cleaning_job_id is not None:
+            query = query.where(Section.cleaning_job_id == cleaning_job_id)
+        result = await self.db.execute(query)
         sections = list(result.scalars().all())
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for s in sections:
             s.assigned_to = assignee_id
             s.assigned_by = assigner_id
@@ -165,7 +179,10 @@ class SectionService:
         return len(sections)
 
     async def assign_section(
-        self, section_id: uuid.UUID, assignee_id: uuid.UUID, assigner_id: uuid.UUID,
+        self,
+        section_id: uuid.UUID,
+        assignee_id: uuid.UUID,
+        assigner_id: uuid.UUID,
     ) -> Section | None:
         n = await self.bulk_assign([section_id], assignee_id, assigner_id)
         if n == 0:
@@ -179,7 +196,7 @@ class SectionService:
         if not is_admin and section.assigned_to and section.assigned_to != user_id:
             raise ValueError("只有被分派者或管理员可以标记完成")
         section.assignment_status = "completed"
-        section.completed_at = datetime.now(timezone.utc)
+        section.completed_at = datetime.now(UTC)
         await self.db.flush()
         await self.db.refresh(section)
         return section

@@ -1,18 +1,21 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { StatusBadge } from "@/components/status-badge";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { useWs } from "@/hooks/use-ws";
 import {
   ArrowLeftIcon,
   LockIcon,
@@ -67,6 +70,15 @@ interface CleanedVersion {
   created_at: string;
 }
 
+interface CleaningJobContext {
+  id: string;
+  parse_job_id: string;
+  status: string;
+  parser_profile_name?: string;
+  parse_completed_at?: string;
+  created_at: string;
+}
+
 interface ProjectMember {
   user_id: string;
   role: string;
@@ -79,18 +91,72 @@ interface CurrentUser {
   role: "admin" | "reviewer" | "editor" | "viewer";
 }
 
+type MarkdownAstNode = {
+  type?: string;
+  value?: string;
+  children?: MarkdownAstNode[];
+};
+
+function remarkSoftLineBreaks() {
+  return (tree: MarkdownAstNode) => {
+    preserveTextLineBreaks(tree);
+  };
+}
+
+function preserveTextLineBreaks(node: MarkdownAstNode) {
+  if (!node.children) return;
+
+  const nextChildren: MarkdownAstNode[] = [];
+  for (const child of node.children) {
+    if (child.type === "text" && typeof child.value === "string" && child.value.includes("\n")) {
+      const parts = child.value.split("\n");
+      parts.forEach((part, index) => {
+        if (index > 0) nextChildren.push({ type: "break" });
+        if (part) nextChildren.push({ ...child, value: part });
+      });
+      continue;
+    }
+
+    preserveTextLineBreaks(child);
+    nextChildren.push(child);
+  }
+
+  node.children = nextChildren;
+}
+
+function looksLikeMathFormula(value: string) {
+  return /[=^_{}]|\\[a-zA-Z]+/.test(value);
+}
+
+function normalizeMarkdownForPreview(markdown: string) {
+  return markdown
+    .replace(/\r\n?/g, "\n")
+    .replace(/\\\[((?:.|\n)*?)\\\]/g, (_match, formula: string) => (
+      looksLikeMathFormula(formula) ? `\n\n$$\n${formula.trim()}\n$$\n\n` : `[${formula}]`
+    ))
+    .replace(/\\\((.+?)\\\)/g, (_match, formula: string) => (
+      looksLikeMathFormula(formula) ? `$${formula}$` : `(${formula})`
+    ))
+    .replace(/\\([\\`*{}\[\]()#+\-.!_$>|~=])/g, "$1");
+}
+
 export default function CleaningWorkbenchPage() {
   const params = useParams<{ id: string; did: string }>();
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const projectId = params.id;
   const docId = params.did;
+  const cleaningJobId = searchParams.get("cleaning_job_id");
 
   const [sections, setSections] = useState<Section[]>([]);
+  const [cleaningJobs, setCleaningJobs] = useState<CleaningJobContext[]>([]);
   const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
   const [selectedSection, setSelectedSection] = useState<Section | null>(null);
   const [editedMarkdown, setEditedMarkdown] = useState("");
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState("");
   const [loading, setLoading] = useState(true);
+  const [contextLoading, setContextLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>("all");
@@ -100,6 +166,52 @@ export default function CleaningWorkbenchPage() {
   const [assignFilter, setAssignFilter] = useState<"all" | "mine" | "mine_pending" | "unassigned">("all");
   const [selectedForAssign, setSelectedForAssign] = useState<Set<string>>(new Set());
   const [assigneePick, setAssigneePick] = useState<string>("");
+  const { lastMessage } = useWs();
+  const displayedContextId = useRef<string | null>(cleaningJobId);
+  displayedContextId.current = cleaningJobId;
+
+  const cleaningUrlFor = useCallback((id: string) => (
+    `/projects/${projectId}/documents/${docId}/clean?cleaning_job_id=${encodeURIComponent(id)}`
+  ), [projectId, docId]);
+
+  const switchCleaningContext = useCallback((id: string) => {
+    displayedContextId.current = id;
+    setLoading(true);
+    setSections([]);
+    setSelectedSectionId(null);
+    setSelectedSection(null);
+    setEditedMarkdown("");
+    setComments([]);
+    setVersions([]);
+    setSelectedForAssign(new Set());
+    router.push(cleaningUrlFor(id));
+  }, [router, cleaningUrlFor]);
+
+  const activeCleaningJob = cleaningJobs.find((job) => job.id === cleaningJobId);
+
+  const fetchCleaningJobs = useCallback(() => {
+    api.get<CleaningJobContext[]>(`/projects/${projectId}/documents/${docId}/cleaning-jobs`)
+      .then((jobs) => {
+        setCleaningJobs(jobs);
+        if (!cleaningJobId && jobs.length > 0) {
+          router.replace(cleaningUrlFor(jobs[0].id));
+        } else if (cleaningJobId && jobs.length > 0 && !jobs.some((job) => job.id === cleaningJobId)) {
+          toast.error("指定的清洗来源不存在，已切换到最近一次清洗任务");
+          router.replace(cleaningUrlFor(jobs[0].id));
+        } else if (jobs.length === 0) {
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        toast.error("加载清洗来源失败");
+        setLoading(false);
+      })
+      .finally(() => setContextLoading(false));
+  }, [projectId, docId, cleaningJobId, router, cleaningUrlFor]);
+
+  useEffect(() => {
+    fetchCleaningJobs();
+  }, [fetchCleaningJobs]);
 
   // PDF URL: direct backend URL with auth token
   const pdfUrl = useMemo(() => {
@@ -110,16 +222,28 @@ export default function CleaningWorkbenchPage() {
 
   // Fetch sections list (no selectedSectionId dep to avoid refetch loop)
   const fetchSections = useCallback(() => {
+    if (!cleaningJobId) return;
     api
       .get<{ items: Section[] }>(
-        `/projects/${projectId}/documents/${docId}/sections?page=1&page_size=100`
+        `/projects/${projectId}/documents/${docId}/sections?page=1&page_size=100&cleaning_job_id=${encodeURIComponent(cleaningJobId)}`
       )
       .then((data) => {
+        if (displayedContextId.current !== cleaningJobId) return;
         setSections(data.items);
+        setSelectedSectionId((current) => (
+          data.items.some((section) => section.id === current)
+            ? current
+            : data.items[0]?.id ?? null
+        ));
+        setSelectedForAssign(new Set());
       })
-      .catch(() => toast.error("加载章节列表失败"))
-      .finally(() => setLoading(false));
-  }, [projectId, docId]);
+      .catch(() => {
+        if (displayedContextId.current === cleaningJobId) toast.error("加载章节列表失败");
+      })
+      .finally(() => {
+        if (displayedContextId.current === cleaningJobId) setLoading(false);
+      });
+  }, [projectId, docId, cleaningJobId]);
 
   useEffect(() => {
     fetchSections();
@@ -138,19 +262,35 @@ export default function CleaningWorkbenchPage() {
   }, [projectId]);
 
   const fetchVersions = useCallback(() => {
-    api.get<CleanedVersion[]>(`/projects/${projectId}/documents/${docId}/cleaning/versions`)
-      .then((v) => setVersions(v))
-      .catch(() => setVersions([]));
-  }, [projectId, docId]);
+    if (!cleaningJobId) return;
+    api.get<CleanedVersion[]>(
+      `/projects/${projectId}/documents/${docId}/cleaning/versions?cleaning_job_id=${encodeURIComponent(cleaningJobId)}`
+    )
+      .then((v) => {
+        if (displayedContextId.current === cleaningJobId) setVersions(v);
+      })
+      .catch(() => {
+        if (displayedContextId.current === cleaningJobId) setVersions([]);
+      });
+  }, [projectId, docId, cleaningJobId]);
 
   useEffect(() => { fetchVersions(); }, [fetchVersions]);
 
-  // Auto-select first section when list loads and nothing is selected
   useEffect(() => {
-    if (!selectedSectionId && sections.length > 0) {
-      setSelectedSectionId(sections[0].id);
-    }
-  }, [sections, selectedSectionId]);
+    if (!lastMessage || !cleaningJobId) return;
+    fetchCleaningJobs();
+    fetchSections();
+    fetchVersions();
+  }, [lastMessage, cleaningJobId, fetchCleaningJobs, fetchSections, fetchVersions]);
+
+  useEffect(() => {
+    if (!activeCleaningJob || !["queued", "processing"].includes(activeCleaningJob.status)) return;
+    const refreshTimer = window.setInterval(() => {
+      fetchCleaningJobs();
+      fetchSections();
+    }, 1500);
+    return () => window.clearInterval(refreshTimer);
+  }, [activeCleaningJob, fetchCleaningJobs, fetchSections]);
 
   // Fetch selected section detail + comments
   useEffect(() => {
@@ -159,7 +299,7 @@ export default function CleaningWorkbenchPage() {
       .get<Section>(`/sections/${selectedSectionId}`)
       .then((section) => {
         setSelectedSection(section);
-        setEditedMarkdown(section.cleaned_markdown || section.raw_markdown || "");
+        setEditedMarkdown(section.cleaned_markdown ?? section.raw_markdown ?? "");
       })
       .catch(() => toast.error("加载章节详情失败"));
 
@@ -298,7 +438,8 @@ export default function CleaningWorkbenchPage() {
       return;
     }
     try {
-      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/assign`, {
+      if (!cleaningJobId) return;
+      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/assign?cleaning_job_id=${encodeURIComponent(cleaningJobId)}`, {
         assignments: [{ section_ids: Array.from(selectedForAssign), assignee_id: assigneePick }],
       });
       toast.success("已分派");
@@ -307,7 +448,7 @@ export default function CleaningWorkbenchPage() {
     } catch {
       toast.error("分派失败");
     }
-  }, [assigneePick, selectedForAssign, projectId, docId, fetchSections]);
+  }, [assigneePick, selectedForAssign, projectId, docId, cleaningJobId, fetchSections]);
 
   const handleComplete = useCallback(async () => {
     if (!selectedSectionId) return;
@@ -334,14 +475,15 @@ export default function CleaningWorkbenchPage() {
   }, [selectedSectionId, fetchSections]);
 
   const handleMerge = useCallback(async () => {
+    if (!cleaningJobId) return;
     try {
-      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/merge`);
+      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/merge?cleaning_job_id=${encodeURIComponent(cleaningJobId)}`);
       toast.success("已生成合并版本");
       fetchVersions();
     } catch {
       toast.error("合并失败");
     }
-  }, [projectId, docId, fetchVersions]);
+  }, [projectId, docId, cleaningJobId, fetchVersions]);
 
   const isAdmin = currentUser?.role === "admin" || currentUser?.role === "reviewer";
 
@@ -367,12 +509,17 @@ export default function CleaningWorkbenchPage() {
   }, [sections]);
 
   const latestVersion = versions[0];
+  const previewMarkdown = useMemo(
+    () => normalizeMarkdownForPreview(editedMarkdown),
+    [editedMarkdown]
+  );
 
   const handleFinalReview = useCallback(async (action: "accept" | "reject") => {
     if (!latestVersion) return;
+    if (!cleaningJobId) return;
     const reason = action === "reject" ? window.prompt("驳回原因：") ?? undefined : undefined;
     try {
-      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/final-review`, {
+      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/final-review?cleaning_job_id=${encodeURIComponent(cleaningJobId)}`, {
         version_id: latestVersion.id, action, reason,
       });
       toast.success(action === "accept" ? "已通过" : "已驳回");
@@ -380,16 +527,33 @@ export default function CleaningWorkbenchPage() {
     } catch {
       toast.error("操作失败");
     }
-  }, [latestVersion, projectId, docId, fetchVersions]);
+  }, [latestVersion, projectId, docId, cleaningJobId, fetchVersions]);
 
   const isLockedByOther =
     selectedSection?.locked_by != null &&
     selectedSection.locked_by_name != null;
 
-  if (loading) {
+  if (loading || contextLoading) {
     return (
       <div className="p-6">
         <div className="py-12 text-center text-sm text-muted-foreground">加载中...</div>
+      </div>
+    );
+  }
+
+  if (!cleaningJobId || !activeCleaningJob) {
+    return (
+      <div className="p-6">
+        <Link
+          href={`/projects/${projectId}/documents/${docId}`}
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeftIcon className="size-3" />
+          返回文档并选择解析结果
+        </Link>
+        <div className="py-12 text-center text-sm text-muted-foreground">
+          尚未选择可进入的清洗来源，请先从解析结果创建或进入清洗任务。
+        </div>
       </div>
     );
   }
@@ -528,6 +692,30 @@ export default function CleaningWorkbenchPage() {
               <PanelLeftOpenIcon className="size-3" />
             </Button>
           )}
+          <span className="text-xs text-muted-foreground">解析来源</span>
+          <select
+            className="max-w-64 rounded border px-2 py-1 text-xs bg-transparent"
+            value={activeCleaningJob.id}
+            onChange={(event) => switchCleaningContext(event.target.value)}
+          >
+            {cleaningJobs.map((job) => (
+              <option key={job.id} value={job.id}>
+                {job.parser_profile_name ?? "未知解析器"} · 解析 {job.parse_completed_at ? new Date(job.parse_completed_at).toLocaleString("zh-CN") : "处理中"} · 清洗 {new Date(job.created_at).toLocaleString("zh-CN")}
+              </option>
+            ))}
+          </select>
+          <StatusBadge
+            status={activeCleaningJob.status}
+            label={
+              {
+                queued: "准备工作台",
+                processing: "生成章节中",
+                completed: "工作台可用",
+                failed: "初始化失败",
+              }[activeCleaningJob.status] ?? activeCleaningJob.status
+            }
+            className="text-xs"
+          />
           {isLockedByOther && (
             <Badge variant="secondary" className="bg-orange-100 text-orange-700 text-xs">
               <LockIcon className="size-3 mr-1" />
@@ -636,17 +824,19 @@ export default function CleaningWorkbenchPage() {
               Markdown 预览
             </div>
             <ScrollArea className="flex-1 min-h-0">
-              <div className="p-3 prose prose-sm max-w-none dark:prose-invert [&_ol]:list-decimal">
+              <div className="markdown-preview p-3">
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
+                  remarkPlugins={[remarkGfm, remarkMath, remarkSoftLineBreaks]}
+                  rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }]]}
                   components={{
                     ol: ({ node, start, ...props }) => {
+                      void node;
                       const s = typeof start === "number" ? start : undefined;
                       return <ol start={s} style={s && s > 1 ? { counterReset: `list-item ${s - 1}` } : undefined} {...props} />;
                     },
                   }}
                 >
-                  {editedMarkdown || "暂无内容"}
+                  {previewMarkdown || "暂无内容"}
                 </ReactMarkdown>
               </div>
             </ScrollArea>

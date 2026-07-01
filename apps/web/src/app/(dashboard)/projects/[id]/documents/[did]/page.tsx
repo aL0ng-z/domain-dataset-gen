@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DataTable, type ColumnDef } from "@/components/data-table";
-import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import { useWs } from "@/hooks/use-ws";
 import {
@@ -62,12 +61,20 @@ interface ProfileOption {
   is_default: boolean;
 }
 
-interface TaskProgress {
-  task_id: string;
-  task_type: string;
+interface CleaningJobContext {
+  id: string;
+  parse_job_id: string;
   status: string;
-  progress: number | null;
-  entity_id: string;
+  parser_profile_id: string;
+  parser_profile_name?: string;
+  parse_completed_at?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
+interface CleaningStartResult {
+  cleaning_job_id: string;
+  reused: boolean;
 }
 
 export default function DocumentDetailPage() {
@@ -77,11 +84,11 @@ export default function DocumentDetailPage() {
   const docId = params.did;
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
   const [parseJobs, setParseJobs] = useState<ParseJob[]>([]);
+  const [cleaningJobs, setCleaningJobs] = useState<CleaningJobContext[]>([]);
   const [parserProfiles, setParserProfiles] = useState<ProfileOption[]>([]);
   const [chunkProfiles, setChunkProfiles] = useState<ProfileOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
-  const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null);
   const [deleteJobId, setDeleteJobId] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [showCleanPicker, setShowCleanPicker] = useState(false);
@@ -101,6 +108,11 @@ export default function DocumentDetailPage() {
         )
         .catch(() => [] as ParseJob[]),
       api
+        .get<CleaningJobContext[]>(
+          `/projects/${projectId}/documents/${docId}/cleaning-jobs`
+        )
+        .catch(() => [] as CleaningJobContext[]),
+      api
         .get<{ items: ProfileOption[] }>(
           `/projects/${projectId}/parser-profiles?page=1&page_size=50`
         )
@@ -111,9 +123,10 @@ export default function DocumentDetailPage() {
         )
         .catch(() => ({ items: [] })),
     ])
-      .then(([docData, jobsData, parserData, chunkData]) => {
+      .then(([docData, jobsData, cleanJobsData, parserData, chunkData]) => {
         setDoc(docData);
         setParseJobs(jobsData);
+        setCleaningJobs(cleanJobsData);
         setParserProfiles(parserData.items);
         setChunkProfiles(chunkData.items);
         initialLoadDone.current = true;
@@ -127,19 +140,14 @@ export default function DocumentDetailPage() {
   }, [fetchData]);
 
   // Subscribe to WebSocket for real-time task updates
-  const { subscribe } = useWs();
+  const { lastMessage } = useWs();
   useEffect(() => {
-    const unsub = subscribe("*", (msg: unknown) => {
-      const data = msg as TaskProgress;
-      // Track progress for parse tasks targeting this document
-      if (data.entity_id === docId && data.task_type === "parse") {
-        setTaskProgress({ ...data });
-      }
-      // Silent refresh to pick up DB changes (new job record, status updates)
+    if (lastMessage) {
+      // Refresh persisted states instead of presenting parser milestones as
+      // a measurable percentage; other document task updates remain visible.
       fetchData(true);
-    });
-    return unsub;
-  }, [subscribe, fetchData, docId]);
+    }
+  }, [lastMessage, fetchData]);
 
   const getDefaultProfile = (profiles: ProfileOption[]) =>
     profiles.find((p) => p.is_default) || profiles[0];
@@ -166,7 +174,6 @@ export default function DocumentDetailPage() {
         { parser_profile_id: selectedParserId }
       );
       toast.success("解析任务已发起");
-      setTaskProgress(null);
       fetchData(true);
     } catch {
       toast.error("发起解析失败");
@@ -196,45 +203,39 @@ export default function DocumentDetailPage() {
     }
   }, [projectId, docId, chunkProfiles, fetchData]);
 
-  const startCleanAndNavigate = useCallback(async (parseJobId?: string) => {
-    const cleanUrl = `/projects/${projectId}/documents/${docId}/clean`;
+  const cleanUrlFor = useCallback((cleaningJobId: string) => (
+    `/projects/${projectId}/documents/${docId}/clean?cleaning_job_id=${encodeURIComponent(cleaningJobId)}`
+  ), [projectId, docId]);
+
+  const startCleanAndNavigate = useCallback(async (parseJobId: string) => {
     setActionLoading("clean");
     try {
-      await api.post(
+      const result = await api.post<CleaningStartResult>(
         `/projects/${projectId}/documents/${docId}/cleaning/start`,
-        parseJobId ? { parse_job_id: parseJobId } : undefined
+        { parse_job_id: parseJobId }
       );
-      toast.success("清洗任务已发起，正在跳转...");
-      router.push(cleanUrl);
+      toast.success(result.reused ? "正在进入已有清洗工作台" : "清洗任务已发起，正在进入工作台");
+      router.push(cleanUrlFor(result.cleaning_job_id));
     } catch {
       toast.error("发起清洗失败");
     } finally {
       setActionLoading(null);
     }
-  }, [projectId, docId, router]);
+  }, [projectId, docId, router, cleanUrlFor]);
 
-  const handleClean = useCallback(() => {
-    const cleanUrl = `/projects/${projectId}/documents/${docId}/clean`;
-    // Already in cleaning/cleaned state — go directly to workbench
-    if (doc && ["cleaning", "cleaned"].includes(doc.status)) {
-      router.push(cleanUrl);
-      return;
-    }
-    // Check completed parse jobs
-    const completedJobs = parseJobs.filter((j) => j.status === "completed");
+  const openCleanSourcePicker = useCallback((parseJobId?: string) => {
+    const completedJobs = parseJobs.filter((job) => job.status === "completed");
     if (completedJobs.length === 0) {
       toast.error("没有已完成的解析记录，请先解析文档");
       return;
     }
-    if (completedJobs.length === 1) {
-      // Only one — use it directly
-      startCleanAndNavigate(completedJobs[0].id);
-      return;
-    }
-    // Multiple — let user choose
-    setSelectedCleanJobId(completedJobs[0].id);
+    setSelectedCleanJobId(parseJobId ?? completedJobs[0].id);
     setShowCleanPicker(true);
-  }, [projectId, docId, doc, parseJobs, router, startCleanAndNavigate]);
+  }, [parseJobs]);
+
+  const handleClean = useCallback(() => {
+    openCleanSourcePicker();
+  }, [openCleanSourcePicker]);
 
   const handleDeleteJob = useCallback(async () => {
     if (!deleteJobId) return;
@@ -253,10 +254,12 @@ export default function DocumentDetailPage() {
     }
   }, [projectId, docId, deleteJobId, fetchData]);
 
-  // Determine real-time progress for active parse tasks
-  const activeProgress = taskProgress?.entity_id === docId && taskProgress?.task_type === "parse"
-    ? taskProgress
-    : null;
+  const completedParseJobs = parseJobs.filter((job) => job.status === "completed");
+  const selectedCleanJob = parseJobs.find((job) => job.id === selectedCleanJobId);
+  const cleaningJobForParse = (parseJobId: string) => cleaningJobs.find(
+    (job) => job.parse_job_id === parseJobId && ["queued", "processing", "completed"].includes(job.status)
+  );
+  const selectedCleaningContext = selectedCleanJob ? cleaningJobForParse(selectedCleanJob.id) : undefined;
 
   const jobColumns: ColumnDef<ParseJob>[] = [
     {
@@ -265,30 +268,16 @@ export default function DocumentDetailPage() {
       render: (row) => <StatusBadge status={row.status} />,
     },
     {
-      key: "progress",
-      header: "进度",
+      key: "stage",
+      header: "执行情况",
       render: (row) => {
-        // Show real-time progress for active (non-terminal) jobs
-        const isActive = row.status === "queued" || row.status === "processing";
-        const pct = isActive && activeProgress
-          ? (activeProgress.progress ?? 0)
-          : row.status === "completed"
-            ? 100
-            : row.status === "failed"
-              ? 0
-              : 0;
-        if (row.status === "completed") {
-          return <span className="text-xs text-green-600 font-medium">100%</span>;
-        }
-        if (row.status === "failed") {
-          return <span className="text-xs text-destructive font-medium">失败</span>;
-        }
-        return (
-          <div className="flex items-center gap-2 min-w-[120px]">
-            <Progress value={pct} className="h-2 flex-1" />
-            <span className="text-xs text-muted-foreground w-8">{pct}%</span>
-          </div>
-        );
+        const text = {
+          queued: "等待解析",
+          processing: "解析处理中，耗时取决于文档与解析器",
+          completed: "解析结果已生成",
+          failed: "解析未完成",
+        }[row.status] ?? row.status;
+        return <span className="text-xs text-muted-foreground">{text}</span>;
       },
     },
     {
@@ -332,17 +321,36 @@ export default function DocumentDetailPage() {
       header: "",
       render: (row) => {
         const isActive = row.status === "queued" || row.status === "processing";
+        const existingContext = cleaningJobForParse(row.id);
         return (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 text-muted-foreground hover:text-destructive"
-            disabled={isActive}
-            title={isActive ? "任务进行中，无法删除" : "删除解析记录"}
-            onClick={() => setDeleteJobId(row.id)}
-          >
-            <Trash2Icon className="size-4" />
-          </Button>
+          <div className="flex items-center justify-end gap-2">
+            {row.status === "completed" && (
+              <Button
+                variant="outline"
+                size="xs"
+                disabled={actionLoading !== null}
+                onClick={() => {
+                  if (existingContext) {
+                    router.push(cleanUrlFor(existingContext.id));
+                  } else {
+                    openCleanSourcePicker(row.id);
+                  }
+                }}
+              >
+                进入此解析结果
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 text-muted-foreground hover:text-destructive"
+              disabled={isActive}
+              title={isActive ? "任务进行中，无法删除" : "删除解析记录"}
+              onClick={() => setDeleteJobId(row.id)}
+            >
+              <Trash2Icon className="size-4" />
+            </Button>
+          </div>
         );
       },
     },
@@ -432,7 +440,7 @@ export default function DocumentDetailPage() {
       <Card className="mb-6">
         <CardHeader>
           <CardTitle>操作</CardTitle>
-          <CardDescription>对文档执行各阶段处理操作</CardDescription>
+          <CardDescription>解析完成后，请选择明确的解析结果作为清洗来源</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-3">
@@ -463,12 +471,12 @@ export default function DocumentDetailPage() {
             <Button
               variant="outline"
               onClick={handleClean}
-              disabled={actionLoading !== null || !["parsed", "cleaning", "cleaned"].includes(doc.status)}
+              disabled={actionLoading !== null || completedParseJobs.length === 0}
             >
               {actionLoading === "clean" && (
                 <Loader2Icon className="size-4 animate-spin" />
               )}
-              文档清洗
+              选择解析结果进行清洗
             </Button>
             <Button
               variant="outline"
@@ -508,6 +516,9 @@ export default function DocumentDetailPage() {
       <Card>
         <CardHeader>
           <CardTitle>解析任务记录</CardTitle>
+          <CardDescription>
+            解析任务展示处理状态，不以估算百分比表示耗时进度。已完成结果可作为清洗任务来源。
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <DataTable
@@ -547,19 +558,21 @@ export default function DocumentDetailPage() {
       <Dialog open={showCleanPicker} onOpenChange={(open) => { if (!open) setShowCleanPicker(false); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>选择解析结果</DialogTitle>
+            <DialogTitle>确认清洗来源</DialogTitle>
             <DialogDescription>
-              该文档有多条已完成的解析记录，请选择要基于哪条进行清洗。
+              请选择要处理的解析结果。已有清洗工作台会直接进入，未开始的结果将创建独立清洗任务。
             </DialogDescription>
           </DialogHeader>
+          <label className="text-sm font-medium" htmlFor="clean-source-job">
+            已完成的解析结果
+          </label>
           <select
+            id="clean-source-job"
             className="w-full rounded border px-3 py-2 text-sm bg-transparent"
             value={selectedCleanJobId}
             onChange={(e) => setSelectedCleanJobId(e.target.value)}
           >
-            {parseJobs
-              .filter((j) => j.status === "completed")
-              .map((j) => {
+            {completedParseJobs.map((j) => {
                 const p = parserProfiles.find((pp) => pp.id === j.parser_profile_id);
                 const time = j.completed_at ? new Date(j.completed_at).toLocaleString("zh-CN") : "";
                 return (
@@ -569,6 +582,28 @@ export default function DocumentDetailPage() {
                 );
               })}
           </select>
+          {selectedCleanJob && (
+            <div className="rounded-md border bg-muted/30 p-3 text-sm">
+              <div>
+                <span className="text-muted-foreground">来源解析器：</span>
+                {parserProfiles.find((profile) => profile.id === selectedCleanJob.parser_profile_id)?.name ?? "未知解析器"}
+              </div>
+              <div>
+                <span className="text-muted-foreground">完成时间：</span>
+                {selectedCleanJob.completed_at
+                  ? new Date(selectedCleanJob.completed_at).toLocaleString("zh-CN")
+                  : "-"}
+              </div>
+              <div>
+                <span className="text-muted-foreground">解析记录：</span>
+                <span className="font-mono text-xs">{selectedCleanJob.id}</span>
+              </div>
+              <div>
+                <span className="text-muted-foreground">清洗工作台：</span>
+                {selectedCleaningContext ? "已存在，可继续处理" : "尚未创建"}
+              </div>
+            </div>
+          )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowCleanPicker(false)}>
               取消
@@ -576,12 +611,16 @@ export default function DocumentDetailPage() {
             <Button
               onClick={() => {
                 setShowCleanPicker(false);
-                startCleanAndNavigate(selectedCleanJobId);
+                if (selectedCleaningContext) {
+                  router.push(cleanUrlFor(selectedCleaningContext.id));
+                } else {
+                  startCleanAndNavigate(selectedCleanJobId);
+                }
               }}
               disabled={!selectedCleanJobId || actionLoading !== null}
             >
               {actionLoading === "clean" && <Loader2Icon className="size-4 animate-spin" />}
-              开始清洗
+              {selectedCleaningContext ? "进入此解析结果" : "开始清洗"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -128,3 +128,92 @@
     @apply font-sans;
   }
 }
+
+@layer components {
+  .markdown-preview {
+    @apply max-w-none text-sm leading-7 text-foreground;
+  }
+
+  .markdown-preview > :first-child {
+    margin-top: 0;
+  }
+
+  .markdown-preview > :last-child {
+    margin-bottom: 0;
+  }
+
+  .markdown-preview h1 {
+    @apply mb-4 mt-6 border-b pb-2 text-2xl font-semibold leading-tight;
+  }
+
+  .markdown-preview h2 {
+    @apply mb-3 mt-5 border-b pb-1.5 text-xl font-semibold leading-tight;
+  }
+
+  .markdown-preview h3 {
+    @apply mb-2.5 mt-4 text-lg font-semibold leading-tight;
+  }
+
+  .markdown-preview h4,
+  .markdown-preview h5,
+  .markdown-preview h6 {
+    @apply mb-2 mt-3 font-semibold leading-tight;
+  }
+
+  .markdown-preview p {
+    @apply my-2;
+  }
+
+  .markdown-preview strong {
+    @apply font-semibold;
+  }
+
+  .markdown-preview em {
+    @apply italic;
+  }
+
+  .markdown-preview ul {
+    @apply my-2 list-disc space-y-1 pl-5;
+  }
+
+  .markdown-preview ol {
+    @apply my-2 list-decimal space-y-1 pl-5;
+  }
+
+  .markdown-preview blockquote {
+    @apply my-3 border-l-4 border-border pl-3 text-muted-foreground;
+  }
+
+  .markdown-preview table {
+    @apply my-3 w-full border-collapse text-xs;
+  }
+
+  .markdown-preview th,
+  .markdown-preview td {
+    @apply border px-2 py-1 align-top;
+  }
+
+  .markdown-preview th {
+    @apply bg-muted font-semibold;
+  }
+
+  .markdown-preview code {
+    @apply rounded bg-muted px-1 py-0.5 font-mono text-xs;
+  }
+
+  .markdown-preview pre {
+    @apply my-3 overflow-auto rounded-md bg-muted p-3;
+  }
+
+  .markdown-preview pre code {
+    @apply bg-transparent p-0;
+  }
+
+  .markdown-preview hr {
+    @apply my-4 border-border;
+  }
+
+  .markdown-preview .katex-display {
+    @apply my-4 overflow-x-auto overflow-y-hidden;
+  }
+}

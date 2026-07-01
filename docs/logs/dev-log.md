@@ -8,11 +8,510 @@
 
 | Release | 名称 | 状态 | 备注 |
 |---------|------|------|------|
-| R1 | Lab Pilot | 测试进行中 | 主链路 MVP，已修复 34 个 issue |
+| R1 | Lab Pilot | 测试进行中 | 主链路 MVP；远程 API 可用；本地 MinerU/MLX 与 PaddleOCR-VL 本地 API 均已作为 ParseJob 解析方式接入；解析入口与清洗来源隔离、清洗按页 Section 切分已修整；一键启动会按前端锁文件同步新增依赖 |
 | R1+ | Slice 1: Clean 协作升级 | 后端冒烟通过，前端 UI 待目检 | 数据模型扩展 + Clean 分派/合并/终审工作流 |
 | R2 | Lab Team | 未开始 | 多人协作、评测中心 |
 | R3 | Quality Automation | 未开始 | 质量自动化 |
 | R4 | Optional Extensions | 未开始 | 多轮对话、Arena 等 |
+
+---
+
+## 环境变量示例模板补齐（2026-06-04）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `apps/api/.env.example` | 新增后端本机运行示例，覆盖 PostgreSQL、Redis、MinIO、JWT、远程解析器 Token 与 FastAPI 监听配置 | 已实现 |
+| `apps/web/.env.example` | 新增前端示例，覆盖浏览器访问 API 与 WebSocket 的公开地址 | 已实现 |
+| `infra/docker/.env.example` | 补齐 `MINIO_HOST_PORT` 与 `MINIO_CONSOLE_PORT`，使 Docker 基础设施端口示例与一键启动脚本读取项一致 | 已实现 |
+
+### 说明
+
+- 当前真实运行配置仍位于 `infra/docker/.env`、`apps/api/.env` 与 `apps/web/.env.local`，不提交真实密钥。
+- 一键启动脚本仍会在缺少真实配置时自动生成本机默认值；示例模板用于新机器手动检查和部署说明。
+
+---
+
+## 一键启动前端依赖同步增强（2026-05-29）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/dev-start.sh` | 前端依赖检查从“仅判断 `node_modules` 是否存在”升级为检查 `node_modules/.package-lock.json` 与 `apps/web/package.json` / `package-lock.json` 时间戳，并通过 `npm ls --depth=0` 校验依赖完整性；锁文件更新或依赖缺失时自动执行 `npm ci` | 已实现 |
+| `scripts/dev-start.ps1` | Windows 一键启动脚本同步采用同一判断逻辑，保证新拉取的 Markdown/KaTeX 等前端依赖会被补齐，且能修复不完整的 `node_modules` | 已实现 |
+| `apps/web/package.json` / `package-lock.json` | `remark-math`、`rehype-katex`、`katex` 已作为普通前端运行依赖入锁，依赖安装限定在 `apps/web/node_modules` | 已确认 |
+
+### 问题原因
+
+- 本次 Markdown 预览增强确实新增了 `remark-math`、`rehype-katex`、`katex` 三个前端依赖。
+- 原一键启动脚本在全新电脑上会通过 `npm ci` 安装完整依赖，但在已有 `apps/web/node_modules` 的旧环境中，只会认为“前端依赖已存在”，不会感知 `package-lock.json` 新增条目。
+
+### 验证状态
+
+- `scripts/dev-start.sh` 执行 `bash -n` 语法检查通过。
+- `apps/web` 执行 `npm ls --depth=0` 通过，确认新增 Markdown/KaTeX 依赖已安装在本地前端依赖树。
+- `apps/web` 执行 `npm exec tsc -- --noEmit` 通过。
+- 当前 macOS 环境未安装 `pwsh`，`scripts/dev-start.ps1` 未做本地 parser 级验证；本轮按 PowerShell 语法静态审阅。
+
+### 已知问题与下一步
+
+- 使用 `--skip-install` / `-SkipInstall` 时仍会按用户显式要求跳过依赖同步；若此时锁文件已有新增依赖，前端启动仍可能缺包。
+- `npm ci` 需要访问 npm registry；新电脑首次安装或锁文件更新补包时应保证网络可用，或后续单独引入离线 npm 缓存策略。
+
+---
+
+## 清洗工作台 Markdown 预览增强（2026-05-29）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `apps/web/.../documents/[did]/clean/page.tsx` | Markdown 预览接入 `remark-math` + `rehype-katex`，支持 `$...$`、`$$...$$`、`\(...\)`、`\[...\]` 公式渲染；预览前增加 PDF parser 常见转义归一化，让 `\#`、`\*\*` 等展示时恢复为可解析 Markdown | 已实现 |
+| `apps/web/src/app/layout.tsx` | 引入 `katex/dist/katex.min.css`，保证 KaTeX 公式样式生效 | 已实现 |
+| `apps/web/src/app/globals.css` | 新增 `.markdown-preview` 样式，补齐 Tailwind reset 下缺失的标题、加粗、列表、表格、代码块和公式显示层级 | 已实现 |
+| `apps/web/package.json` / `package-lock.json` | 新增 `remark-math`、`rehype-katex`、`katex` 依赖 | 已实现 |
+
+### 问题原因
+
+- `react-markdown` 本身可以解析普通 Markdown，但部分解析器会把 Markdown 控制符转义为 `\#`、`\*\*`，渲染后视觉上仍像原始 Markdown 符号。
+- 公式语法不属于基础 Markdown，原页面只接入 `remark-gfm`，没有数学扩展，因此 `$E=mc^2$` 等只能作为普通文本显示。
+- 当前项目未安装 Tailwind Typography，`.prose` 类没有实际排版增强；同时 Tailwind reset 会重置标题默认样式，导致即使 AST 已正确渲染，标题层级也不明显。
+
+### 验证状态
+
+- `apps/web` 执行 `npm exec tsc -- --noEmit` 通过。
+- 清洗页面与 root layout 定向 `eslint` 通过。
+- 用本地 React SSR 小样验证：转义标题、转义加粗、`\(...\)` 与 `$$...$$` 可分别渲染为 `<h1>`、`<strong>` 与 KaTeX 节点。
+
+### 已知问题与下一步
+
+- 预览仍不渲染任意 raw HTML，以避免把解析器返回的 HTML 直接注入页面；如后续需要表格 HTML 支持，应单独引入 sanitize 策略。
+- KaTeX 对极少数非标准 LaTeX 宏会降级显示错误标记；当前已关闭 throw，避免单个公式阻断整页预览。
+
+---
+
+## 清洗工作台 Markdown 预览与按页 Section 切分（2026-05-29）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `apps/web/.../documents/[did]/clean/page.tsx` | 修复 Markdown 预览与编辑器状态不同步的边界：`cleaned_markdown` 使用空字符串时不再回退 raw；预览增加软换行处理，使编辑器中的普通换行可在预览栏按行展示 | 已实现 |
+| `libs/cleaning/cleaning/splitter.py` | 清洗 Section 切分策略调整为优先按页：先读取 `structured_json.pages` 页级 markdown，再使用 `page_mapping.markdown_start/end`，再识别显式页标记；仅在旧解析产物没有页级信息时回退 H1/H2 标题切分 | 已实现 |
+| `apps/api/app/workers/clean_worker.py` | 清洗 worker 下载 ParseJob 的 `structured.json`，把 `structured_json` 与 `page_mapping` 一并传入 splitter，确保 CleaningJob 按指定解析来源的页级产物生成 Section | 已实现 |
+| `libs/parsing/parsing/pymupdf_parser.py` | 默认 `pymupdf4llm` 改为读取 `page_chunks=True`，保存 `structured_json.pages` 和 `page_mapping` 的 markdown 字符区间，补齐按页清洗所需边界 | 已实现 |
+| `libs/parsing/parsing/paddleocr_parser.py` / `paddleocr_local_service_parser.py` | PaddleOCR 远程与本地服务继续按 `layoutParsingResults[*].markdown.text` 组合全文，同时补齐每页 markdown 区间 | 已实现 |
+| `libs/parsing/parsing/mineru_parser.py` / `mineru_local_service_parser.py` | MinerU 远程与本地服务从 `content_list` 按 `page_idx` 聚合页级 markdown fallback；本地 transformers 解析器沿用已有逐页 markdown 产物 | 已实现 |
+
+### 设计边界
+
+- 新 CleaningJob 会优先呈现“第 N 页”作为左侧 Section；这更贴近 PDF 原文对照清洗，也避免无 H1/H2 的论文或手册全文落成单 Section。
+- 已存在的旧 ParseJob 如果当时没有保存页级 markdown 或字符区间，无法无损反推真实页边界；这类历史任务仍会回退到标题切分。需要按页清洗时应重新解析后进入新的清洗工作台。
+- MinerU 远程/本地服务在缺少直接页级 markdown 时使用 `content_list` 聚合文本型字段作为页级 fallback，表格/公式字段会尽量保留 `table_body` / `latex`，但质量仍取决于服务返回结构。
+
+### 验证状态
+
+- `pytest -q` 通过，共 21 项；其中新增/相关 `tests/test_cleaning_splitter.py` 与 `tests/test_remote_parsers.py` 共 8 项通过。
+- `apps/web` 执行 `npm exec tsc -- --noEmit` 通过。
+- 清洗页面定向 `eslint` 通过。
+- 修改文件执行 `ruff check` 与 `python -m py_compile` 通过。
+
+### 已知问题与下一步
+
+- 旧清洗工作台不会自动重切已有 Section，按页策略只在新建 CleaningJob 时生效。
+- PDF iframe 仍未实现随 Section 自动跳页/高亮；现在左侧 Section 已有 `source_pages=[N]`，下一步可用它驱动 PDF 页码联动。
+- Markdown 预览仍未引入数学公式渲染（KaTeX/MathJax）和 raw HTML 渲染；如果压气机教材公式较多，后续可作为独立预览增强项处理。
+
+---
+
+## 本地解析服务环境自动检查（2026-05-28）
+
+### 一键启动前置环境补齐
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/dev-start.sh` | 在 `[3/7] 检查并安装依赖` 阶段增加 MinerU 与 PaddleOCR-VL 本地 API 服务环境检查；平台依赖完成后，自动确认两个本地服务的按需启动前置条件 | 已实现 |
+| `scripts/dev-start.sh` -> `scripts/mineru_local_service.py` | 检测 `models/MinerU2.5-Pro-2604-1.2B/model.safetensors` 与 `.venv-mineru-service/bin/mineru-api`；缺少服务环境时复用既有 `setup`，并刷新 `mineru.json` 配置 | 已实现 |
+| `scripts/dev-start.sh` -> `scripts/paddleocr_local_service.py` | 检测 `models/PaddleOCR-VL-1.5-0.9B/model.safetensors`、PaddleX 环境、MLX-VLM 环境、`PP-DocLayoutV3` 与 MLX 转换产物；缺少时分别调用既有 `setup`、`download-layout`、`convert` 与 `config` | 已实现 |
+
+#### 设计边界
+
+- 不新增第三套安装脚本；`dev-start.sh` 保持项目启动编排入口，重型模型服务的安装、下载、转换和配置继续复用已经验证过的专用 helper 脚本。
+- MinerU 与 PaddleOCR-VL 的主模型权重属于本地已准备资源：如果 `models/.../model.safetensors` 不存在，启动脚本给出明确路径提示并跳过对应服务环境自动安装，避免在用户不知情时下载超大权重。
+- `PP-DocLayoutV3`、PaddleOCR-VL 的 MLX 转换产物和两个独立服务虚拟环境属于可由本仓库 helper 自动补齐的运行前置条件，因此纳入一键启动检查。
+- 使用 `--skip-install` 时沿用原语义：跳过依赖检查与安装，也会跳过本地服务环境补齐。
+
+#### 验证状态
+
+- `bash -n scripts/dev-start.sh scripts/dev-stop.sh` 通过。
+- 本轮未执行完整 `dev-start.sh` 首次安装链路，避免重复触发大型依赖安装和模型转换；逻辑复用此前已分别实测通过的 MinerU / PaddleOCR helper 子命令。
+
+#### 已知问题与下一步
+
+- 仍建议在全新机器或清空独立服务环境后执行一次完整 `./scripts/dev-start.sh`，记录首次自动补齐耗时、网络下载提示和失败提示是否足够清晰。
+
+---
+
+## PaddleOCR-VL 本地服务接入平台（2026-05-28）
+
+### 第三步：作为 ParserProfile 解析方式并行接入
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `libs/parsing/parsing/paddleocr_local_service_parser.py` / `__init__.py` | 新增 `paddleocr_local_service` parser，调用自有 PaddleX `/layout-parsing`，不注入官方 Token，提取页级 Markdown、`prunedResult` 和页映射 | 已实现 |
+| `apps/api/app/services/paddleocr_local_service_manager.py` | 新增双进程按需启动管理器：先启动 `9021` 内部 MLX-VLM，再启动 `9020` PaddleX API；校验服务环境、MLX 权重与 `PP-DocLayoutV3` 完整性 | 已实现 |
+| `apps/api/app/workers/parse_worker.py` | 选择 `paddleocr_local_service` 时解析前自动确保本地服务可用，与 MinerU 本地服务模式平行 | 已实现 |
+| `scripts/init_seed.py` | 为新数据库和既有项目幂等补齐 `PaddleOCR-VL（本地部署服务 / MLX）` ParserProfile | 已实现 |
+| `apps/web/.../settings/page.tsx` | 设置页增加本地 PaddleOCR-VL 服务类型、PaddleX API 地址与内部 MLX-VLM 地址配置；明确无需官方 Token | 已实现 |
+| `scripts/dev-stop.sh` | 停止脚本新增 `PaddleOCR-API.pid` 与 `PaddleOCR-VLM.pid` 清理 | 已实现 |
+| `docs/runbooks/paddleocr-local-service.md` | 更新为平台已接入状态，补充默认 profile、PID、日志与停止方式 | 已更新 |
+
+#### 设计边界
+
+- `paddleocr_local_service` 与远程 `paddleocr` 并存：远程方式继续读取服务端 `PADDLEOCR_API_TOKEN`，本地服务方式不需要官方 Token。
+- ParserProfile 默认指向本机 `http://127.0.0.1:9020/layout-parsing` 与内部 `http://127.0.0.1:9021`；外部服务地址不会被平台误启动。
+- 当前 Mac 使用 MLX-VLM；未来迁入 GPU 时，可保持外层 PaddleX `/layout-parsing` 协议不变，只替换内部 VLM 服务地址与后端。
+
+#### 验证状态
+
+- 后端定向测试通过：`pytest tests/test_remote_parsers.py tests/test_parser_credentials.py tests/test_mineru_local_service_manager.py tests/test_paddleocr_local_service_manager.py -q`，共 17 项。
+- `python -m py_compile` 与 `ruff check` 覆盖新增 parser、manager、worker、seed 与测试文件，均通过。
+- 前端 `npm exec tsc -- --noEmit` 与设置页定向 `eslint` 通过。
+- `bash -n scripts/dev-stop.sh scripts/dev-start.sh` 通过。
+
+#### 已知问题与下一步
+
+- 已完成 mock 层平台适配验证；还需用真实 PDF 通过前端选择 `PaddleOCR-VL（本地部署服务 / MLX）` 发起 ParseJob，确认自动启动服务、任务状态、解析产物和进入清洗工作台全链路表现。
+- Mac 首次真实解析会加载 MLX 模型，耗时明显高于普通远程 API；前端任务页当前只展示状态文字，不展示实时百分比，符合此前进度展示调整。
+
+---
+
+## PaddleOCR-VL 完整布局链路补齐（2026-05-28）
+
+### 第二步：补齐 PP-DocLayoutV3 并验证完整 `/layout-parsing`
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/paddleocr_local_service.py` | 新增 `download-layout` 命令、本地 `PP-DocLayoutV3` 路径校验、`LayoutDetection.model_dir` 配置写入；完整模式默认要求本地布局模型齐全 | 已实现并实测 |
+| `models/PP-DocLayoutV3/` | 下载 `PaddlePaddle/PP-DocLayoutV3` 的 Paddle 推理格式文件：`inference.json`、`inference.pdiparams`、`inference.yml` | 已补齐 |
+| `docs/runbooks/paddleocr-local-service.md` | 将运行步骤从整页冒烟更新为可执行完整布局检测链路；保留 `--whole-page-smoke` 作为调试降级路径 | 已更新 |
+
+#### 实测结果
+
+- `models/PP-DocLayoutV3` 约 `126M`，核心权重 `inference.pdiparams` 约 `125M`。
+- 生成的 `logs/paddleocr-local-service/config/PaddleOCR-VL-1.5.yaml` 已设置 `use_layout_detection: true`，并将 `SubModules.LayoutDetection.model_dir` 指向本地 `models/PP-DocLayoutV3`。
+- 启动完整 API 时日志显示 `Creating model: ('PP-DocLayoutV3', '/Users/liuyuze/Desktop/domain-dataset-gen/models/PP-DocLayoutV3', None)`，确认未走远程布局模型下载。
+- 不带 `--whole-page-smoke` 执行 `smoke`，`/layout-parsing` 返回 HTTP `200`，Markdown 输出为 `PaddleOCR local API smoke test`；响应 `prunedResult` 包含 `layout_det_res`、`parsing_res_list` 等完整 pipeline 字段。
+- `python -m py_compile scripts/paddleocr_local_service.py` 与 `ruff check scripts/paddleocr_local_service.py` 通过。
+
+#### 已知问题与下一步
+
+- 本轮使用自动生成的单页 PDF 完成协议与模型加载验证；仍需选择一份真实压气机教材/论文 PDF 小样本，观察标题、正文、表格、图片和公式区域的 Markdown 质量。
+- 独立服务已具备平台接入条件；下一步可新增 `paddleocr_local_service` 解析类型、双服务按需启动/停止管理器、ParserProfile 种子和前端无 Token 配置入口。
+- Mac 上继续使用 MLX-VLM；未来迁入 GPU 后，将内部 `9021` 推理层替换为 vLLM/FastDeploy，外层 `9020 /layout-parsing` 协议保持不变。
+
+---
+
+## PaddleOCR-VL 本地 API 冒烟验证（2026-05-27）
+
+### 第一阶段：Apple Silicon 双服务与本地权重链路
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/paddleocr_local_service.py` | 新增 PaddleX 完整 API 与 MLX-VLM 内部推理的双服务准备、模型转换、配置、健康检查和 PDF-to-Markdown 冒烟工具；使用 `9020` / `9021` 与 MinerU `9010` 隔离 | 已实现并实测 |
+| `.gitignore` | 忽略 `.venv-paddleocr-service/` 与 `.venv-paddleocr-mlx-service/`，服务环境不进入平台依赖树 | 已实现 |
+| `docs/runbooks/paddleocr-local-service.md` | 记录 Mac 环境、端口、MLX 转换、整页冒烟与未来 GPU 内部推理替换边界 | 已更新 |
+
+#### 设计边界
+
+- 本阶段只验证独立本地服务，不新增平台 `ParserProfile`、ParseJob manager 或前端选项；远程 `paddleocr` 与 MinerU 平台路径均不改变。
+- 对外协议由 PaddleX 提供 `http://127.0.0.1:9020/layout-parsing`；内部 MLX-VLM 服务位于 `http://127.0.0.1:9021`。未来迁入 GPU 时可替换内部推理引擎而保留平台对外协议。
+- 仓库已有 `models/PaddleOCR-VL-1.5-0.9B` 是原始本地权重；Mac 的 MLX 服务读取由该目录离线转换得到的 `logs/paddleocr-local-service/models/PaddleOCR-VL-1.5-MLX`，整个请求链路不需要官方 PaddleOCR API token。
+
+#### 实测结果
+
+- API 环境已安装 `paddleocr==3.5.0`、`paddlex==3.5.2` 与 `paddlepaddle==3.3.1`；独立 MLX 环境已安装 `mlx-vlm==0.3.10`、`mlx-lm==0.30.5`、`mlx==0.31.1`、`mlx-metal==0.31.1`、`transformers==5.0.0rc3`、`torch==2.12.0` 与 `torchvision==0.27.0`，`uv pip check` 通过。
+- 已将原始权重离线转换为约 `1.7G` 的 MLX 产物，并验证 MLX 可直接加载该模型及本地处理器代码。
+- 以 `api-serve --whole-page-smoke` 关闭布局检测后，`health` 成功访问 `/layout-parsing`；提交自动生成的一页 PDF 返回 HTTP `200`，Markdown 输出为 `PaddleOCR local API smoke test`。MLX 服务日志记录了本地模型加载与 `/chat/completions` 成功生成。
+- 实测中修正了三项阻塞：`mlx-vlm==0.3.9` 不含 `paddleocr_vl` 支持；MLX 服务需信任转换产物随附的本地处理器实现；PaddleX 的内部 `server_url` 必须使用服务根地址而非附加 `/v1`。启动环境同时显式排除本机地址代理影响。
+- `python -m py_compile scripts/paddleocr_local_service.py` 与 `ruff check scripts/paddleocr_local_service.py` 通过。
+
+#### 已知问题与下一步
+
+- 2026-05-28 已补齐本地 `PP-DocLayoutV3` 并通过完整布局链路冒烟；后续问题转入真实 PDF 质量验收与平台接入。
+
+---
+
+## MinerU 本地服务按任务自动启动（2026-05-27）
+
+### 解析时自动拉起 MLX 服务
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `apps/api/app/services/mineru_local_service_manager.py` | 新增本机服务管理器：解析前探测健康状态、自动启动 `.venv-mineru-service` 中的服务、等待就绪、输出 PID/日志供停止与排错使用 | 已实现 |
+| `apps/api/app/workers/parse_worker.py` | 选择 `mineru_local_service` 时，在 parser 调用前按需保证本机服务可用，不再将可用性绑定到平台启动参数 | 已实现 |
+| `scripts/dev-start.sh` / `dev-stop.sh` | 普通启动即支持本地服务解析；旧 `--with-mineru-service` 仅保留兼容；停止脚本可停止任务自动启动的服务 | 已实现 |
+| `apps/web/.../settings/page.tsx` | 本地服务提示改为“首次本机解析自动启动”，消除需要人工预启动的误导 | 已实现 |
+| `tests/test_mineru_local_service_manager.py` | 覆盖健康服务复用、本机地址按需启动、外部服务地址不误启动 | 已完成 |
+
+#### 行为说明
+
+- 本机 `http://127.0.0.1:<port>` / `http://localhost:<port>` 的 `mineru_local_service` 配置在首次 ParseJob 中自动启动服务；之后的任务复用健康服务。
+- GPU 主机或其他外部服务地址不触发本机进程启动，保持未来 `vlm-http-client + vLLM` 部署边界清晰。
+- 独立服务环境仍属于一次性部署准备项：环境尚未安装时，任务会返回包含 `scripts/mineru_local_service.py setup` 的明确处理提示，而非模糊的连接拒绝。
+
+#### 验证状态
+
+- `ruff check`、`python -m py_compile`、`bash -n scripts/dev-start.sh scripts/dev-stop.sh` 通过。
+- `pytest tests -q` 通过，共 11 项测试通过。
+- `apps/web` 执行 `tsc --noEmit` 与设置页定向 `eslint` 通过。
+- 在 `127.0.0.1:9010` 未预启动服务的状态下，直接执行后端按需管理逻辑并调用平台 `MineruLocalServiceParser`，成功自动启动服务并解析单页 PDF，返回 Markdown `MinerU local service PDF smoke test`。
+- 按需启动的服务日志明确记录 `Using mlx-engine as the inference engine for VLM.`；验收完成后已停止临时服务进程。
+
+---
+
+## MinerU 本地部署服务接入平台（2026-05-27）
+
+### 第二阶段：MLX 服务作为解析方式接入
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `libs/parsing/parsing/mineru_local_service_parser.py` / `__init__.py` | 新增 `mineru_local_service` parser，通过自部署 `mineru-api` 的异步任务接口上传 PDF、轮询结果并提取 Markdown、页映射与结构化产物 | 已实现并真实联通 |
+| `scripts/init_seed.py` | 为新数据库和既有项目幂等补齐 `MinerU（本地部署服务 / MLX）` ParserProfile；默认指向 `http://127.0.0.1:9010` 和 `vlm-auto-engine` | 已实现 |
+| `apps/web/.../settings/page.tsx` | 设置页增加本地服务类型、服务地址与推理路径配置；明确 Mac/MLX 和未来 GPU/vLLM 的选择边界；不要求官方 Token | 已实现 |
+| `scripts/dev-start.sh` / `dev-stop.sh` | 曾提供 `--with-mineru-service` 预启动入口；同日后续已替换为 ParseJob 按需自动启动，并保留旧参数兼容 | 已被按需启动方案替代 |
+| `tests/test_remote_parsers.py` / `test_parser_credentials.py` | 覆盖本地服务异步协议解析、页映射产物及不注入远程 MinerU Token 的凭据边界 | 已完成 |
+| `docs/runbooks/mineru-local-service.md` | 补充平台启用入口、解析器选择和 GPU/vLLM 迁移配置方式 | 已更新 |
+
+#### 设计边界
+
+- `mineru_local_service` 与既有 `mineru_local + transformers` 并存：前者将模型生命周期隔离在独立服务，后者保留为原有兼容路径，不在本轮强制替换历史配置。
+- 平台只依赖 `mineru-api` 的服务协议。当前 Mac 的 `vlm-auto-engine` 实际落到 MLX；迁入 GPU 后可将同一 ParserProfile 改为 `vlm-http-client` 并填写 vLLM 服务地址，而无需修改 ParseJob 或清洗流程。
+- 本地服务读取仓库已有模型权重，不注入 `MINERU_API_TOKEN`，因此用户无需官方 API Token 即可完成该解析方式的任务。
+
+#### 验证状态
+
+- `ruff check`、`python -m py_compile` 和 `bash -n scripts/dev-start.sh scripts/dev-stop.sh` 通过。
+- `pytest tests -q` 通过，共 7 项 parser 与凭据边界测试通过。
+- `apps/web` 执行 `tsc --noEmit` 与设置页定向 `eslint` 通过。
+- 实际启动本机 `mineru-api` 后，以平台 `MineruLocalServiceParser` 对单页 PDF 发起 `/tasks -> 状态轮询 -> /result` 调用，成功返回 Markdown `MinerU local service PDF smoke test`、单页映射及结构化 parser 标识。
+- 同次真实调用的服务日志显示 `Using mlx-engine as the inference engine for VLM.`，确认当前 Mac 执行的是 MLX 本地推理，而不是远程 API 或 vLLM。
+- 通过 `./scripts/dev-start.sh --skip-install --with-mineru-service` 验证迁移与种子初始化：既有项目自动新增 1 个 `MinerU（本地部署服务 / MLX）` profile；在前端设置页目检确认默认 MLX 路径和未保存切换后的 GPU/vLLM 服务地址输入均正常展示。
+
+#### 已知问题与下一步
+
+- 尚未用用户真实复杂 PDF 在完整前端交互中执行 `上传 -> 选择本地部署服务 -> ParseJob 完成 -> 进入清洗` 的质量验收；本轮已完成解析器真实服务调用与配置入口目检。
+- Linux + NVIDIA GPU 部署后仍需用真实复杂 PDF 对 `vlm-http-client + vLLM` 完成吞吐、显存和输出质量验收。
+
+---
+
+## MinerU 本地解析服务化验证（2026-05-26）
+
+### 第一阶段：独立服务与本地权重无 Token 冒烟
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/mineru_local_service.py` | 新增独立 MinerU 服务配置、隔离环境安装、`mineru-api` 启动、健康检查和 PDF 转 Markdown 冒烟入口；可自动生成单页测试 PDF | 已实现并实测 |
+| `docs/runbooks/mineru-local-service.md` | 记录本地服务验证步骤、Mac/未来 GPU 的后端边界、以及第二阶段平台接入方式 | 已完成 |
+| `.gitignore` | 忽略独立服务虚拟环境 `.venv-mineru-service/`，避免重模型服务依赖进入平台工作树 | 已实现 |
+
+#### 设计边界
+
+- 本阶段只验证独立本地解析服务，不改动平台 `ParserProfile`、ParseJob 或前端解析入口；现有 `mineru_local + transformers` 继续可用。
+- 服务使用官方 `mineru-api` 接收 PDF、组织解析结果，避免平台重新维护一套 PDF 编排服务；模型配置以 `MINERU_MODEL_SOURCE=local` 和本地 `models-dir.vlm` 为准。
+- 当前 Mac 与未来 GPU 共用服务协议，但不强行共用推理引擎：Mac 验证本地服务可行性，Linux + NVIDIA GPU 阶段验收 vLLM。
+
+#### 实测结果
+
+- 使用独立原生 arm64 Python 3.12 环境安装官方 `mineru 3.1.15` 成功；平台原有 Python 3.11 `.venv` 未变更。
+- 生成的 `logs/mineru-local-service/mineru.json` 将 `models-dir.vlm` 指向仓库现有 `models/MinerU2.5-Pro-2604-1.2B` 权重，未包含官方 API Token。
+- 启动 `mineru-api` 后，`GET /health` 返回 `status=healthy`、`version=3.1.15`。
+- 通过 `POST /file_parse` 以 `backend=vlm-auto-engine` 提交自动生成的一页 PDF，成功返回 Markdown `MinerU local service PDF smoke test`。
+- 服务日志明确显示当前 macOS 自动使用 `mlx-engine`；服务环境中 `mlx_vlm` 可用而 `vllm` 未安装。因此已完成“本地服务 + 本地权重 + 无 Token”验证，尚未宣称完成 vLLM 推理验证。
+- `python -m py_compile scripts/mineru_local_service.py` 与 `ruff check scripts/mineru_local_service.py` 通过。
+
+#### 后续延续
+
+- `mineru_local_service` ParserProfile 和平台 parser 适配器已于 2026-05-27 接入，通过本地 `mineru-api` 返回 ParseJob 结果，并与旧 `mineru_local` 并存。
+- 未来迁移到 Linux + NVIDIA GPU 时，启动加载同一类自有权重的 vLLM/OpenAI-compatible 服务，令 `mineru-api` 使用 `backend=vlm-http-client` 完成吞吐与质量验收。
+
+---
+
+## 解析入口、任务展示与清洗来源隔离（2026-05-26）
+
+### 解析来源作为清洗上下文的前后端调整
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `apps/web/.../documents/[did]/page.tsx` | 解析记录移除不可核验的百分比进度；主入口始终为“选择解析结果进行清洗”；每条完成的解析记录始终保留“进入此解析结果”，并复用或创建其独立清洗上下文 | 已实现 |
+| `apps/web/.../documents/[did]/clean/page.tsx` | 以 URL 中的 `cleaning_job_id` 固定当前解析来源；来源选择器展示解析器及时间；章节、版本、分派、合并和终审操作均携带该上下文，切换时防止旧异步响应回填 | 已实现 |
+| `apps/web/.../tasks/page.tsx` | 文档解析任务不再显示估算百分比；任务状态刷新改为响应 WebSocket 上下文的最新事件，避免错误事件名导致页面不更新 | 已实现 |
+| `apps/web/src/components/task-floating-panel.tsx` / dashboard layout | 浮窗改用项目级任务接口和 `queued` / `processing` 状态；解析任务展示状态文字；修正其他任务百分比被重复放大的显示错误 | 已实现 |
+| `apps/api/app/routers/documents.py` / `schemas/document.py` | 新增清洗上下文列表和类型化启动响应；同一 ParseJob 的正常入口复用已有 CleaningJob；清洗写操作和版本读取要求显式指定 `cleaning_job_id` | 已实现 |
+| `apps/api/app/services/section_service.py` / `clean_version_service.py` | 章节分派按 CleaningJob 校验；合并版本、终审和版本列表绑定指定解析来源，不再默认为整个文档混合读取 | 已实现 |
+| `apps/api/app/workers/clean_worker.py` / `chunk_worker.py` | worker 填充入口创建的 CleaningJob；无明确终审版本时，如发现多个已通过清洗来源则阻止切分，避免静默混合 | 已实现 |
+
+#### 设计边界
+
+- `CleaningJob` 作为解析结果进入清洗阶段后的隔离键；同一 ParseJob 通过正常界面重复进入时回到已有工作台，不再因文档总体状态改变入口含义。
+- 已有历史 CleaningJob 不自动删除或重写；如数据库中已经存在同一来源的历史重复上下文，工作台选择器以清洗创建时间区分并允许进入。
+- 本轮未自动迁移此前已生成的混合版本或分块结果；新的清洗加载、版本合并和切分入口已有隔离与防混合保护。
+
+#### 验证状态
+
+- `apps/web` 执行 `tsc --noEmit` 通过。
+- 本次涉及的文档详情、清洗工作台、任务页、任务浮窗与 dashboard layout 文件执行定向 `eslint` 通过。
+- `apps/api` 修改文件执行 `ruff check`、`python -m py_compile` 通过，OpenAPI 契约检查确认分派、合并、终审和版本接口均要求 `cleaning_job_id`。
+- `pytest tests -q` 通过，共 5 项测试通过。
+- 全量 `npm run lint` 仍失败，剩余报错位于未纳入本轮范围的页面和认证上下文，主要为既有 `react-hooks/set-state-in-effect` 规则问题。
+- `next build` 的默认 Turbopack 路径失败于 `next/font` 的 Google Font 内部模块解析；Webpack 复核路径持续阻塞于 `fonts.gstatic.com` 网络连接，未获得可用于判断本轮代码的构建结果。
+- 尝试启动本地应用进行浏览器目检时，启动脚本检测到 Docker Desktop 未运行，因此未进行交互式页面验收。
+
+#### 已知问题与下一步
+
+- 在两个客户端极短时间内同时为同一 ParseJob 首次创建清洗任务时，目前依靠入口交互防重，数据库层尚未增加唯一约束。
+- Docker Desktop 可用后，应分别用 MinerU 与 PaddleOCR 的同一文档结果进入清洗工作台，目检来源切换、章节隔离、合并版本和切分拦截表现。
+
+---
+
+## MinerU / PaddleOCR 远程 API 解析接入（2026-05-26）
+
+### 真实服务协议适配与凭据安全加固
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `libs/parsing/parsing/mineru_parser.py` | 按 MinerU 精准解析官方流程实现本地 PDF 的签名上传、批次轮询、ZIP 归档下载与 Markdown/JSON 提取；修复 OSS 签名上传的 Content-Type 要求 | 已实现并真实联通 |
+| `libs/parsing/parsing/paddleocr_parser.py` | 按 PaddleOCR `layout-parsing` API 实现 `Authorization: token` 鉴权、camelCase 请求参数与页级 Markdown 聚合 | 已实现并真实联通 |
+| `apps/api/app/config.py` / `workers/parse_worker.py` | 新增 `MINERU_API_TOKEN`、`PADDLEOCR_API_TOKEN` 服务端配置，由 worker 执行时注入 parser，不将凭据写入 ParserProfile | 已实现 |
+| `apps/api/app/schemas/config.py` | ParserProfile 新写入拒绝内嵌密钥；对历史 `api_key` / `token` 字段响应脱敏 | 已实现 |
+| `apps/web/.../settings/page.tsx` | 解析器设置页仅保留远程 API 地址配置，提示密钥由后端环境变量维护 | 已实现 |
+| `scripts/dev-start.{sh,ps1}` / `.gitignore` | 新环境模板预留远程 parser token 变量；保护本地 token 文档不被误提交 | 已实现 |
+| `tests/test_remote_parsers.py` / `tests/test_parser_credentials.py` | 覆盖远程 API 请求/响应契约、签名上传要求、worker 凭据注入与配置响应脱敏 | 已完成 |
+
+#### 设计说明
+
+- `mineru` 使用远程 MinerU 精准解析 API：先申请批量文件上传 URL，再将 PDF 原始字节 PUT 到签名地址，轮询批次结果，最后读取结果 ZIP 中的 Markdown 和结构化 JSON。
+- MinerU 产物只持久化解析所需摘要与内容，不持久化返回的一次性签名下载 URL；签名上传/下载失败时也不会把存储服务错误正文写入任务错误字段。
+- `paddleocr` 使用已配置的完整 `/layout-parsing` 端点，按官方协议发送 PDF base64，并从 `result.layoutParsingResults[*].markdown.text` 组合原始 Markdown；响应内图像 base64 不进入结构化产物。
+- 远程 parser token 已迁移到本机 `apps/api/.env`；`models/models_api.md` 不再保留明文 token。后续配置应继续仅通过服务端环境变量管理密钥。
+
+#### 验证状态
+
+- 使用真实 MinerU API 对一页最小 PDF 完成 `签名上传 -> 异步解析 -> ZIP 下载 -> Markdown 提取` 冒烟测试。
+- 使用真实 PaddleOCR API 对一页最小 PDF 完成 `/layout-parsing -> Markdown 聚合` 冒烟测试。
+- `pytest tests -q` 通过，共 5 项远程 parser 与凭据安全测试通过。
+- `ruff check`、`python -m py_compile`、`bash -n scripts/dev-start.sh` 与前端 `tsc --noEmit` 均通过本次改动检查。
+
+#### 下一步
+
+- 在网页端分别选择 `MinerU（API）` 与 `PaddleOCR（API）` 发起实际文档 ParseJob，检查 MinIO 产物、清洗入口和长文档耗时表现。
+- 对多页含表格/公式/扫描页样本比较 `pymupdf4llm`、`mineru_local`、`mineru` 与 `paddleocr` 输出质量。
+
+---
+
+## MinerU 本地解析接入（2026-05-26）
+
+### 第二阶段：后端与配置中心接入
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `libs/parsing/parsing/mineru_local_parser.py` | 新增 `mineru_local`，按页渲染 PDF，使用本地 MinerU2.5-Pro + `transformers` 生成 Markdown/结构结果，进程内缓存模型并串行推理 | 已实现 |
+| `apps/api/app/workers/parse_worker.py` | ParseJob 输出按任务 ID 版本化存储；失败状态精确回写当前任务并保留结束时间 | 已实现 |
+| `libs/parsing/pyproject.toml` | 将 `mineru-vl-utils[transformers]` 纳入解析库标准运行依赖，使普通 API 启动即可发起本地 MinerU 任务 | 已实现 |
+| `uv.lock` | 锁定 `mineru-vl-utils[transformers]`、`transformers` 与 `torch` 等本地推理运行时版本 | 已实现 |
+| `apps/web/.../settings/page.tsx` | 解析器设置增加 `MinerU2.5-Pro（本地模型）` 及模型目录、设备、DPI、图片分析配置 | 已实现 |
+| `scripts/init_seed.py` | 新数据库创建本地 MinerU profile；既有项目启动时幂等补齐缺失 profile | 已实现 |
+| `scripts/dev-start.{sh,ps1}` | 普通一键启动自动同步 MinerU 推理运行库，模型仍按任务懒加载；保留旧参数兼容；修复 macOS Bash 3.2 空数组展开错误 | 已实现 |
+| `docs/runbooks/mineru-local-parser.md` | 正式启用、选择解析器、结果存储及排错说明 | 已完成 |
+
+#### 设计说明
+
+- `mineru` 继续表示远程 API 解析器；新增 `mineru_local` 表示读取本机模型权重，不破坏原有配置。
+- 默认 `pymupdf4llm` 仍保持快速解析路径；MinerU 推理运行库随正常安装准备好，模型权重只有发起 `mineru_local` 任务时才载入内存。
+- 模型在 API 进程第一次执行 `mineru_local` 任务时加载并复用；本机推理通过锁限制为串行执行。
+- 解析输出改为 `parsed/<parse_job_id>/raw.md` 与 `structured.json`，避免再次解析覆盖历史结果。
+
+#### 验证状态
+
+- 用户已确认第一阶段本地模型能够加载并完成解析任务。
+- `ruff check` 与 `python -m py_compile` 已通过本地解析器、解析 worker、种子脚本和第一阶段测试脚本检查。
+- 使用替身推理客户端完成 `PDF -> 页面渲染 -> MinerU 调用 -> Markdown/结构化结果` 的封装链路测试。
+- `bash -n` 及启动脚本帮助输出已验证；在 macOS Bash 3.2 下模拟通过数据库调用路径；前端 `tsc --noEmit` 已通过。
+- `uv lock --check --python 3.11` 已通过，确认本地 MinerU 标准运行依赖进入锁文件。
+- 已执行普通 `uv sync --python 3.11 --extra dev`，项目 `.venv` 已安装 `mineru-vl-utils`、`transformers` 与 `torch`；普通 `uv run` 导入通过，且解析器模型缓存初始为 `0`，确认模型未在启动时预加载。
+- `npm run lint` 仍存在项目原有 React hook / 未使用导入等规则报错，本阶段未扩大处理范围，保留为测试加固事项。
+- 仍需在网页端按普通一键启动后执行一次 `上传/选 MinerU 本地解析/ParseJob 完成/进入清洗` 的集成验收。
+
+---
+
+## MinerU 本地解析验证（2026-05-25）
+
+### 第一阶段：独立冒烟测试脚本
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/test_mineru_local.py` | 从 PDF 按指定页码渲染页面图片，并按官方 `mineru-vl-utils[transformers]` 路径调用本地 `MinerU2.5-Pro-2604-1.2B`，保存页级 Markdown / JSON 和运行报告 | 已实现，用户已完成模型验证 |
+| `docs/runbooks/mineru-local-smoke-test.md` | 说明渲染检查、首次推理、扩页测试和通过标准 | 已完成 |
+
+#### 设计边界
+
+- 脚本与现有 `ParserProfile`、ParseJob、MinIO 流程隔离，不改变当前默认 `pymupdf4llm` 解析行为。
+- 默认仅测试第 1 页，支持 `--render-only`，先确认 PDF 页面输入无误后再加载重模型。
+- 默认读取仓库内 `models/MinerU2.5-Pro-2604-1.2B`，并通过 `local_files_only=True` 避免运行时重新下载模型权重。
+- 第一阶段验证时 MinerU 推理依赖采用临时实验调用；第二阶段正式接入后已纳入解析库标准运行依赖。
+
+#### 验证
+
+- `ruff check scripts/test_mineru_local.py` 通过。
+- `python -m py_compile scripts/test_mineru_local.py` 通过。
+- 使用临时单页 PDF 执行 `--render-only` 通过，成功生成页面 PNG 和 `run-report.json`。
+- 页码超范围错误路径通过，失败信息与报告均可读。
+- 未安装推理附加依赖时的提示路径通过，能够给出首次完整测试命令。
+
+#### 待验证与后续
+
+- 用户已反馈本地 MinerU 模型能够加载成功并完成解析任务。
+- 后续工作已转入 `mineru_local` ParserProfile 接入、ParseJob 结果版本化存储和网页端集成验收。
+
+---
+
+## 工具链与本地运行改进（2026-05-21）
+
+### 一键启动/停止脚本增强
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/dev-start.sh` | 自动创建本地 env、启动 Docker 基础设施、安装缺失依赖、执行迁移与种子数据、后台启动 API/Web 并记录 PID | 已完成 |
+| `scripts/dev-stop.sh` | 按 PID 停止 API/Web，按端口兜底清理，可选 `--all` 停止 Docker | 已完成 |
+| `scripts/dev-start.ps1` | PowerShell 等价实现，使用 `uv` 替代固定 conda 环境假设 | 已完成 |
+| `scripts/dev-stop.ps1` | PowerShell 等价停止脚本，支持 `-All` | 已完成 |
+| `docs/runbooks/new-machine-runbook.md` | 新增一键启动/关闭说明，并保留手动排查步骤 | 已完成 |
+
+#### 关键变化
+
+- 首次运行若缺少 `infra/docker/.env`，会自动从模板复制。
+- 首次运行若缺少 `apps/api/.env`，会生成本机连接 Docker 服务的配置。
+- 首次运行若缺少 `apps/web/.env.local`，会写入默认 API / WebSocket 地址。
+- 后端依赖优先使用 `uv sync --extra dev`，不再强依赖 `conda DatasetGen`。
+- 前端依赖缺失时自动执行 `npm ci`。
+- 数据库迁移和种子脚本纳入一键启动流程，均为幂等执行。
+- 修复 uv 自动选择 Python 3.14 导致 `passlib/bcrypt` 初始化失败的问题：项目锁定 Python 3.11，并固定 `bcrypt>=4.0.1,<4.1`。
+- 一键脚本现在会检测根目录 `.venv` 的 Python 版本；若发现不是 3.11，会提示删除 `.venv` 后重建，避免继续使用错误解释器。
+- 一键脚本增加前端端口冲突处理：若 `localhost:3000` 被其他项目占用，会自动尝试 `3001-3005`，并打印真实访问地址；API CORS 默认允许这些本地开发端口。
+- 停止脚本移除按端口兜底杀进程逻辑，只按启动脚本记录的 PID 关闭本项目 API/Web，避免误停用户其他 Docker 项目。
+
+#### 验证
+
+- `bash -n scripts/dev-start.sh` 通过。
+- `bash -n scripts/dev-stop.sh` 通过。
+- 当前环境未安装 PowerShell，`*.ps1` 未在本机执行语法验证。
+
+#### 下一步
+
+- 在真实 Windows PowerShell 环境中执行 `scripts/dev-start.ps1` / `scripts/dev-stop.ps1` 进行目检验证。
+- 如后续需要团队部署，可增加 `--no-install`、端口冲突检测和更细粒度日志查看命令。
 
 ---
 
@@ -106,9 +605,9 @@
 |---|--------|------|-------------|
 | 1 | 认证全流程 | ✅ 已通过 | #1 (登录跳转) |
 | 2 | 项目配置 | ✅ 已通过 | #2~#9 (项目列表、模型配置、Provider 预设) |
-| 3 | 文档上传 → 解析 | ✅ 已通过 | #10~#21 (上传性能、解析器、进度显示、删除) |
-| 4 | 清洗工作台 | ✅ 已通过 | #22~#29, #31~#32 (PDF加载、三栏布局、字段对齐、滚动、编辑器主题) |
-| 5 | 切分 | ✅ 已通过 | #33 (分块列表字段不匹配) |
+| 3 | 文档上传 → 解析 | ✅ 已通过 | #10~#21 (上传性能、解析器、状态展示、删除)；清洗来源选择入口稳定化 |
+| 4 | 清洗工作台 | 🔄 新隔离待联调 | #22~#29, #31~#32 (PDF加载、三栏布局、字段对齐、滚动、编辑器主题)；新增按解析来源隔离 |
+| 5 | 切分 | 🔄 防混合待联调 | #33 (分块列表字段不匹配)；新增多清洗来源保护 |
 | 6 | LLM 生成 | ⏳ 待测试 | — |
 | 7 | 审核 → 提升 | ⏳ 待测试 | — |
 | 8 | 导出 | ⏳ 待测试 | — |
@@ -118,7 +617,8 @@
 #### 主要改进（测试期间）
 
 - **PDF 文件端点**：新增 `GET /documents/{did}/file`，支持 iframe 嵌入 (token query param 认证 + 浏览器缓存)
-- **解析实时进度**：ParseJob 立即创建 + WebSocket 推送 + 前端进度条
+- **解析任务状态展示**：ParseJob 立即创建 + WebSocket 状态刷新；解析阶段不再展示不可核验的百分比进度
+- **解析来源隔离**：清洗工作台以 CleaningJob 绑定 ParseJob；分派、版本合并与后续切分不再静默混用不同解析来源
 - **清洗工作台重构**：四栏 → 三栏 (PDF | Markdown预览 | 编辑器+评论)，CodeMirror 亮/暗主题切换
 - **级联删除修复**：删除解析记录时清理 CleaningJob + MinIO 文件；删除文档时清理全部产出
 - **API 响应优化**：Redis 连接复用、Storage 单例、PDF 缓存头

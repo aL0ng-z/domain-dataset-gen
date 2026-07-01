@@ -112,7 +112,10 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
   }, [projectId]);
 
   useEffect(() => {
-    fetchItems();
+    const refreshTimer = window.setTimeout(() => {
+      fetchItems();
+    }, 0);
+    return () => window.clearTimeout(refreshTimer);
   }, [fetchItems]);
 
   const handleProviderChange = (provider: string) => {
@@ -428,15 +431,18 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
 
 /* ========= ParserProfile tab ========= */
 
-const PARSER_PRESETS: Record<string, { label: string; needsApi: boolean; defaultUrl: string }> = {
-  pymupdf4llm: { label: "PyMuPDF4LLM（本地）", needsApi: false, defaultUrl: "" },
-  mineru: { label: "MinerU（API）", needsApi: true, defaultUrl: "https://mineru.net/api/v4/extract/task" },
-  paddleocr: { label: "PaddleOCR（API）", needsApi: true, defaultUrl: "https://bea4c9v5r2i52ba7.aistudio-app.com/layout-parsing" },
+const PARSER_PRESETS: Record<string, { label: string; needsApi: boolean; needsLocalModel: boolean; defaultUrl: string; defaultModelPath: string; defaultVlmUrl?: string }> = {
+  pymupdf4llm: { label: "PyMuPDF4LLM（本地）", needsApi: false, needsLocalModel: false, defaultUrl: "", defaultModelPath: "" },
+  mineru: { label: "MinerU（API）", needsApi: true, needsLocalModel: false, defaultUrl: "https://mineru.net/api/v4/extract/task", defaultModelPath: "" },
+  mineru_local: { label: "MinerU2.5-Pro（本地模型）", needsApi: false, needsLocalModel: true, defaultUrl: "", defaultModelPath: "models/MinerU2.5-Pro-2604-1.2B" },
+  mineru_local_service: { label: "MinerU（本地部署服务 / MLX）", needsApi: true, needsLocalModel: false, defaultUrl: "http://127.0.0.1:9010", defaultModelPath: "" },
+  paddleocr: { label: "PaddleOCR（API）", needsApi: true, needsLocalModel: false, defaultUrl: "https://bea4c9v5r2i52ba7.aistudio-app.com/layout-parsing", defaultModelPath: "" },
+  paddleocr_local_service: { label: "PaddleOCR-VL（本地部署服务 / MLX）", needsApi: true, needsLocalModel: false, defaultUrl: "http://127.0.0.1:9020/layout-parsing", defaultModelPath: "", defaultVlmUrl: "http://127.0.0.1:9021" },
 };
 
 interface ParserProfile extends ConfigItem {
   parser_name: string;
-  parser_options: Record<string, string> | null;
+  parser_options: Record<string, string | number | boolean> | null;
   is_default: boolean;
   version: number;
 }
@@ -450,7 +456,13 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
     name: "",
     parser_name: "pymupdf4llm",
     base_url: "",
-    api_key: "",
+    model_path: "",
+    device_map: "auto",
+    render_dpi: "160",
+    image_analysis: false,
+    service_backend: "vlm-auto-engine",
+    server_url: "",
+    vlm_base_url: "",
   });
 
   const fetchItems = useCallback(() => {
@@ -465,7 +477,10 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
   }, [projectId]);
 
   useEffect(() => {
-    fetchItems();
+    const refreshTimer = window.setTimeout(() => {
+      fetchItems();
+    }, 0);
+    return () => window.clearTimeout(refreshTimer);
   }, [fetchItems]);
 
   const handleParserChange = (parserName: string) => {
@@ -474,13 +489,19 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
       ...form,
       parser_name: parserName,
       base_url: preset?.defaultUrl || "",
-      api_key: "",
+      model_path: preset?.defaultModelPath || "",
+      device_map: "auto",
+      render_dpi: "160",
+      image_analysis: false,
+      service_backend: "vlm-auto-engine",
+      server_url: "",
+      vlm_base_url: preset?.defaultVlmUrl || "",
     });
   };
 
   const openCreate = () => {
     setEditItem(null);
-    setForm({ name: "", parser_name: "pymupdf4llm", base_url: "", api_key: "" });
+    setForm({ name: "", parser_name: "pymupdf4llm", base_url: "", model_path: "", device_map: "auto", render_dpi: "160", image_analysis: false, service_backend: "vlm-auto-engine", server_url: "", vlm_base_url: "" });
     setDialogOpen(true);
   };
 
@@ -489,8 +510,14 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
     setForm({
       name: item.name,
       parser_name: item.parser_name,
-      base_url: item.parser_options?.base_url || "",
-      api_key: "",
+      base_url: String(item.parser_options?.base_url || ""),
+      model_path: String(item.parser_options?.model_path || PARSER_PRESETS[item.parser_name]?.defaultModelPath || ""),
+      device_map: String(item.parser_options?.device_map || "auto"),
+      render_dpi: String(item.parser_options?.render_dpi || "160"),
+      image_analysis: item.parser_options?.image_analysis === true || item.parser_options?.image_analysis === "true",
+      service_backend: String(item.parser_options?.backend || "vlm-auto-engine"),
+      server_url: String(item.parser_options?.server_url || ""),
+      vlm_base_url: String(item.parser_options?.vlm_base_url || PARSER_PRESETS[item.parser_name]?.defaultVlmUrl || ""),
     });
     setDialogOpen(true);
   };
@@ -499,11 +526,39 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
     if (!form.name.trim()) { toast.error("请输入配置名称"); return; }
     const preset = PARSER_PRESETS[form.parser_name];
     if (preset?.needsApi && !form.base_url.trim()) { toast.error("请输入 API 地址"); return; }
+    if (preset?.needsLocalModel && !form.model_path.trim()) { toast.error("请输入本地模型目录"); return; }
+    if (form.parser_name === "mineru_local_service" && form.service_backend === "vlm-http-client" && !form.server_url.trim()) {
+      toast.error("请输入 VLM 服务地址");
+      return;
+    }
+    if (form.parser_name === "paddleocr_local_service" && !form.vlm_base_url.trim()) {
+      toast.error("请输入内部 MLX-VLM 服务地址");
+      return;
+    }
 
-    const parser_options: Record<string, string> = {};
+    const parser_options: Record<string, string | boolean> = {};
     if (preset?.needsApi) {
       parser_options.base_url = form.base_url;
-      if (form.api_key.trim()) parser_options.api_key = form.api_key;
+    }
+    if (preset?.needsLocalModel) {
+      parser_options.model_path = form.model_path;
+      parser_options.device_map = form.device_map;
+      parser_options.render_dpi = form.render_dpi;
+      parser_options.image_analysis = form.image_analysis;
+    }
+    if (form.parser_name === "mineru_local_service") {
+      parser_options.backend = form.service_backend;
+      parser_options.image_analysis = form.image_analysis;
+      if (form.service_backend === "vlm-http-client") {
+        parser_options.server_url = form.server_url;
+      }
+    }
+    if (form.parser_name === "paddleocr_local_service") {
+      parser_options.vlm_base_url = form.vlm_base_url;
+      parser_options.auto_start = true;
+      parser_options.use_layout_detection = true;
+      parser_options.parse_timeout_seconds = "1800";
+      parser_options.visualize = false;
     }
 
     const payload = {
@@ -602,29 +657,121 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
               </select>
               <p className="text-xs text-muted-foreground mt-1">
                 {form.parser_name === "pymupdf4llm" && "本地解析，无需额外配置。基于 PyMuPDF 提取文本和结构。"}
-                {form.parser_name === "mineru" && "需要部署 MinerU 服务并提供 API 地址。支持复杂版面识别。"}
-                {form.parser_name === "paddleocr" && "需要部署 PaddleOCR/PP-StructureV3 服务。适合扫描件 OCR。"}
+                {form.parser_name === "mineru" && "使用 MinerU 精准解析 API；Token 由后端 MINERU_API_TOKEN 提供。"}
+                {form.parser_name === "mineru_local" && "加载本机 models 目录内的 MinerU 权重，首次解析需要较长模型加载时间。"}
+                {form.parser_name === "mineru_local_service" && "调用自有部署的 MinerU 服务；首次发起本机解析时后端会自动启动服务，当前 Mac 使用 MLX，未来 GPU 服务可接 vLLM；无需官方 Token。"}
+                {form.parser_name === "paddleocr" && "使用 PaddleOCR 文档解析 API；Token 由后端 PADDLEOCR_API_TOKEN 提供。"}
+                {form.parser_name === "paddleocr_local_service" && "调用自有部署的 PaddleX /layout-parsing 服务；首次本机解析会自动启动 PaddleX API 与内部 MLX-VLM 服务；无需官方 Token。"}
               </p>
             </div>
             {currentPreset?.needsApi && (
               <>
                 <div>
-                  <label className="text-sm font-medium">API 地址</label>
+                  <label className="text-sm font-medium">
+                    {form.parser_name === "mineru_local_service" && "MinerU 服务地址"}
+                    {form.parser_name === "paddleocr_local_service" && "PaddleX API 地址"}
+                    {form.parser_name !== "mineru_local_service" && form.parser_name !== "paddleocr_local_service" && "API 地址"}
+                  </label>
                   <Input
                     value={form.base_url}
                     onChange={(e) => setForm({ ...form, base_url: e.target.value })}
                     placeholder={currentPreset.defaultUrl}
                   />
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  {form.parser_name === "mineru_local_service" && "本地部署服务不使用官方 API Token；使用本机地址时，首次解析会自动启动服务。"}
+                  {form.parser_name === "paddleocr_local_service" && "本地部署服务不使用官方 API Token；默认读取 models/PP-DocLayoutV3 与已转换的 MLX 权重。"}
+                  {form.parser_name !== "mineru_local_service" && form.parser_name !== "paddleocr_local_service" && "API Token 仅在后端环境变量中配置，不通过网页保存或返回。"}
+                </p>
+              </>
+            )}
+            {form.parser_name === "paddleocr_local_service" && (
+              <div>
+                <label className="text-sm font-medium">内部 MLX-VLM 服务地址</label>
+                <Input
+                  value={form.vlm_base_url}
+                  onChange={(e) => setForm({ ...form, vlm_base_url: e.target.value })}
+                  placeholder="http://127.0.0.1:9021"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Mac 本机默认使用 MLX；未来迁移 GPU 后可将此地址改为 vLLM/FastDeploy 兼容服务，并保持外层 API 协议不变。
+                </p>
+              </div>
+            )}
+            {currentPreset?.needsLocalModel && (
+              <>
                 <div>
-                  <label className="text-sm font-medium">API Key（可选）</label>
+                  <label className="text-sm font-medium">本地模型目录</label>
                   <Input
-                    type="password"
-                    value={form.api_key}
-                    onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-                    placeholder={editItem ? "留空则保持原 Key 不变" : "如需认证请填写"}
+                    value={form.model_path}
+                    onChange={(e) => setForm({ ...form, model_path: e.target.value })}
+                    placeholder={currentPreset.defaultModelPath}
                   />
                 </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-sm font-medium">推理设备</label>
+                    <select
+                      className="w-full rounded border px-3 py-1.5 text-sm bg-transparent"
+                      value={form.device_map}
+                      onChange={(e) => setForm({ ...form, device_map: e.target.value })}
+                    >
+                      <option value="auto">自动</option>
+                      <option value="mps">Apple MPS</option>
+                      <option value="cpu">CPU</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">页面 DPI</label>
+                    <Input
+                      type="number"
+                      min={72}
+                      value={form.render_dpi}
+                      onChange={(e) => setForm({ ...form, render_dpi: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.image_analysis}
+                    onChange={(e) => setForm({ ...form, image_analysis: e.target.checked })}
+                  />
+                  分析图片与图表
+                </label>
+              </>
+            )}
+            {form.parser_name === "mineru_local_service" && (
+              <>
+                <div>
+                  <label className="text-sm font-medium">服务推理路径</label>
+                  <select
+                    className="w-full rounded border px-3 py-1.5 text-sm bg-transparent"
+                    value={form.service_backend}
+                    onChange={(e) => setForm({ ...form, service_backend: e.target.value })}
+                  >
+                    <option value="vlm-auto-engine">本机自动（Mac 使用 MLX）</option>
+                    <option value="vlm-http-client">外部 VLM 服务（未来 GPU / vLLM）</option>
+                  </select>
+                </div>
+                {form.service_backend === "vlm-http-client" && (
+                  <div>
+                    <label className="text-sm font-medium">VLM 服务地址</label>
+                    <Input
+                      value={form.server_url}
+                      onChange={(e) => setForm({ ...form, server_url: e.target.value })}
+                      placeholder="http://127.0.0.1:30000"
+                    />
+                  </div>
+                )}
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={form.image_analysis}
+                    onChange={(e) => setForm({ ...form, image_analysis: e.target.checked })}
+                  />
+                  分析图片与图表
+                </label>
               </>
             )}
           </div>
@@ -676,7 +823,10 @@ function GenericConfigTab({
   }, [projectId, endpoint, label]);
 
   useEffect(() => {
-    fetchItems();
+    const refreshTimer = window.setTimeout(() => {
+      fetchItems();
+    }, 0);
+    return () => window.clearTimeout(refreshTimer);
   }, [fetchItems]);
 
   const openCreate = () => {
@@ -717,7 +867,7 @@ function GenericConfigTab({
     }
     try {
       // Parse config_json to send as object
-      let payload: Record<string, unknown> = { ...form };
+      const payload: Record<string, unknown> = { ...form };
       try {
         payload.config_json = JSON.parse(form.config_json || "{}");
       } catch {

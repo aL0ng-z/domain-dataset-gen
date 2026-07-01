@@ -1,3 +1,4 @@
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -27,10 +28,27 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = 7
     jwt_algorithm: str = "HS256"
 
+    # Remote document parsers (kept server-side; never store in ParserProfile JSON)
+    mineru_api_token: SecretStr | None = None
+    paddleocr_api_token: SecretStr | None = None
+
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000
-    api_cors_origins: list[str] = ["http://localhost:3000"]
+    api_cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://localhost:3003",
+        "http://localhost:3004",
+        "http://localhost:3005",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:3002",
+        "http://127.0.0.1:3003",
+        "http://127.0.0.1:3004",
+        "http://127.0.0.1:3005",
+    ]
 
     @property
     def database_url(self) -> str:

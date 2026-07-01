@@ -7,27 +7,35 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import get_db
-from app.dependencies import get_current_user, require_project_member
+from app.dependencies import require_project_member
+from app.models.chunk import Chunk
+from app.models.config import ParserProfile
 from app.models.document import Document
 from app.models.parse import ParseJob
-from app.models.section import Section
-from app.models.chunk import Chunk
+from app.models.section import CleaningJob, Section
 from app.models.user import User
-from app.schemas.document import (
-    ChunkRequest, DocumentResponse, GenerateBatchRequest, ParseJobResponse, ParseRequest,
-)
-from app.schemas.section import SectionResponse
 from app.schemas.chunk import ChunkResponse
-from app.config import settings
-from app.services.document_service import DocumentService
-from app.services.task_service import TaskService
 from app.schemas.cleaned_version import (
-    CleanedDocumentVersionResponse, CleanedFinalReviewRequest,
+    CleanedDocumentVersionResponse,
+    CleanedFinalReviewRequest,
 )
-from app.schemas.section import BulkAssignRequest
+from app.schemas.document import (
+    ChunkRequest,
+    CleaningJobResponse,
+    CleaningStartRequest,
+    CleaningStartResponse,
+    DocumentResponse,
+    GenerateBatchRequest,
+    ParseJobResponse,
+    ParseRequest,
+)
+from app.schemas.section import BulkAssignRequest, SectionResponse
 from app.services.clean_version_service import CleanVersionService
+from app.services.document_service import DocumentService
 from app.services.section_service import SectionService
+from app.services.task_service import TaskService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
 from storage import get_storage_client
@@ -38,7 +46,22 @@ router = APIRouter(prefix="/api/projects/{pid}/documents", tags=["documents"])
 async def _create_bg_redis():
     """Create a dedicated Redis connection for background tasks."""
     import redis.asyncio as aioredis
+
     return aioredis.from_url(settings.redis_url, decode_responses=True)
+
+
+async def _get_cleaning_job(db: AsyncSession, document_id: uuid.UUID, cleaning_job_id: uuid.UUID) -> CleaningJob:
+    cleaning_job = (
+        await db.execute(
+            select(CleaningJob).where(
+                CleaningJob.id == cleaning_job_id,
+                CleaningJob.document_id == document_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if cleaning_job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="清洗任务不存在")
+    return cleaning_job
 
 
 @router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
@@ -56,7 +79,7 @@ async def upload_document(
     try:
         return await service.upload(pid, file.filename or "unknown.pdf", file_data, current_user.id)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
 
 @router.get("/", response_model=PaginatedResponse[DocumentResponse])
@@ -64,9 +87,9 @@ async def list_documents(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
-    page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100),
-    doc_status: str | None = Query(None, alias="status"),
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    doc_status: Annotated[str | None, Query(alias="status")] = None,
 ):
     service = DocumentService(db)
     docs, total = await service.list_documents(pid, page, page_size, doc_status)
@@ -93,10 +116,11 @@ async def get_document_file(
     did: uuid.UUID,
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
-    token: str | None = Query(None),
+    token: str | None = None,
 ):
     """Serve PDF file. Supports both Authorization header and ?token= query param (for iframe)."""
-    from jose import JWTError, jwt as jose_jwt
+    from jose import JWTError
+    from jose import jwt as jose_jwt
 
     # Extract token from Authorization header or query param
     raw_token = token
@@ -113,26 +137,31 @@ async def get_document_file(
         user_id = payload.get("sub")
         if not user_id:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
-    except JWTError:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
+    except JWTError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败") from e
 
     doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
 
     storage = get_storage_client(
-        settings.minio_endpoint, settings.minio_access_key,
-        settings.minio_secret_key, settings.minio_secure,
+        settings.minio_endpoint,
+        settings.minio_access_key,
+        settings.minio_secret_key,
+        settings.minio_secure,
     )
     try:
         pdf_data = await asyncio.to_thread(
-            storage.download_file, settings.minio_bucket_documents, doc.minio_key,
+            storage.download_file,
+            settings.minio_bucket_documents,
+            doc.minio_key,
         )
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文件不存在") from e
 
     # RFC 5987: use filename* with UTF-8 encoding for non-ASCII filenames
     from urllib.parse import quote
+
     encoded_filename = quote(doc.filename)
     return Response(
         content=pdf_data,
@@ -176,7 +205,8 @@ async def trigger_parse(
 
     # Create ParseJob immediately so frontend can see it right away
     parse_job = ParseJob(
-        document_id=did, parser_profile_id=body.parser_profile_id,
+        document_id=did,
+        parser_profile_id=body.parser_profile_id,
         status="queued",
     )
     db.add(parse_job)
@@ -184,14 +214,16 @@ async def trigger_parse(
     doc.status = "parsing"
     await db.commit()
 
-    from app.workers.parse_worker import run_parse
     from app.database import async_session_factory
+    from app.workers.parse_worker import run_parse
 
     async def _run():
         bg_redis = await _create_bg_redis()
         async with async_session_factory() as session:
             try:
-                await run_parse(task.id, did, body.parser_profile_id, session, redis=bg_redis, parse_job_id=parse_job.id)
+                await run_parse(
+                    task.id, did, body.parser_profile_id, session, redis=bg_redis, parse_job_id=parse_job.id
+                )
                 await session.commit()
             except Exception:
                 await session.rollback()
@@ -240,7 +272,38 @@ async def delete_parse_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="解析任务不存在")
 
 
-@router.post("/{did}/cleaning/start", status_code=status.HTTP_202_ACCEPTED)
+@router.get("/{did}/cleaning-jobs", response_model=list[CleaningJobResponse])
+async def list_cleaning_jobs(
+    pid: uuid.UUID,
+    did: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
+):
+    result = await db.execute(
+        select(CleaningJob, ParseJob, ParserProfile)
+        .join(ParseJob, ParseJob.id == CleaningJob.parse_job_id)
+        .join(ParserProfile, ParserProfile.id == ParseJob.parser_profile_id)
+        .where(CleaningJob.document_id == did)
+        .order_by(CleaningJob.created_at.desc())
+    )
+    return [
+        CleaningJobResponse(
+            id=job.id,
+            document_id=job.document_id,
+            parse_job_id=job.parse_job_id,
+            status=job.status,
+            started_by=job.started_by,
+            parser_profile_id=parse_job.parser_profile_id,
+            parser_profile_name=profile.name,
+            parse_completed_at=parse_job.completed_at,
+            created_at=job.created_at,
+            completed_at=job.completed_at,
+        )
+        for job, parse_job, profile in result.all()
+    ]
+
+
+@router.post("/{did}/cleaning/start", response_model=CleaningStartResponse, status_code=status.HTTP_202_ACCEPTED)
 async def start_cleaning(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -248,41 +311,80 @@ async def start_cleaning(
     background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
-    body: dict | None = None,
+    body: CleaningStartRequest | None = None,
 ):
     doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
 
     # Use specified parse job or fall back to latest completed
-    parse_job_id = (body or {}).get("parse_job_id")
+    parse_job_id = body.parse_job_id if body else None
     if parse_job_id:
         result = await db.execute(
-            select(ParseJob).where(ParseJob.id == uuid.UUID(parse_job_id), ParseJob.document_id == did, ParseJob.status == "completed")
+            select(ParseJob).where(
+                ParseJob.id == parse_job_id, ParseJob.document_id == did, ParseJob.status == "completed"
+            )
         )
         parse_job = result.scalars().first()
         if parse_job is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="指定的解析任务不存在或未完成")
     else:
         result = await db.execute(
-            select(ParseJob).where(ParseJob.document_id == did, ParseJob.status == "completed").order_by(ParseJob.created_at.desc())
+            select(ParseJob)
+            .where(ParseJob.document_id == did, ParseJob.status == "completed")
+            .order_by(ParseJob.created_at.desc())
         )
         parse_job = result.scalars().first()
         if parse_job is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有已完成的解析任务")
 
+    existing_result = await db.execute(
+        select(CleaningJob)
+        .where(
+            CleaningJob.document_id == did,
+            CleaningJob.parse_job_id == parse_job.id,
+            CleaningJob.status.in_(("queued", "processing", "completed")),
+        )
+        .order_by(CleaningJob.created_at.desc())
+    )
+    existing_job = existing_result.scalars().first()
+    if existing_job is not None:
+        return {
+            "task_id": None,
+            "cleaning_job_id": existing_job.id,
+            "reused": True,
+            "message": "已存在该解析结果的清洗工作台",
+        }
+
+    cleaning_job = CleaningJob(
+        document_id=did,
+        parse_job_id=parse_job.id,
+        started_by=current_user.id,
+        status="queued",
+    )
+    db.add(cleaning_job)
+    await db.flush()
+
     task_service = TaskService(db, request.app.state.redis)
     task = await task_service.create_task(pid, "clean", "document", did, current_user.id)
     await db.commit()
 
-    from app.workers.clean_worker import run_clean
     from app.database import async_session_factory
+    from app.workers.clean_worker import run_clean
 
     async def _run():
         redis_client = await _create_bg_redis()
         async with async_session_factory() as session:
             try:
-                await run_clean(task.id, did, parse_job.id, current_user.id, session, redis=redis_client)
+                await run_clean(
+                    task.id,
+                    did,
+                    parse_job.id,
+                    current_user.id,
+                    session,
+                    redis=redis_client,
+                    cleaning_job_id=cleaning_job.id,
+                )
                 await session.commit()
             except Exception:
                 await session.rollback()
@@ -290,7 +392,12 @@ async def start_cleaning(
                 await redis_client.close()
 
     background_tasks.add_task(_run)
-    return {"task_id": str(task.id), "message": "清洗任务已创建"}
+    return {
+        "task_id": task.id,
+        "cleaning_job_id": cleaning_job.id,
+        "reused": False,
+        "message": "清洗任务已创建",
+    }
 
 
 @router.get("/{did}/sections", response_model=PaginatedResponse[SectionResponse])
@@ -299,14 +406,18 @@ async def list_sections(
     did: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=100),
-    section_status: str | None = Query(None, alias="status"),
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+    section_status: Annotated[str | None, Query(alias="status")] = None,
+    cleaning_job_id: Annotated[uuid.UUID | None, Query()] = None,
 ):
     from sqlalchemy import func
 
     offset = (page - 1) * page_size
     base = select(Section).where(Section.document_id == did)
+    if cleaning_job_id is not None:
+        await _get_cleaning_job(db, did, cleaning_job_id)
+        base = base.where(Section.cleaning_job_id == cleaning_job_id)
     if section_status:
         base = base.where(Section.status == section_status)
     count_result = await db.execute(select(func.count()).select_from(base.subquery()))
@@ -335,8 +446,8 @@ async def trigger_chunk(
     doc.status = "chunking"
     await db.commit()
 
-    from app.workers.chunk_worker import run_chunk
     from app.database import async_session_factory
+    from app.workers.chunk_worker import run_chunk
 
     async def _run():
         redis_client = await _create_bg_redis()
@@ -359,9 +470,9 @@ async def list_chunks(
     did: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=100),
-    chunk_status: str | None = Query(None, alias="status"),
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+    chunk_status: Annotated[str | None, Query(alias="status")] = None,
 ):
     from sqlalchemy import func
 
@@ -395,16 +506,22 @@ async def trigger_generate_batch(
     doc.status = "generating"
     await db.commit()
 
-    from app.workers.generate_worker import run_generate_batch
     from app.database import async_session_factory
+    from app.workers.generate_worker import run_generate_batch
 
     async def _run():
         redis_client = await _create_bg_redis()
         async with async_session_factory() as session:
             try:
                 await run_generate_batch(
-                    task.id, did, body.prompt_template_id, body.model_config_id,
-                    pid, current_user.id, session, redis=redis_client,
+                    task.id,
+                    did,
+                    body.prompt_template_id,
+                    body.model_config_id,
+                    pid,
+                    current_user.id,
+                    session,
+                    redis=redis_client,
                 )
                 await session.commit()
             except Exception:
@@ -423,15 +540,24 @@ async def bulk_assign_sections(
     body: BulkAssignRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
+    cleaning_job_id: Annotated[uuid.UUID, Query()],
 ):
     doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+    await _get_cleaning_job(db, did, cleaning_job_id)
 
     service = SectionService(db)
     total_assigned = 0
     for assignment in body.assignments:
-        n = await service.bulk_assign(assignment.section_ids, assignment.assignee_id, current_user.id)
+        n = await service.bulk_assign(
+            assignment.section_ids,
+            assignment.assignee_id,
+            current_user.id,
+            cleaning_job_id=cleaning_job_id,
+        )
+        if n != len(assignment.section_ids):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="所选章节不属于当前清洗任务")
         total_assigned += n
 
     # Flip document.clean_status if still not_started
@@ -442,18 +568,21 @@ async def bulk_assign_sections(
     return {"assigned": total_assigned}
 
 
-@router.post("/{did}/cleaning/merge", response_model=CleanedDocumentVersionResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{did}/cleaning/merge", response_model=CleanedDocumentVersionResponse, status_code=status.HTTP_201_CREATED
+)
 async def merge_clean_version(
     pid: uuid.UUID,
     did: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
+    cleaning_job_id: Annotated[uuid.UUID, Query()],
 ):
     service = CleanVersionService(db)
     try:
-        version = await service.create_merged_version(did, current_user.id)
+        version = await service.create_merged_version(did, cleaning_job_id, current_user.id)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     await db.commit()
     return version
 
@@ -465,14 +594,21 @@ async def final_review_clean_version(
     body: CleanedFinalReviewRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
+    cleaning_job_id: Annotated[uuid.UUID, Query()],
 ):
     service = CleanVersionService(db)
     try:
         version = await service.final_review(
-            body.version_id, current_user.id, body.action, body.reason, body.comment,
+            body.version_id,
+            current_user.id,
+            body.action,
+            body.reason,
+            body.comment,
+            document_id=did,
+            cleaning_job_id=cleaning_job_id,
         )
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     await db.commit()
     return version
 
@@ -483,6 +619,8 @@ async def list_clean_versions(
     did: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
+    cleaning_job_id: Annotated[uuid.UUID, Query()],
 ):
     service = CleanVersionService(db)
-    return await service.list_versions(did)
+    await _get_cleaning_job(db, did, cleaning_job_id)
+    return await service.list_versions(did, cleaning_job_id)
