@@ -8,11 +8,166 @@
 
 | Release | 名称 | 状态 | 备注 |
 |---------|------|------|------|
-| R1 | Lab Pilot | 测试进行中 | 主链路 MVP；远程 API 可用；本地 MinerU/MLX 与 PaddleOCR-VL 本地 API 均已作为 ParseJob 解析方式接入；解析入口与清洗来源隔离、清洗按页 Section 切分已修整；一键启动会按前端锁文件同步新增依赖 |
+| R1 | Lab Pilot | 测试进行中 | 主链路 MVP；远程 API 可用；本地 MinerU/MLX 与 PaddleOCR-VL 本地 API 均已作为 ParseJob 解析方式接入；解析入口与清洗来源隔离、清洗按页 Section 切分已修整；Windows conda 启动脚本默认不安装依赖 |
 | R1+ | Slice 1: Clean 协作升级 | 后端冒烟通过，前端 UI 待目检 | 数据模型扩展 + Clean 分派/合并/终审工作流 |
 | R2 | Lab Team | 未开始 | 多人协作、评测中心 |
 | R3 | Quality Automation | 未开始 | 质量自动化 |
 | R4 | Optional Extensions | 未开始 | 多轮对话、Arena 等 |
+
+---
+
+## 停止脚本行为修正（2026-07-02）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/dev-stop.ps1` | 输出改为英文 ASCII，避免 Windows PowerShell 中文乱码 | 已实现 |
+| Docker 停止行为 | `-All` 从 `docker compose down` 改为 `docker compose stop`，只停止 Docker 容器，不再移除容器和网络 | 已实现 |
+| `README.md` | 明确 `.\scripts\dev-stop.ps1 -All` 会停止 Docker 容器，但容器仍保留在 Docker Desktop 中 | 已实现 |
+
+### 说明
+
+- 之前执行 `docker compose down` 后，Docker Desktop 中看不到容器是正常现象：容器和网络被移除了，但 image 和 volume 没有删除。
+- 当前本地仍保留 `datasetgen_pgdata`、`datasetgen_miniodata`、`docker_pgdata`、`docker_miniodata` 数据卷。
+- 已验证 `.\scripts\dev-stop.ps1 -All` 输出不再乱码，并且 `datasetgen-postgres-1`、`datasetgen-redis-1`、`datasetgen-minio-1`、`datasetgen-minio-init-1` 会保留为 `Exited` 状态。
+
+---
+
+## conda 启动脚本健康检查修复（2026-07-02）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/dev-start-conda.ps1` | 增加本地源码 `PYTHONPATH`，在不安装 editable 包的前提下让 API 能直接导入 `domain`、`storage`、`parsing`、`cleaning`、`splitters`、`llm` | 已实现 |
+| API 启动 | 去掉 `uvicorn --reload`，测试启动改为单进程模式，减少 Windows reloader 子进程导致的健康检查和日志干扰 | 已实现 |
+| Web 启动 | 改为显式调用 `npm.cmd run dev`，避开当前 PowerShell 环境中 `npm.ps1` shim 解析为 `Unknown command: "pm"` 的问题 | 已实现 |
+| 运行时前置检查 | 启动 Docker/API/Web 前先验证后端源码导入和前端 `node_modules\.bin\next.cmd` 是否存在；缺依赖时直接提示手动命令并退出，不再等待超时 | 已实现 |
+| 健康检查 | 改用 `curl.exe --max-time 2` 访问 `127.0.0.1`，避免 `Invoke-WebRequest` 在 Windows PowerShell 中卡住；API 未就绪时会输出最近 API 日志并退出；API 就绪后再启动 Web，Web 未就绪时输出最近 Web 日志并退出 | 已实现 |
+
+### 验证状态
+
+- 已确认旧失败原因为 API 子进程无法导入 `domain`。
+- 已确认设置本地源码 `PYTHONPATH` 后，`import app.main, domain, storage, parsing, cleaning, splitters, llm` 通过。
+- 已确认 `npm.cmd` 可正常调用，避免 `npm.ps1` 的 `Unknown command: "pm"`。
+- 已确认 `curl.exe --noproxy "*"` 可正常访问 `http://127.0.0.1:8000/api/health`。
+- 已确认当前前端依赖缺少 `apps\web\node_modules\.bin\next.cmd`，需要用户手动执行 `cd apps\web; npm ci` 后再启动。
+- 已重新运行 `.\scripts\dev-start-conda.ps1`，脚本在前端依赖缺失时 6 秒内明确退出并提示手动执行 `cd apps\web; npm ci`，不再卡在 API/Web 健康检查等待。
+- 待完成：用户手动补齐前端依赖后，重新运行 `.\scripts\dev-start-conda.ps1` 做端到端启动验证。
+
+---
+
+## Docker Compose 项目名固定（2026-07-02）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `infra/docker/docker-compose.yml` | 新增顶层 `name: datasetgen`，避免 Docker Desktop 中 Compose 项目显示为目录名 `docker` | 已实现 |
+| 本地 Docker 状态 | 已执行 `docker compose -p docker -f infra/docker/docker-compose.yml --env-file infra/docker/.env down`，停止并移除旧 `docker` 项目组容器和网络 | 已完成 |
+
+### 说明
+
+- 旧数据卷未删除；后续启动会使用新的 `datasetgen_pgdata` 与 `datasetgen_miniodata`，因为当前测试数据不重要。
+- 已执行 `docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env up -d`，Docker Desktop 中应显示 `datasetgen` 项目组。
+- 当前运行容器为 `datasetgen-postgres-1`、`datasetgen-redis-1`、`datasetgen-minio-1`，端口映射保持 `5432`、`6379`、`9000-9001`。
+- 旧 `docker_miniodata` 和 `docker_pgdata` 数据卷仍保留，后续确认不需要后可手动清理。
+
+---
+
+## conda 启动脚本去参数化（2026-07-02）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/dev-start-conda.ps1` | 移除入口 `param(...)`，不再支持 `-InfraOnly`、`-NoApi`、`-NoWeb`、`-ExpectedEnvName`、`-PythonVersion` 等 CLI 可选参数；传入任何参数都会直接报错退出 | 已实现 |
+| 启动行为 | 脚本固定执行完整本地测试启动：准备环境文件、检查 `DatasetGen` / Python 3.11、启动 Docker、迁移、种子、后台启动 API/Web、输出访问地址 | 已实现 |
+| `README.md` | Windows + conda 一键脚本说明只保留 `.\scripts\dev-start-conda.ps1` 一种运行方式，并移除启动脚本可选参数示例 | 已实现 |
+
+### 验证状态
+
+- `scripts/dev-start-conda.ps1` PowerShell 语法解析通过。
+- `git diff --check` 通过，仅有 Git 提示后续可能按 CRLF 处理文本文件。
+- `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\dev-start-conda.ps1 -InfraOnly` 已验证会直接报错并提示只运行 `.\scripts\dev-start-conda.ps1`。
+- `scripts/dev-start-conda.ps1` 和 README 中已无 conda 启动脚本可选参数示例残留。
+
+---
+
+## conda 启动脚本移除依赖安装（2026-07-02）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/dev-start-conda.ps1` | 移除依赖安装阶段，删除 `-SkipInstall` 参数、后端 editable 安装逻辑和前端 `npm ci` 检查逻辑；启动流程从 8 步调整为 7 步 | 已实现 |
+| 前端启动检查 | 保留 `npm` 命令存在性检查，仅用于启动 Web，不再自动安装或同步前端依赖 | 已实现 |
+| `README.md` | 明确 Windows + conda 一键脚本不安装 Python 或 npm 依赖，默认当前 conda 环境和前端依赖已准备好 | 已实现 |
+
+### 验证状态
+
+- `scripts/dev-start-conda.ps1` 与 `scripts/dev-stop.ps1` PowerShell 语法解析通过。
+- `git diff --check` 通过，仅有 Git 提示后续可能按 CRLF 处理文本文件。
+- `scripts/dev-start-conda.ps1` 内已无 `pip install`、`npm ci`、`-SkipInstall` 或旧 8 步编号残留。
+- `conda activate DatasetGen; .\scripts\dev-start-conda.ps1 -InfraOnly` 已通过，完成当前环境检查、Docker 基础设施启动、Alembic 迁移和种子脚本，未执行依赖安装，也未启动 API/Web；2026-07-02 后续已移除 `-InfraOnly` 参数，脚本改为零参数完整启动。
+
+---
+
+## Windows + conda 一键启动脚本（2026-07-01）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `scripts/dev-start-conda.ps1` | 新增 Windows + conda 专用一键启动脚本；不创建 `.venv`，不切换 conda 环境，直接使用当前 `DatasetGen` 环境的 `python.exe` 执行后端命令 | 已实现 |
+| conda 环境检查 | 默认要求当前 shell 已执行 `conda activate DatasetGen`；检查 `CONDA_DEFAULT_ENV=DatasetGen` 与 Python 3.11，不再自动创建或切换环境 | 已实现 |
+| 启动编排 | 自动创建本地 `.env`、启动 Docker 基础设施、执行迁移与种子脚本、后台启动 API/Web；不执行 Python/npm 依赖安装 | 已实现 |
+| Windows 原生命令执行 | 对 Docker Compose 等原生命令按退出码判断失败，避免正常 stderr 进度在 PowerShell 5.1 下被误判为 `NativeCommandError` | 已实现 |
+| `scripts/dev-stop.ps1` | 说明更新为可停止 `dev-start.ps1` 或 `dev-start-conda.ps1` 启动的 API/Web 进程 | 已实现 |
+| Docker Compose 配置 | 移除 `infra/docker/docker-compose.yml` 顶层 `version` 字段，避免 Docker Compose v2 废弃警告在 PowerShell 中被当成错误 | 已实现 |
+| `README.md` | 推荐入口调整为 `.\scripts\dev-start-conda.ps1`，保留 uv/.venv 脚本和手动 conda 流程作为备选 | 已实现 |
+
+### 验证状态
+
+- `scripts/dev-start-conda.ps1` PowerShell 语法解析通过。
+- `scripts/dev-stop.ps1` PowerShell 语法解析通过。
+- 已确认当前 `DatasetGen` conda 环境为 Python 3.11。
+- Docker、Node.js、npm 命令可用。
+- 在 `base` 环境执行脚本时，会提示先运行 `conda activate DatasetGen` 并退出，避免把依赖误装到错误环境。
+- 在 `DatasetGen` 环境执行脚本时，已确认脚本使用当前环境的 `python.exe`，不再调用 `conda run`、`conda activate` 或创建 conda 环境。
+- `docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env config --quiet` 通过，已确认移除 `version` 字段后不再输出 Compose v2 废弃警告。
+- 使用 `conda activate DatasetGen; .\scripts\dev-start-conda.ps1 -InfraOnly -SkipInstall` 复测时，发现并修复 Docker Compose 正常进度 stderr 被 PowerShell 误判为错误的问题。
+- 修复后 `conda activate DatasetGen; .\scripts\dev-start-conda.ps1 -InfraOnly -SkipInstall` 已通过，完成当前环境检查、Docker 基础设施启动、Alembic 迁移和种子脚本；2026-07-02 起 `-SkipInstall` 已随依赖安装阶段一并移除。
+- 本轮未执行完整 API/Web 后台启动；首次实际运行时需观察 `logs/R1plus-API.log` 与 `logs/R1plus-Web.log`。
+
+### 下一步
+
+- 首次完整运行 `.\scripts\dev-start-conda.ps1` 后，记录 API/Web 启动耗时、常见失败点和 Windows 本地 MinerU 可用性。
+- 若 conda 脚本稳定，可将 `docs/runbooks/new-machine-runbook.md` 同步改为 Windows 优先使用 conda 脚本。
+
+---
+
+## README 运行指南重写（2026-07-01）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `README.md` | 重写根目录 README，修复迁移后显示乱码的问题，并按“一键脚本优先、conda-only 手动流程备用、开发信息其次”的结构重新组织项目说明 | 已实现 |
+| Windows + conda 启动说明 | 补齐 conda 环境创建、Docker 基础设施、后端 editable 安装、Alembic 迁移、种子数据、API/Web 启动步骤 | 已实现 |
+| 页面使用流程 | 补齐从登录、上传 PDF、解析、清洗、分块、生成、审核提升到数据集/评测集导出的主链路说明 | 已实现 |
+| 解析器与 LLM 配置说明 | 明确 PyMuPDF、MinerU 本地模型、远程 API、本地服务型解析器的适用边界；说明生成 Candidate 前必须配置 OpenAI-compatible ModelConfig | 已实现 |
+
+### 已知问题
+
+- 本次只更新文档，没有修改启动脚本；`scripts/dev-start.ps1` 仍走 `uv sync` 并会创建 `.venv`，README 已单独给出 conda-only 手动流程。
+- Windows 下本地服务型 MinerU/PaddleOCR 仍主要沿用原 macOS/MLX 方案说明；Windows 新手优先使用 `PyMuPDF4LLM（本地）` 或 `MinerU2.5-Pro（本地模型）`。
+
+### 下一步
+
+- 如后续确认长期采用 conda-only 工作流，可考虑新增 `scripts/dev-start-conda.ps1` 或给现有脚本增加 conda 模式，避免 README 与脚本模式分叉。
+- 后续完成 R1 端到端验收时，应同步更新 README 的“当前项目状态”和验收边界。
 
 ---
 
