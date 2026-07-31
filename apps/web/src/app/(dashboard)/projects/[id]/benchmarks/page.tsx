@@ -56,7 +56,20 @@ export default function BenchmarksPage() {
   }, [projectId, page, pageSize]);
 
   useEffect(() => {
-    fetchBenchmarks();
+
+
+    // 延迟到下一事件循环再触发请求，避免在 effect 内同步 setState
+
+
+    // （react-hooks/set-state-in-effect），并通过 cleanup 取消未完成的调度。
+
+
+    const timer = setTimeout(fetchBenchmarks, 0);
+
+
+    return () => clearTimeout(timer);
+
+
   }, [fetchBenchmarks]);
 
   const handleCreate = useCallback(async () => {

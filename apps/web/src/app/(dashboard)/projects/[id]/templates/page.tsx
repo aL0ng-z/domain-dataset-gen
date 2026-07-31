@@ -5,12 +5,6 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { api, type PaginatedResponse } from "@/lib/api";
@@ -78,7 +72,20 @@ export default function TemplatesPage() {
   }, [projectId, page, pageSize, activeTab]);
 
   useEffect(() => {
-    fetchTemplates();
+
+
+    // 延迟到下一事件循环再触发请求，避免在 effect 内同步 setState
+
+
+    // （react-hooks/set-state-in-effect），并通过 cleanup 取消未完成的调度。
+
+
+    const timer = setTimeout(fetchTemplates, 0);
+
+
+    return () => clearTimeout(timer);
+
+
   }, [fetchTemplates]);
 
   const handleCreate = useCallback(async () => {

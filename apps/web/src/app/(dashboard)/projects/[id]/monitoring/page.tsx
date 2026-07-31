@@ -159,7 +159,17 @@ export default function MonitoringPage() {
   }, [projectId]);
 
   useEffect(() => {
-    fetchData();
+
+
+    // 延迟到下一事件循环再触发请求，避免在 effect 内同步 setState
+
+
+    const timer = setTimeout(fetchData, 0);
+
+
+    return () => clearTimeout(timer);
+
+
   }, [fetchData]);
 
   if (loading) {

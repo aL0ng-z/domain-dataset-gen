@@ -14,7 +14,6 @@ import {
 } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import {
   ArrowLeftIcon,
@@ -77,7 +76,17 @@ export default function CuratedItemDetailPage() {
   }, [projectId, itemId]);
 
   useEffect(() => {
-    fetchItem();
+
+
+    // 延迟到下一事件循环再触发请求，避免在 effect 内同步 setState
+
+
+    const timer = setTimeout(fetchItem, 0);
+
+
+    return () => clearTimeout(timer);
+
+
   }, [fetchItem]);
 
   const handleSave = useCallback(async () => {

@@ -96,7 +96,7 @@ export default function ChunkDetailPage() {
     } finally {
       setGenerating(false);
     }
-  }, [projectId, docId, chunkId, selectedTemplate]);
+  }, [chunkId, selectedTemplate]);
 
   if (loading) {
     return (

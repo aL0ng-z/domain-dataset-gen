@@ -18,7 +18,6 @@ import { usePagination } from "@/hooks/use-pagination";
 import { api, type PaginatedResponse } from "@/lib/api";
 import {
   ArrowLeftIcon,
-  PlusIcon,
   TrashIcon,
   DownloadIcon,
   Loader2Icon,

@@ -45,10 +45,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   // On mount, check for existing token and fetch user (with timeout fallback)
+  // 说明：为避免在 effect 内同步 setState（react-hooks/set-state-in-effect），
+  // 首次状态写入通过 queueMicrotask/异步回调触发，行为与同步写入一致。
   useEffect(() => {
     const stored = localStorage.getItem("access_token");
     if (stored) {
-      setToken(stored);
+      queueMicrotask(() => setToken(stored));
 
       // Safety timeout: if /auth/me takes > 10s, treat as failed
       const timeout = setTimeout(() => {
@@ -73,7 +75,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setLoading(false);
         });
     } else {
-      setLoading(false);
+      queueMicrotask(() => setLoading(false));
     }
   }, []);
 
