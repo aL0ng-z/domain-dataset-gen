@@ -1,0 +1,74 @@
+# 测试专用基础设施（PostgreSQL/Redis/MinIO），与开发环境完全隔离。
+#
+# 端口/数据库名/bucket 均与开发环境不同，且凭据使用独立账号，
+# 避免测试误连开发数据。默认测试全部使用 fake，本 compose 只供
+# 集成/契约测试按需启动真实服务。
+#
+# 启动：
+#   docker compose -f infra/docker/docker-compose.test.yml --env-file infra/docker/.env.test up -d
+name: datasetgen-test
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${TEST_POSTGRES_DB}
+      POSTGRES_USER: ${TEST_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${TEST_POSTGRES_PASSWORD}
+    ports:
+      - "${TEST_POSTGRES_PORT}:5432"
+    volumes:
+      - test-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TEST_POSTGRES_USER} -d ${TEST_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${TEST_REDIS_PORT}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${TEST_MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${TEST_MINIO_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    ports:
+      - "${TEST_MINIO_HOST_PORT}:9000"
+      - "${TEST_MINIO_CONSOLE_PORT}:9001"
+    volumes:
+      - test-miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        mc alias set local http://minio:9000 $${TEST_MINIO_ACCESS_KEY} $${TEST_MINIO_SECRET_KEY} &&
+        mc mb --ignore-existing local/$${TEST_MINIO_BUCKET_DOCUMENTS} &&
+        mc mb --ignore-existing local/$${TEST_MINIO_BUCKET_OUTPUTS} &&
+        echo "Test buckets created successfully"
+
+volumes:
+  test-pgdata:
+  test-miniodata:

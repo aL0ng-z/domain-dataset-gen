@@ -23,6 +23,7 @@ env/
 .env
 .env.*
 !.env.example
+!.env.test.example
 
 # Local model weights
 models/
