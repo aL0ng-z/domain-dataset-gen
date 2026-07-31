@@ -1,7 +1,10 @@
 import asyncio
 import hashlib
 import uuid
+from contextlib import suppress
 
+# Pre-load pymupdf at module level to avoid slow first-call initialization
+import pymupdf  # noqa: F401
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,9 +13,6 @@ from app.models.document import Document
 from app.models.parse import ParseJob
 from app.models.section import CleaningJob
 from storage import get_storage_client
-
-# Pre-load pymupdf at module level to avoid slow first-call initialization
-import pymupdf  # noqa: F401
 
 
 def _extract_page_count(file_data: bytes) -> int | None:
@@ -124,20 +124,16 @@ class DocumentService:
         for job in parse_jobs.scalars().all():
             for key in (job.raw_markdown_key, job.structured_json_key):
                 if key:
-                    try:
+                    with suppress(Exception):
                         await asyncio.to_thread(
                             self._storage.delete_file, settings.minio_bucket_outputs, key,
                         )
-                    except Exception:
-                        pass
 
         # Delete PDF from documents bucket
-        try:
+        with suppress(Exception):
             await asyncio.to_thread(
                 self._storage.delete_file, settings.minio_bucket_documents, doc.minio_key,
             )
-        except Exception:
-            pass
 
         # DB cascade handles parse_jobs, cleaning_jobs, sections, etc.
         await self.db.delete(doc)
@@ -171,12 +167,10 @@ class DocumentService:
         # Delete associated files from MinIO outputs bucket
         for key in (job.raw_markdown_key, job.structured_json_key):
             if key:
-                try:
+                with suppress(Exception):
                     await asyncio.to_thread(
                         self._storage.delete_file, settings.minio_bucket_outputs, key,
                     )
-                except Exception:
-                    pass  # file may already be gone
         await self.db.delete(job)
         await self.db.flush()
 

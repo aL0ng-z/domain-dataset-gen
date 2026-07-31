@@ -107,7 +107,7 @@ async def test_run_prompt_template(
     try:
         result = await service.test_run(tid, body.chunk_id, body.model_config_id)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     return TestRunResponse(**result)
 
 

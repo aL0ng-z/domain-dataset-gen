@@ -1,5 +1,4 @@
 import asyncio
-import json
 
 from fastapi import WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import redis.asyncio as aioredis
 from sqlalchemy import func, select
@@ -50,9 +50,9 @@ class TaskService:
         if error_message is not None:
             task.error_message = error_message
         if status == "processing" and task.started_at is None:
-            task.started_at = datetime.now(timezone.utc)
+            task.started_at = datetime.now(UTC)
         if status in ("completed", "failed", "cancelled"):
-            task.completed_at = datetime.now(timezone.utc)
+            task.completed_at = datetime.now(UTC)
             if status == "completed":
                 task.progress = 100
 
@@ -99,6 +99,6 @@ class TaskService:
             "progress": task.progress,
             "entity_type": task.entity_type,
             "entity_id": str(task.entity_id),
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         })
         await self.redis.publish(f"project:{task.project_id}:tasks", message)

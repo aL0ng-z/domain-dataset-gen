@@ -19,7 +19,7 @@ class HybridHeadingRecursiveChunker(BaseChunker):
         # Step 2: For each sub-section, recursively split if too large
         raw_chunks = []
         for sub_heading, sub_content in sub_sections:
-            full_path = f"{heading_path} > {sub_heading}".strip(" > ") if sub_heading else heading_path
+            full_path = re.sub(r"^[ >]+|[ >]+$", "", f"{heading_path} > {sub_heading}") if sub_heading else heading_path
             if self._count_tokens(sub_content) <= config.max_tokens:
                 raw_chunks.append((full_path, sub_content))
             else:

@@ -124,5 +124,5 @@ async def promote_to_curated(
     try:
         curated_item = await service.promote_to_curated(cid, current_user.id)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     return curated_item

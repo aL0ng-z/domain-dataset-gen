@@ -1,5 +1,5 @@
 import uuid
-from typing import Any, Type
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +10,7 @@ from app.database import Base
 class ConfigService:
     """Generic CRUD service for config profile tables."""
 
-    def __init__(self, db: AsyncSession, model_class: Type[Base]):
+    def __init__(self, db: AsyncSession, model_class: type[Base]):
         self.db = db
         self.model_class = model_class
 

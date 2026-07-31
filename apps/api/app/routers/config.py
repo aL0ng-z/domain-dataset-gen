@@ -9,11 +9,21 @@ from app.dependencies import require_project_member
 from app.models.config import ChunkProfile, ExportProfile, ModelConfig, ParserProfile, TaskPolicy
 from app.models.user import User
 from app.schemas.config import (
-    ChunkProfileCreate, ChunkProfileResponse, ChunkProfileUpdate,
-    ExportProfileCreate, ExportProfileResponse, ExportProfileUpdate,
-    ModelConfigCreate, ModelConfigResponse, ModelConfigUpdate,
-    ParserProfileCreate, ParserProfileResponse, ParserProfileUpdate,
-    TaskPolicyCreate, TaskPolicyResponse, TaskPolicyUpdate,
+    ChunkProfileCreate,
+    ChunkProfileResponse,
+    ChunkProfileUpdate,
+    ExportProfileCreate,
+    ExportProfileResponse,
+    ExportProfileUpdate,
+    ModelConfigCreate,
+    ModelConfigResponse,
+    ModelConfigUpdate,
+    ParserProfileCreate,
+    ParserProfileResponse,
+    ParserProfileUpdate,
+    TaskPolicyCreate,
+    TaskPolicyResponse,
+    TaskPolicyUpdate,
 )
 from app.services.config_service import ConfigService
 from domain.enums import UserRole

@@ -4,7 +4,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.curated import CuratedItem
-from app.models.dataset import Benchmark, BenchmarkCase, Dataset, DatasetItem
+from app.models.dataset import Dataset, DatasetItem
 
 
 class DatasetService:

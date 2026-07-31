@@ -8,10 +8,16 @@ from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.models.user import User
 from app.schemas.section import (
-    SectionCommentCreate, SectionCommentResponse, SectionLeaseResponse,
-    SectionResponse, SectionRevisionResponse, SectionReview, SectionUpdate,
+    SectionAssignRequest,
+    SectionCommentCreate,
+    SectionCommentResponse,
+    SectionLeaseResponse,
+    SectionResponse,
+    SectionReturnRequest,
+    SectionReview,
+    SectionRevisionResponse,
+    SectionUpdate,
 )
-from app.schemas.section import SectionAssignRequest, SectionReturnRequest
 from app.services.section_service import SectionService
 from domain.enums import UserRole
 
@@ -73,7 +79,7 @@ async def review_section(
     try:
         section = await service.review_section(sid, body.action, current_user.id)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     if section is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     return section
@@ -90,7 +96,7 @@ async def acquire_lease(
     try:
         return await service.acquire_lease(sid, current_user.id)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
 
 
 @router.post("/{sid}/lease/heartbeat", response_model=SectionLeaseResponse)
@@ -175,7 +181,7 @@ async def complete_section_endpoint(
     try:
         section = await service.complete_section(sid, current_user.id, is_admin)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     if section is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     return section

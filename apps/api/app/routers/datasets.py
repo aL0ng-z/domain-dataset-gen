@@ -5,7 +5,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_project_member
+from app.dependencies import require_project_member
 from app.models.user import User
 from app.schemas.dataset import (
     DatasetCreate,
@@ -111,7 +111,7 @@ async def add_item(
     try:
         return await service.add_item(did, body.curated_item_id)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
 
 @router.delete("/{did}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -168,8 +168,8 @@ async def export_dataset(
     )
 
     # Return a placeholder export response — actual export created asynchronously
-    from app.schemas.export import ExportResponse as ER
-    return ER(
+    from app.schemas.export import ExportResponse
+    return ExportResponse(
         id=task.id,
         project_id=pid,
         dataset_id=did,

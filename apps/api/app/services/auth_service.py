@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from jose import jwt
 from passlib.context import CryptContext
@@ -45,13 +45,13 @@ class AuthService:
         return user
 
     def create_access_token(self, user: User) -> str:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
-        payload = {"sub": str(user.id), "role": user.role, "exp": expire, "iat": datetime.now(timezone.utc)}
+        expire = datetime.now(UTC) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
+        payload = {"sub": str(user.id), "role": user.role, "exp": expire, "iat": datetime.now(UTC)}
         return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
     def create_refresh_token(self, user: User) -> str:
-        expire = datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_token_expire_days)
-        payload = {"sub": str(user.id), "type": "refresh", "exp": expire, "iat": datetime.now(timezone.utc)}
+        expire = datetime.now(UTC) + timedelta(days=settings.jwt_refresh_token_expire_days)
+        payload = {"sub": str(user.id), "type": "refresh", "exp": expire, "iat": datetime.now(UTC)}
         return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
     async def refresh_tokens(self, refresh_token: str) -> tuple[str, str]:
@@ -62,8 +62,8 @@ class AuthService:
             if payload.get("type") != "refresh":
                 raise ValueError("无效的刷新令牌")
             user_id = payload.get("sub")
-        except JWTError:
-            raise ValueError("无效的刷新令牌")
+        except JWTError as e:
+            raise ValueError("无效的刷新令牌") from e
 
         result = await self.db.execute(select(User).where(User.id == uuid.UUID(user_id)))
         user = result.scalar_one_or_none()

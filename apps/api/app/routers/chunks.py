@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -10,7 +10,6 @@ from app.models.user import User
 from app.schemas.chunk import ChunkResponse, ChunkUpdate, GenerateRequest
 from app.schemas.task import TaskResponse
 from app.services.chunk_service import ChunkService
-from domain.schemas import PaginatedResponse
 
 router = APIRouter(prefix="/api/chunks", tags=["chunks"])
 
@@ -59,7 +58,7 @@ async def generate_from_chunk(
             created_by=current_user.id,
         )
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
     # Schedule background generation worker
     from app.workers.generate_worker import run_generate

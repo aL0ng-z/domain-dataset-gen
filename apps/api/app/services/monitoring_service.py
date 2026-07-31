@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import func, select, cast, Date
+from sqlalchemy import Date, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.task import LlmUsageLog

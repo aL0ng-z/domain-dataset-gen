@@ -168,7 +168,7 @@ class PromptTemplateService:
                 response.raise_for_status()
                 data = response.json()
         except Exception as e:
-            raise ValueError(f"LLM调用失败: {e}")
+            raise ValueError(f"LLM调用失败: {e}") from e
 
         end_ms = time.monotonic_ns() // 1_000_000
         latency_ms = end_ms - start_ms

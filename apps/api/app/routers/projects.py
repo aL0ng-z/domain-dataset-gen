@@ -122,8 +122,9 @@ async def clone_config(
     _: Annotated[User, Depends(require_role(UserRole.admin))],
 ):
     """Clone all config profiles from source project to target project."""
-    from app.models.config import ModelConfig, ParserProfile, ChunkProfile, ExportProfile, TaskPolicy
     from sqlalchemy import select
+
+    from app.models.config import ChunkProfile, ExportProfile, ModelConfig, ParserProfile, TaskPolicy
 
     config_tables = [ModelConfig, ParserProfile, ChunkProfile, ExportProfile, TaskPolicy]
     cloned = {}

@@ -1,6 +1,6 @@
 import time
 
-from openai import AsyncOpenAI, APIError, APITimeoutError, RateLimitError
+from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 
 from llm.usage import LLMResponse
 

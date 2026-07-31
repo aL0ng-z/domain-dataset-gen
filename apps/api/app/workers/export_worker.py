@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,11 +11,9 @@ from app.config import settings
 from app.models.config import ExportProfile
 from app.models.curated import CuratedItem, EvidenceLink
 from app.models.dataset import Benchmark, BenchmarkCase, Dataset, DatasetItem
-from app.models.export import Export, SnapshotManifest
 from app.services.export_service import ExportService
 from app.services.task_service import TaskService
 from storage import get_storage_client
-
 
 # ---------------------------------------------------------------------------
 # Format helpers
@@ -211,7 +209,7 @@ async def run_export_dataset(
 
         # Build snapshot manifest
         manifest_data = {
-            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_at": datetime.now(UTC).isoformat(),
             "source_type": "dataset",
             "dataset_id": str(dataset_id),
             "dataset_name": dataset.name,
@@ -330,7 +328,7 @@ async def run_export_benchmark(
 
         # Build snapshot manifest
         manifest_data = {
-            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_at": datetime.now(UTC).isoformat(),
             "source_type": "benchmark",
             "benchmark_id": str(benchmark_id),
             "benchmark_name": benchmark.name,

@@ -5,6 +5,30 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.routers import (
+    auth,
+    benchmarks,
+    candidates,
+    chunks,
+    cleaned_versions,
+    curated_items,
+    datasets,
+    documents,
+    exports,
+    monitoring,
+    projects,
+    prompt_templates,
+    sections,
+    tasks,
+    users,
+)
+from app.routers.config import (
+    chunk_profile_router,
+    export_profile_router,
+    model_config_router,
+    parser_profile_router,
+    task_policy_router,
+)
 from app.ws.task_ws import task_websocket_endpoint
 
 
@@ -30,16 +54,6 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
-
-
-from app.routers import auth, users, projects, documents, sections, tasks, monitoring
-from app.routers import chunks, prompt_templates, candidates, curated_items
-from app.routers import datasets, benchmarks, exports
-from app.routers import cleaned_versions
-from app.routers.config import (
-    model_config_router, parser_profile_router, chunk_profile_router,
-    export_profile_router, task_policy_router,
 )
 
 app.include_router(auth.router)

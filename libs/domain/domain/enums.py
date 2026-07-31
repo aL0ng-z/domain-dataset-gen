@@ -1,14 +1,14 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class UserRole(str, Enum):
+class UserRole(StrEnum):
     admin = "admin"
     reviewer = "reviewer"
     editor = "editor"
     viewer = "viewer"
 
 
-class DocumentStatus(str, Enum):
+class DocumentStatus(StrEnum):
     uploaded = "uploaded"
     parsing = "parsing"
     parsed = "parsed"
@@ -20,7 +20,7 @@ class DocumentStatus(str, Enum):
     generated = "generated"
 
 
-class SectionStatus(str, Enum):
+class SectionStatus(StrEnum):
     draft = "draft"
     in_cleaning = "in_cleaning"
     review_pending = "review_pending"
@@ -28,13 +28,13 @@ class SectionStatus(str, Enum):
     rejected = "rejected"
 
 
-class ChunkStatus(str, Enum):
+class ChunkStatus(StrEnum):
     ready = "ready"
     generating = "generating"
     generated = "generated"
 
 
-class CandidateStatus(str, Enum):
+class CandidateStatus(StrEnum):
     ai_generated = "ai_generated"
     human_edited = "human_edited"
     review_pending = "review_pending"
@@ -42,14 +42,14 @@ class CandidateStatus(str, Enum):
     rejected = "rejected"
 
 
-class CuratedItemStatus(str, Enum):
+class CuratedItemStatus(StrEnum):
     draft = "draft"
     approved = "approved"
     exported = "exported"
     deprecated = "deprecated"
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     queued = "queued"
     processing = "processing"
     completed = "completed"
@@ -57,7 +57,7 @@ class TaskStatus(str, Enum):
     cancelled = "cancelled"
 
 
-class TaskType(str, Enum):
+class TaskType(StrEnum):
     parse = "parse"
     clean = "clean"
     chunk = "chunk"
@@ -66,21 +66,21 @@ class TaskType(str, Enum):
     export = "export"
 
 
-class CommentType(str, Enum):
+class CommentType(StrEnum):
     parse_issue = "parse_issue"
     ocr_issue = "ocr_issue"
     layout_issue = "layout_issue"
     general = "general"
 
 
-class ReviewVerdict(str, Enum):
+class ReviewVerdict(StrEnum):
     supported = "supported"
     partially_supported = "partially_supported"
     unsupported = "unsupported"
     out_of_scope = "out_of_scope"
 
 
-class ExportFormat(str, Enum):
+class ExportFormat(StrEnum):
     sft_jsonl = "sft_jsonl"
     qa_json = "qa_json"
     messages = "messages"
@@ -89,36 +89,36 @@ class ExportFormat(str, Enum):
     benchmark_json = "benchmark_json"
 
 
-class ContextMode(str, Enum):
+class ContextMode(StrEnum):
     single_chunk = "single_chunk"
 
 
-class PromptTaskType(str, Enum):
+class PromptTaskType(StrEnum):
     knowledge_extraction = "knowledge_extraction"
     qa_generation = "qa_generation"
     benchmark_case = "benchmark_case"
 
 
-class ParseJobStatus(str, Enum):
+class ParseJobStatus(StrEnum):
     queued = "queued"
     processing = "processing"
     completed = "completed"
     failed = "failed"
 
 
-class CleaningJobStatus(str, Enum):
+class CleaningJobStatus(StrEnum):
     queued = "queued"
     processing = "processing"
     completed = "completed"
     failed = "failed"
 
 
-class DatasetStatus(str, Enum):
+class DatasetStatus(StrEnum):
     draft = "draft"
     finalized = "finalized"
 
 
-class BenchmarkStatus(str, Enum):
+class BenchmarkStatus(StrEnum):
     draft = "draft"
     finalized = "finalized"
 
