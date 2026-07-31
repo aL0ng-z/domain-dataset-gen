@@ -30,3 +30,32 @@ known-first-party = ["app", "domain", "storage", "parsing", "cleaning", "splitte
 testpaths = ["tests"]
 asyncio_mode = "auto"
 filterwarnings = ["ignore::DeprecationWarning"]
+# 统一测试导入路径，无需手工设置 PYTHONPATH。
+# 与 scripts/dev-start-conda.ps1 中的 BackendPythonPathEntries 保持一致。
+pythonpath = [
+    "apps/api",
+    "libs/domain",
+    "libs/storage",
+    "libs/parsing",
+    "libs/cleaning",
+    "libs/splitters",
+    "libs/llm",
+]
+markers = [
+    "integration: 依赖 PostgreSQL/Redis/MinIO 隔离测试基础设施的集成测试",
+    "contract: 外部服务 adapter 契约测试（默认使用 fake，不请求真实服务）",
+    "smoke: 真实外部服务冒烟测试，默认跳过，永不进入普通 CI",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["app", "domain", "storage", "parsing", "cleaning", "splitters", "llm"]
+omit = [
+    "*/migrations/*",
+    "*/tests/*",
+    "*/app/workers/__init__.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
