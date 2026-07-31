@@ -273,7 +273,7 @@ cd ../..
 
 ```powershell
 conda activate DatasetGen
-cd C:\Work\Postdoc\Test\03_LLM\domain-dataset-gen\apps\api
+cd apps\api
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
@@ -295,7 +295,7 @@ http://localhost:8000/docs
 打开终端 B：
 
 ```powershell
-cd C:\Work\Postdoc\Test\03_LLM\domain-dataset-gen\apps\web
+cd apps\web
 npm ci
 npm run dev
 ```
@@ -333,14 +333,14 @@ docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env u
 
 ```powershell
 conda activate DatasetGen
-cd C:\Work\Postdoc\Test\03_LLM\domain-dataset-gen\apps\api
+cd apps\api
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 3.3 启动前端
 
 ```powershell
-cd C:\Work\Postdoc\Test\03_LLM\domain-dataset-gen\apps\web
+cd apps\web
 npm run dev
 ```
 

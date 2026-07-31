@@ -4,6 +4,7 @@
 
 - `product/`: product requirements and scope baselines.
 - `plans/`: engineering plans and execution baselines.
+- `code-review-remediation/`: code review 修复任务卡、依赖关系和分阶段实施顺序。
 - `logs/`: development progress and stage summaries.
 - `runbooks/`: setup and operational guides.
 - `r1-testing-guide.md`: manual testing checklist for R1.

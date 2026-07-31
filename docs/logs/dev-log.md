@@ -16,6 +16,47 @@
 
 ---
 
+## Code Review 修复方案与任务卡拆分（2026-07-31）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `docs/code-review-remediation/README.md` | 明确可信数据集生产主链目标，建立 code review 问题闭环映射、任务依赖 DAG、实施波次和共同合并门槛 | 已完成 |
+| `T00`–`T04` | 自动化基线、JWT 语义、项目对象级授权、解析器出站/ParseJob 快照、OpenAPI 与统一错误合同 | 已完成 |
+| `T05`–`T08` | 清洗编辑/版本发布并发、不可变 ChunkSet 与 Token 预算、持久任务生命周期、单项/批量生成与配置快照 | 已完成 |
+| `T09`–`T11` | Candidate/CuratedItem 证据审批、固定 approved revision 的编组/finalize、不可变导出/manifest/artifact seal | 已完成 |
+| `docs/README.md` | 增加 code review 修复任务卡目录入口 | 已完成 |
+
+### 设计决策
+
+- 将项目目标收敛为可授权、可人工审查、可复现、可验证的 `Document → CleanedDocumentVersion → ChunkSet → GenerationBatch → Candidate → CuratedItem → Dataset/Benchmark → Export` 版本链。
+- 共拆分 12 张可独立实施、测试和审查的任务卡；每张均包含范围与明确不做、数据库/API/前端合同、预期修改面、依赖和风险、自动化验收标准及停止条件。
+- 安全修复优先于业务主链；T05 与 T07 可并行，T06 在两者之后合并，T08–T11 按生成、审批、编组、导出顺序推进。
+- 跨卡合同明确冻结 ParseJob 和 GenerationBatch 配置、批准的 CuratedRevision/证据、composition revision/hash 与 export artifact seal，禁止从当前可变配置反推历史事实。
+
+### 验证状态
+
+- 已严格按 UTF-8 解码全部 12 张任务卡，并确认必需章节齐全、Markdown 代码围栏成对。
+- 已确认索引中的 12 个任务卡链接全部存在；任务卡元数据与索引依赖一致，12 节点依赖图无环。
+- 本轮仅编写修复方案文档，未修改运行时代码，因此未执行后端/前端运行时测试；最终执行 `git diff --check` 作为文档变更校验。
+
+---
+
+## README 工作目录路径修正（2026-07-02）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `README.md` | 将手动启动示例中的旧 `C:\Work\Postdoc\Test\03_LLM\domain-dataset-gen` 绝对路径改为从仓库根目录出发的相对路径，适配当前 `E:\Work` 迁移后的目录 | 已完成 |
+
+### 验证状态
+
+- 已搜索 README / docs / scripts / apps / infra / libs / tests，确认不再残留 `C:\Work` 或 `C:/Work` 路径。
+
+---
+
 ## 停止脚本行为修正（2026-07-02）
 
 ### 本轮总览
