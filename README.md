@@ -491,7 +491,25 @@ logs/                     本地运行日志；不提交 Git
 
 ## 8. 常用开发命令
 
-### 8.1 后端测试
+### 8.1 一键质量门禁（推荐）
+
+在已激活的 `DatasetGen` conda 环境中，从仓库根目录执行：
+
+```powershell
+.\scripts\test-backend.ps1     # 后端：ruff lint + pytest + 覆盖率
+.\scripts\test-frontend.ps1    # 前端：lint + tsc + vitest + build
+```
+
+macOS / Linux / Git Bash 对应脚本：
+
+```bash
+./scripts/test-backend.sh
+./scripts/test-frontend.sh
+```
+
+CI（`.github/workflows/ci.yml`）执行的正是与上述脚本相同的门禁。
+
+### 8.2 后端测试
 
 在已激活的 conda 环境中，从仓库根目录执行：
 
@@ -499,27 +517,65 @@ logs/                     本地运行日志；不提交 Git
 python -m pytest -q
 ```
 
-### 8.2 后端 lint
+测试分三层：
+
+- `tests/unit/`：纯单元测试（如安全校验、切分逻辑），不依赖外部服务。
+- `tests/integration/`：数据库/API 集成测试，使用隔离测试库 `datasetgen_test`
+  （PostgreSQL 55432、Redis 56379、MinIO 19000），每个测试结束后 TRUNCATE 清理，
+  保证无残留业务数据、Redis key 或 MinIO 对象。
+- `tests/contract/`：外部服务 adapter 契约测试（LLM、MinIO），默认使用 fake，
+  不发出真实网络请求。
+
+集成测试需要测试基础设施已启动：
 
 ```powershell
-python -m ruff check .
+.\scripts\test-infra.ps1       # 启动（PostgreSQL/Redis/MinIO，与开发环境隔离）
+.\scripts\test-infra.ps1 -Stop # 停止
 ```
 
-### 8.3 前端类型检查
+### 8.3 后端 lint
+
+```powershell
+python -m ruff check apps/api libs tests
+```
+
+仓库以“零错误、零新增 warning”为基线，CI 强制该命令返回 0。
+
+### 8.4 Alembic 迁移 smoke test
+
+```powershell
+.\scripts\run-migration-smoke.ps1   # 空库 upgrade head → downgrade → upgrade head
+```
+
+该脚本只允许在 `datasetgen_test` 测试库上运行，不会触碰开发数据。
+
+### 8.5 前端类型检查
 
 ```powershell
 cd apps/web
 npm exec tsc -- --noEmit
 ```
 
-### 8.4 前端 lint
+### 8.6 前端 lint
 
 ```powershell
 cd apps/web
 npm run lint
 ```
 
-### 8.5 数据库迁移
+### 8.7 前端测试
+
+```powershell
+cd apps/web
+npm test -- --run            # CI 无交互运行全部测试
+npm test -- src/lib/api.test.ts   # 单文件运行
+```
+
+前端测试使用统一的 API mock 层（`src/lib/__mocks__/api-server.ts`），
+按真实 HTTP 状态码与 JSON 响应运行，支持 fake timers、延迟响应、AbortSignal、
+401→refresh 序列响应与 WebSocket mock。
+
+### 8.8 数据库迁移
 
 ```powershell
 conda activate DatasetGen
@@ -595,11 +651,30 @@ cd apps/api
 python ../../scripts/init_seed.py
 ```
 
-### 10.5 PyMuPDF 解析中文乱码
+### 10.5 集成测试报错“连接超时”或“认证失败”
+
+后端集成测试使用隔离测试基础设施（端口 55432/56379/19000），与开发环境
+（5432/6379/9000）不同。请确认测试基础设施已启动：
+
+```powershell
+.\scripts\test-infra.ps1
+docker compose -f infra/docker/docker-compose.test.yml --env-file infra/docker/.env.test ps
+```
+
+如果 `pytest` 报“POSTGRES_DB 不在白名单”，说明环境变量未指向测试库，请确认
+`TESTING=1` 与 `POSTGRES_DB=datasetgen_test` 已设置（conftest 会自动设置默认值）。
+
+### 10.6 前端测试报错“mock not found”
+
+前端 API mock 层（`src/lib/__mocks__/api-server.ts`）只响应已注册的路由；未注册
+路由返回 404（`{"detail":"mock not found"}`），确保测试不会误连真实服务。请在测试
+中为所需端点调用 `server.onGet` / `server.onPost` / `server.mock`。
+
+### 10.7 PyMuPDF 解析中文乱码
 
 部分中文 PDF 的内部文字层损坏或缺失 ToUnicode 映射，页面看起来正常但文本抽取会变成问号或替换字符。这种情况优先换 `MinerU2.5-Pro（本地模型）`，让模型按页面图像重新识别。
 
-### 10.6 本地 MinerU 提示模型不存在
+### 10.8 本地 MinerU 提示模型不存在
 
 确认文件存在：
 
@@ -609,7 +684,7 @@ models/MinerU2.5-Pro-2604-1.2B/model.safetensors
 
 如果没有模型权重，可以先用 `PyMuPDF4LLM（本地）` 跑通主流程。
 
-### 10.7 生成 Candidate 失败
+### 10.9 生成 Candidate 失败
 
 常见原因：
 

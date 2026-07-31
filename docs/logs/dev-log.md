@@ -16,6 +16,51 @@
 
 ---
 
+## T00 自动化质量基线与测试底座（2026-08-01）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `pyproject.toml` / `apps/api/pyproject.toml` | pytest pythonpath/markers/coverage 配置；pytest-cov 依赖；uv.lock 同步 | 已完成 |
+| `scripts/test-backend.*` / `test-frontend.*` / `test-infra.*` | 一键质量门禁与测试基础设施启停脚本 | 已完成 |
+| `infra/docker/docker-compose.test.yml` + `.env.test.example` | 隔离 PostgreSQL(55432)/Redis(56379)/MinIO(19000) 测试环境 | 已完成 |
+| `tests/safety.py` + `tests/unit/test_safety.py` | 强制安全校验：TESTING=1、数据库名白名单、Redis/MinIO 隔离前缀 | 已完成 |
+| `tests/conftest.py` | 双项目、admin/reviewer/editor/viewer 四角色、Token helper、资源工厂；每测试 TRUNCATE 清理 | 已完成 |
+| `tests/integration/` | 登录/me/refresh、401/403、项目隔离最小集成测试 | 已完成 |
+| `tests/contract/` | LLM 与 MinIO adapter fake 契约测试（不请求真实服务） | 已完成 |
+| `apps/web` | Vitest + Testing Library + 统一 API mock 层；api/ws/登录页测试 | 已完成 |
+| Ruff / ESLint | 全部阻断项机械清理，形成零错误零新增 warning 基线 | 已完成 |
+| `.github/workflows/ci.yml` | 后端 lint+test+覆盖率、迁移 smoke、前端 lint+tsc+test+build | 已完成 |
+| `scripts/run-migration-smoke.*` | 空库 upgrade head → downgrade → upgrade head | 已完成 |
+
+### 设计决策
+
+- **测试隔离**：测试数据库固定为 `datasetgen_test`，由 `tests/safety.py` 强制校验
+  （`TESTING=1`、数据库名白名单、Redis/MinIO 前缀），不满足即拒绝执行 destructive
+  fixture。集成测试每测试结束对全部业务表 `TRUNCATE CASCADE` 并清理测试 Redis key，
+  经实测验证结束后无残留业务数据。
+- **事件循环**：pytest 配置 session 级 asyncio 循环，避免跨测试引擎/连接释放问题。
+- **事务策略**：由于仓库路由器直接调用 `db.commit()`，集成测试不依赖 begin/rollback
+  事务包裹，改用 TRUNCATE 清理。
+- **前端 mock**：统一 API mock 层按真实 HTTP 状态码与 JSON 响应运行，未注册路由返回
+  404，保证测试不会误连真实服务；支持延迟、AbortSignal、401→refresh 序列与 WebSocket mock。
+- **lint 清理**：Ruff 的 UP042（str+Enum→StrEnum）、B904（raise...from e）、SIM105、
+  E402、N817 等全部机械修复；前端 `react-hooks/set-state-in-effect` 通过延迟到下一
+  事件循环触发请求解决（行为等价且避免卸载后 setState）。未改动任何业务语义。
+
+### 验证状态
+
+- 后端：`python -m ruff check apps/api libs tests` 通过；`python -m pytest -q` 45 passed。
+- 前端：`npm run lint` 0 problems；`npm exec tsc -- --noEmit` 通过；
+  `npm test -- --run` 11 passed；`npm run build` 通过（Google 字体网络偶发导致失败，
+  重试即成功，与本次改动无关）。
+- 迁移 smoke：`run-migration-smoke.ps1` 在 `datasetgen_test` 上完成
+  upgrade head → downgrade -1 → upgrade head。
+- 数据隔离：测试结束后实测 36 张业务表 0 行、Redis 无残留 key。
+
+---
+
 ## Code Review 修复方案与任务卡拆分（2026-07-31）
 
 ### 本轮总览
