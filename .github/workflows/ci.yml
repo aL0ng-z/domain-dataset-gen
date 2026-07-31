@@ -1,0 +1,150 @@
+name: ci
+
+# 质量门禁：与 scripts/test-backend.ps1 / test-frontend.ps1 语义一致。
+# 每个 PR 必须通过本 CI 才能合并。
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  backend:
+    name: backend (lint + test + coverage)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: datasetgen_test
+          POSTGRES_USER: datasetgen_test
+          POSTGRES_PASSWORD: datasetgen_test_password
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U datasetgen_test -d datasetgen_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      minio:
+        image: minio/minio
+        env:
+          MINIO_ROOT_USER: testminioadmin
+          MINIO_ROOT_PASSWORD: testminioadmin123
+        ports:
+          - 19000:9000
+          - 19001:9001
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        command: server /data --console-address ":9001"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MinIO test buckets
+        run: |
+          docker run --rm --network host \
+            -e MINIO_ENDPOINT=127.0.0.1:19000 \
+            -e MINIO_ACCESS_KEY=testminioadmin \
+            -e MINIO_SECRET_KEY=testminioadmin123 \
+            minio/mc sh -c \
+              'mc alias set local http://127.0.0.1:19000 testminioadmin testminioadmin123 && \
+               mc mb --ignore-existing local/documents-test && \
+               mc mb --ignore-existing local/outputs-test'
+
+      - name: Setup Python 3.11 + uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          uv sync --extra dev --all-packages --frozen
+
+      - name: Ruff lint
+        run: uv run python -m ruff check apps/api libs tests
+
+      - name: Alembic migration smoke test
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "55432"
+          POSTGRES_DB: datasetgen_test
+          POSTGRES_USER: datasetgen_test
+          POSTGRES_PASSWORD: datasetgen_test_password
+        run: |
+          cd apps/api
+          uv run python -m alembic upgrade head
+          uv run python -m alembic downgrade -1
+          uv run python -m alembic upgrade head
+
+      - name: Pytest (unit + integration + contract)
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: "55432"
+          POSTGRES_DB: datasetgen_test
+          POSTGRES_USER: datasetgen_test
+          POSTGRES_PASSWORD: datasetgen_test_password
+          REDIS_HOST: localhost
+          REDIS_PORT: "56379"
+          MINIO_ENDPOINT: localhost:19000
+          MINIO_ACCESS_KEY: testminioadmin
+          MINIO_SECRET_KEY: testminioadmin123
+          MINIO_BUCKET_DOCUMENTS: documents-test
+          MINIO_BUCKET_OUTPUTS: outputs-test
+        run: |
+          uv run python -m pytest -q --cov=app --cov=domain --cov=storage --cov=parsing --cov=cleaning --cov=splitters --cov=llm --cov-report=xml:coverage-reports/coverage.xml --cov-report=term-missing:skip-covered
+
+      - name: Upload backend coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: coverage-reports/
+
+  frontend:
+    name: frontend (lint + tsc + test + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: TypeScript check
+        run: npm exec tsc -- --noEmit
+
+      - name: Vitest
+        run: npm test -- --run --coverage
+
+      - name: Upload frontend coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-coverage
+          path: apps/web/coverage/
+
+      - name: Next.js build
+        run: npm run build
