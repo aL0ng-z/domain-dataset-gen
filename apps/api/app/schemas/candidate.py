@@ -1,9 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
-
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
 class CandidateResponse(BaseSchema):
@@ -21,17 +19,17 @@ class CandidateResponse(BaseSchema):
     updated_at: datetime
 
 
-class CandidateUpdate(BaseModel):
+class CandidateUpdate(RequestSchema):
     content: dict | None = None
 
 
-class CandidateReview(BaseModel):
+class CandidateReview(RequestSchema):
     verdict: str  # supported / partially_supported / unsupported / out_of_scope
     evidence_spans: dict | None = None
     reject_reason: str | None = None
 
 
-class CandidateCommentCreate(BaseModel):
+class CandidateCommentCreate(RequestSchema):
     content: str
 
 

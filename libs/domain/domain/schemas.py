@@ -11,6 +11,17 @@ class BaseSchema(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RequestSchema(BaseModel):
+    """请求模型基类：拒绝未声明的额外字段（返回 422），保证前端不会带旧字段静默通过。
+
+    这是“请求字段在两端名称不同只能在运行时暴露”这一风险的关键防线：
+    旧请求字段（如 template_id、字符串 evidence_spans）会被 Pydantic 以
+    extra=forbid 拒绝，而不是被静默丢弃。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class PaginatedResponse(BaseModel, Generic[T]):
     """统一分页响应结构：所有可增长集合使用 `{"items":[],"total":0,"page":1,"page_size":20}`。
 

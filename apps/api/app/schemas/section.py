@@ -1,9 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
-
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
 class SectionResponse(BaseSchema):
@@ -27,16 +25,16 @@ class SectionResponse(BaseSchema):
     updated_at: datetime
 
 
-class SectionUpdate(BaseModel):
+class SectionUpdate(RequestSchema):
     cleaned_markdown: str
 
 
-class SectionReview(BaseModel):
+class SectionReview(RequestSchema):
     action: str  # "accept" or "reject"
     note: str | None = None
 
 
-class SectionCommentCreate(BaseModel):
+class SectionCommentCreate(RequestSchema):
     comment_type: str = "general"
     content: str
 
@@ -68,18 +66,18 @@ class SectionLeaseResponse(BaseSchema):
     released_at: datetime | None
 
 
-class SectionAssignRequest(BaseModel):
+class SectionAssignRequest(RequestSchema):
     assignee_id: uuid.UUID
 
 
-class BulkAssignmentItem(BaseModel):
+class BulkAssignmentItem(RequestSchema):
     section_ids: list[uuid.UUID]
     assignee_id: uuid.UUID
 
 
-class BulkAssignRequest(BaseModel):
+class BulkAssignRequest(RequestSchema):
     assignments: list[BulkAssignmentItem]
 
 
-class SectionReturnRequest(BaseModel):
+class SectionReturnRequest(RequestSchema):
     reason: str

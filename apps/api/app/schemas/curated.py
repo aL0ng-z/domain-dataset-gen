@@ -1,9 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
-
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
 class CuratedItemResponse(BaseSchema):
@@ -18,7 +16,7 @@ class CuratedItemResponse(BaseSchema):
     updated_at: datetime
 
 
-class CuratedItemUpdate(BaseModel):
+class CuratedItemUpdate(RequestSchema):
     content: dict | None = None
     status: str | None = None
 
@@ -42,9 +40,9 @@ class EvidenceLinkResponse(BaseSchema):
     quote_text: str | None
 
 
-class AddToDatasetRequest(BaseModel):
+class AddToDatasetRequest(RequestSchema):
     dataset_id: uuid.UUID
 
 
-class AddToBenchmarkRequest(BaseModel):
+class AddToBenchmarkRequest(RequestSchema):
     benchmark_id: uuid.UUID

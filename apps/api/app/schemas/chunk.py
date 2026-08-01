@@ -1,9 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
-
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
 class ChunkResponse(BaseSchema):
@@ -20,10 +18,10 @@ class ChunkResponse(BaseSchema):
     updated_at: datetime
 
 
-class ChunkUpdate(BaseModel):
+class ChunkUpdate(RequestSchema):
     content: str | None = None
 
 
-class GenerateRequest(BaseModel):
+class GenerateRequest(RequestSchema):
     prompt_template_id: uuid.UUID
     model_config_id: uuid.UUID

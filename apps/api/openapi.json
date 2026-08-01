@@ -2,6 +2,7 @@
   "components": {
     "schemas": {
       "AddToBenchmarkRequest": {
+        "additionalProperties": false,
         "properties": {
           "benchmark_id": {
             "format": "uuid",
@@ -16,6 +17,7 @@
         "type": "object"
       },
       "AddToDatasetRequest": {
+        "additionalProperties": false,
         "properties": {
           "dataset_id": {
             "format": "uuid",
@@ -50,6 +52,7 @@
         "type": "object"
       },
       "BenchmarkCaseAdd": {
+        "additionalProperties": false,
         "properties": {
           "curated_item_id": {
             "format": "uuid",
@@ -95,6 +98,7 @@
         "type": "object"
       },
       "BenchmarkCreate": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "anyOf": [
@@ -179,6 +183,7 @@
         "type": "object"
       },
       "BenchmarkUpdate": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "anyOf": [
@@ -221,6 +226,7 @@
         "type": "object"
       },
       "BulkAssignRequest": {
+        "additionalProperties": false,
         "properties": {
           "assignments": {
             "items": {
@@ -250,6 +256,7 @@
         "type": "object"
       },
       "BulkAssignmentItem": {
+        "additionalProperties": false,
         "properties": {
           "assignee_id": {
             "format": "uuid",
@@ -273,6 +280,7 @@
         "type": "object"
       },
       "CandidateCommentCreate": {
+        "additionalProperties": false,
         "properties": {
           "content": {
             "title": "Content",
@@ -427,6 +435,7 @@
         "type": "object"
       },
       "CandidateReview": {
+        "additionalProperties": false,
         "properties": {
           "evidence_spans": {
             "anyOf": [
@@ -463,6 +472,7 @@
         "type": "object"
       },
       "CandidateUpdate": {
+        "additionalProperties": false,
         "properties": {
           "content": {
             "anyOf": [
@@ -481,6 +491,7 @@
         "type": "object"
       },
       "ChunkProfileCreate": {
+        "additionalProperties": false,
         "properties": {
           "max_tokens": {
             "default": 512,
@@ -596,6 +607,7 @@
         "type": "object"
       },
       "ChunkProfileUpdate": {
+        "additionalProperties": false,
         "properties": {
           "max_tokens": {
             "anyOf": [
@@ -658,6 +670,7 @@
         "type": "object"
       },
       "ChunkRequest": {
+        "additionalProperties": false,
         "properties": {
           "chunk_profile_id": {
             "format": "uuid",
@@ -748,6 +761,7 @@
         "type": "object"
       },
       "ChunkUpdate": {
+        "additionalProperties": false,
         "properties": {
           "content": {
             "anyOf": [
@@ -978,6 +992,7 @@
         "type": "object"
       },
       "CleanedFinalReviewRequest": {
+        "additionalProperties": false,
         "properties": {
           "action": {
             "description": "'accept' or 'reject'",
@@ -1107,6 +1122,7 @@
         "type": "object"
       },
       "CleaningStartRequest": {
+        "additionalProperties": false,
         "properties": {
           "parse_job_id": {
             "anyOf": [
@@ -1222,6 +1238,7 @@
         "type": "object"
       },
       "CuratedItemUpdate": {
+        "additionalProperties": false,
         "properties": {
           "content": {
             "anyOf": [
@@ -1329,6 +1346,7 @@
         "type": "object"
       },
       "DatasetCreate": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "anyOf": [
@@ -1353,6 +1371,7 @@
         "type": "object"
       },
       "DatasetItemAdd": {
+        "additionalProperties": false,
         "properties": {
           "curated_item_id": {
             "format": "uuid",
@@ -1458,6 +1477,7 @@
         "type": "object"
       },
       "DatasetUpdate": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "anyOf": [
@@ -1710,6 +1730,7 @@
         "type": "object"
       },
       "ExportProfileCreate": {
+        "additionalProperties": false,
         "properties": {
           "format": {
             "default": "sft_jsonl",
@@ -1805,6 +1826,7 @@
         "type": "object"
       },
       "ExportProfileUpdate": {
+        "additionalProperties": false,
         "properties": {
           "format": {
             "anyOf": [
@@ -1845,6 +1867,7 @@
         "type": "object"
       },
       "ExportRequest": {
+        "additionalProperties": false,
         "properties": {
           "export_profile_id": {
             "format": "uuid",
@@ -1939,6 +1962,7 @@
         "type": "object"
       },
       "GenerateBatchRequest": {
+        "additionalProperties": false,
         "properties": {
           "model_config_id": {
             "format": "uuid",
@@ -1959,6 +1983,7 @@
         "type": "object"
       },
       "GenerateRequest": {
+        "additionalProperties": false,
         "properties": {
           "model_config_id": {
             "format": "uuid",
@@ -1992,6 +2017,7 @@
         "type": "object"
       },
       "LoginRequest": {
+        "additionalProperties": false,
         "properties": {
           "password": {
             "title": "Password",
@@ -2010,6 +2036,7 @@
         "type": "object"
       },
       "ModelConfigCreate": {
+        "additionalProperties": false,
         "properties": {
           "api_key": {
             "title": "Api Key",
@@ -2222,6 +2249,7 @@
         "type": "object"
       },
       "ModelConfigUpdate": {
+        "additionalProperties": false,
         "properties": {
           "api_key": {
             "anyOf": [
@@ -3014,6 +3042,7 @@
         "type": "object"
       },
       "ParseRequest": {
+        "additionalProperties": false,
         "properties": {
           "parser_profile_id": {
             "format": "uuid",
@@ -3028,6 +3057,7 @@
         "type": "object"
       },
       "ParserProfileCreate": {
+        "additionalProperties": false,
         "properties": {
           "name": {
             "title": "Name",
@@ -3123,6 +3153,7 @@
         "type": "object"
       },
       "ParserProfileUpdate": {
+        "additionalProperties": false,
         "properties": {
           "name": {
             "anyOf": [
@@ -3163,6 +3194,7 @@
         "type": "object"
       },
       "ProjectCreate": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "anyOf": [
@@ -3187,6 +3219,7 @@
         "type": "object"
       },
       "ProjectMemberAdd": {
+        "additionalProperties": false,
         "properties": {
           "role": {
             "default": "editor",
@@ -3286,6 +3319,7 @@
         "type": "object"
       },
       "ProjectUpdate": {
+        "additionalProperties": false,
         "properties": {
           "description": {
             "anyOf": [
@@ -3314,6 +3348,7 @@
         "type": "object"
       },
       "PromptTemplateCreate": {
+        "additionalProperties": false,
         "properties": {
           "input_schema": {
             "anyOf": [
@@ -3454,6 +3489,7 @@
         "type": "object"
       },
       "PromptTemplateUpdate": {
+        "additionalProperties": false,
         "properties": {
           "input_schema": {
             "anyOf": [
@@ -3584,6 +3620,7 @@
         "type": "object"
       },
       "RefreshRequest": {
+        "additionalProperties": false,
         "properties": {
           "refresh_token": {
             "title": "Refresh Token",
@@ -3597,6 +3634,7 @@
         "type": "object"
       },
       "RegisterRequest": {
+        "additionalProperties": false,
         "properties": {
           "email": {
             "title": "Email",
@@ -3625,6 +3663,7 @@
         "type": "object"
       },
       "SectionAssignRequest": {
+        "additionalProperties": false,
         "properties": {
           "assignee_id": {
             "format": "uuid",
@@ -3639,6 +3678,7 @@
         "type": "object"
       },
       "SectionCommentCreate": {
+        "additionalProperties": false,
         "properties": {
           "comment_type": {
             "default": "general",
@@ -3915,6 +3955,7 @@
         "type": "object"
       },
       "SectionReturnRequest": {
+        "additionalProperties": false,
         "properties": {
           "reason": {
             "title": "Reason",
@@ -3928,6 +3969,7 @@
         "type": "object"
       },
       "SectionReview": {
+        "additionalProperties": false,
         "properties": {
           "action": {
             "title": "Action",
@@ -4001,6 +4043,7 @@
         "type": "object"
       },
       "SectionUpdate": {
+        "additionalProperties": false,
         "properties": {
           "cleaned_markdown": {
             "title": "Cleaned Markdown",
@@ -4040,6 +4083,7 @@
         "type": "object"
       },
       "TaskPolicyCreate": {
+        "additionalProperties": false,
         "properties": {
           "concurrency_limit": {
             "default": 5,
@@ -4140,6 +4184,7 @@
         "type": "object"
       },
       "TaskPolicyUpdate": {
+        "additionalProperties": false,
         "properties": {
           "concurrency_limit": {
             "anyOf": [
@@ -4310,6 +4355,7 @@
         "type": "object"
       },
       "TestRunRequest": {
+        "additionalProperties": false,
         "properties": {
           "chunk_id": {
             "format": "uuid",
@@ -4454,6 +4500,7 @@
         "type": "object"
       },
       "UserUpdate": {
+        "additionalProperties": false,
         "properties": {
           "email": {
             "anyOf": [

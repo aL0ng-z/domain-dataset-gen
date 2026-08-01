@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
 class DocumentResponse(BaseSchema):
@@ -44,11 +44,11 @@ class CleaningJobResponse(BaseSchema):
     completed_at: datetime | None
 
 
-class ParseRequest(BaseSchema):
+class ParseRequest(RequestSchema):
     parser_profile_id: uuid.UUID
 
 
-class CleaningStartRequest(BaseSchema):
+class CleaningStartRequest(RequestSchema):
     parse_job_id: uuid.UUID | None = None
 
 
@@ -59,11 +59,11 @@ class CleaningStartResponse(BaseSchema):
     message: str
 
 
-class ChunkRequest(BaseSchema):
+class ChunkRequest(RequestSchema):
     chunk_profile_id: uuid.UUID
 
 
-class GenerateBatchRequest(BaseSchema):
+class GenerateBatchRequest(RequestSchema):
     prompt_template_id: uuid.UUID
     model_config_id: uuid.UUID
 

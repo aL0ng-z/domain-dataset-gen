@@ -1,17 +1,15 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
-
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
-class ProjectCreate(BaseModel):
+class ProjectCreate(RequestSchema):
     name: str
     description: str | None = None
 
 
-class ProjectUpdate(BaseModel):
+class ProjectUpdate(RequestSchema):
     name: str | None = None
     description: str | None = None
 
@@ -25,7 +23,7 @@ class ProjectResponse(BaseSchema):
     updated_at: datetime
 
 
-class ProjectMemberAdd(BaseModel):
+class ProjectMemberAdd(RequestSchema):
     user_id: uuid.UUID
     role: str = "editor"
 
