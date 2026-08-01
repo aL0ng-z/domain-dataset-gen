@@ -97,16 +97,19 @@ def _test_session_factory(_test_engine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(_test_engine, class_=AsyncSession, expire_on_commit=False)
 
 
+# 单语句 TRUNCATE 所有业务表：先拼接表名列表，再一次性执行一条 TRUNCATE，
+# 相比逐表 TRUNCATE 的循环一次性获取全部表锁，避免多 worktree 并发访问同一
+# 测试库时因表间加锁顺序不一致而死锁（T01 并行实施中确认同一问题并采用同方案）。
 _TRUNCATE_ALL_SQL = """
 DO $$
-DECLARE r RECORD;
+DECLARE tbls text;
 BEGIN
-    FOR r IN
-        SELECT tablename FROM pg_tables
-        WHERE schemaname = 'public' AND tablename <> 'alembic_version'
-    LOOP
-        EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE';
-    END LOOP;
+    SELECT string_agg(quote_ident(tablename), ', ') INTO tbls
+      FROM pg_tables
+     WHERE schemaname = 'public' AND tablename <> 'alembic_version';
+    IF tbls IS NOT NULL THEN
+        EXECUTE 'TRUNCATE TABLE ' || tbls || ' CASCADE';
+    END IF;
 END $$;
 """
 
