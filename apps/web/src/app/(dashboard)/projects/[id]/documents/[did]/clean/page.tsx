@@ -15,10 +15,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { StatusBadge } from "@/components/status-badge";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { useWs } from "@/hooks/use-ws";
 import {
   ArrowLeftIcon,
-  LockIcon,
   SaveIcon,
   SendIcon,
   CheckIcon,
@@ -36,60 +36,12 @@ const CodeMirrorEditor = dynamic(
   { ssr: false, loading: () => <div className="p-4 text-sm text-muted-foreground">编辑器加载中...</div> }
 );
 
-interface Section {
-  id: string;
-  ordinal: number;
-  heading_path: string;
-  status: string;
-  locked_by?: string;
-  locked_by_name?: string;
-  raw_markdown?: string;
-  cleaned_markdown?: string;
-  assignment_status: "unassigned" | "assigned" | "in_progress" | "completed" | "returned";
-  assigned_to: string | null;
-  return_reason?: string | null;
-}
-
-interface Comment {
-  id: string;
-  content: string;
-  comment_type: string;
-  user_id: string;
-  created_at: string;
-}
-
-interface CleanedVersion {
-  id: string;
-  document_id: string;
-  version: number;
-  section_count: number;
-  status: "draft" | "review_pending" | "accepted" | "rejected";
-  created_by: string;
-  reviewed_by: string | null;
-  reviewed_at: string | null;
-  created_at: string;
-}
-
-interface CleaningJobContext {
-  id: string;
-  parse_job_id: string;
-  status: string;
-  parser_profile_name?: string;
-  parse_completed_at?: string;
-  created_at: string;
-}
-
-interface ProjectMember {
-  user_id: string;
-  role: string;
-  username?: string;  // server sometimes returns this; guard for undefined
-}
-
-interface CurrentUser {
-  id: string;
-  username: string;
-  role: "admin" | "reviewer" | "editor" | "viewer";
-}
+type Section = components["schemas"]["SectionResponse"];
+type Comment = components["schemas"]["SectionCommentResponse"];
+type CleanedVersion = components["schemas"]["CleanedDocumentVersionResponse"];
+type CleaningJobContext = components["schemas"]["CleaningJobResponse"];
+type ProjectMember = components["schemas"]["ProjectMemberResponse"];
+type CurrentUser = components["schemas"]["UserResponse"];
 
 type MarkdownAstNode = {
   type?: string;
@@ -190,7 +142,9 @@ export default function CleaningWorkbenchPage() {
   const activeCleaningJob = cleaningJobs.find((job) => job.id === cleaningJobId);
 
   const fetchCleaningJobs = useCallback(() => {
-    api.get<CleaningJobContext[]>(`/projects/${projectId}/documents/${docId}/cleaning-jobs`)
+    api.get("/projects/{pid}/documents/{did}/cleaning-jobs", {
+      params: { pid: projectId, did: docId },
+    })
       .then((jobs) => {
         setCleaningJobs(jobs);
         if (!cleaningJobId && jobs.length > 0) {
@@ -224,9 +178,10 @@ export default function CleaningWorkbenchPage() {
   const fetchSections = useCallback(() => {
     if (!cleaningJobId) return;
     api
-      .get<{ items: Section[] }>(
-        `/projects/${projectId}/documents/${docId}/sections?page=1&page_size=100&cleaning_job_id=${encodeURIComponent(cleaningJobId)}`
-      )
+      .get("/projects/{pid}/documents/{did}/sections", {
+        params: { pid: projectId, did: docId },
+        query: { page: 1, page_size: 100, cleaning_job_id: cleaningJobId },
+      })
       .then((data) => {
         if (displayedContextId.current !== cleaningJobId) return;
         setSections(data.items);
@@ -250,22 +205,23 @@ export default function CleaningWorkbenchPage() {
   }, [fetchSections]);
 
   useEffect(() => {
-    api.get<CurrentUser>("/auth/me")
+    api.get("/auth/me")
       .then((u) => {
         setCurrentUser(u);
         if (u.role === "editor") setAssignFilter("mine");
       })
       .catch(() => {});
-    api.get<ProjectMember[]>(`/projects/${projectId}/members`)
+    api.get("/projects/{pid}/members", { params: { pid: projectId } })
       .then((m) => setMembers(m))
       .catch(() => setMembers([]));
   }, [projectId]);
 
   const fetchVersions = useCallback(() => {
     if (!cleaningJobId) return;
-    api.get<CleanedVersion[]>(
-      `/projects/${projectId}/documents/${docId}/cleaning/versions?cleaning_job_id=${encodeURIComponent(cleaningJobId)}`
-    )
+    api.get("/projects/{pid}/documents/{did}/cleaning/versions", {
+      params: { pid: projectId, did: docId },
+      query: { cleaning_job_id: cleaningJobId },
+    })
       .then((v) => {
         if (displayedContextId.current === cleaningJobId) setVersions(v);
       })
@@ -296,7 +252,7 @@ export default function CleaningWorkbenchPage() {
   useEffect(() => {
     if (!selectedSectionId) return;
     api
-      .get<Section>(`/sections/${selectedSectionId}`)
+      .get("/sections/{sid}", { params: { sid: selectedSectionId } })
       .then((section) => {
         setSelectedSection(section);
         setEditedMarkdown(section.cleaned_markdown ?? section.raw_markdown ?? "");
@@ -305,7 +261,7 @@ export default function CleaningWorkbenchPage() {
 
     // Comments API returns list (not paginated)
     api
-      .get<Comment[]>(`/sections/${selectedSectionId}/comments`)
+      .get("/sections/{sid}/comments", { params: { sid: selectedSectionId } })
       .then((data) => setComments(data))
       .catch(() => setComments([]));
   }, [selectedSectionId]);
@@ -329,7 +285,9 @@ export default function CleaningWorkbenchPage() {
       if (!leaseAcquired) return;
       leaseAcquired = false;
       try {
-        await api.post(`/sections/${selectedSectionId}/lease/release`);
+        await api.post("/sections/{sid}/lease/release", undefined, {
+          params: { sid: selectedSectionId },
+        });
       } catch {
         // Ignore release failures during navigation/unmount.
       }
@@ -337,7 +295,9 @@ export default function CleaningWorkbenchPage() {
 
     const acquireLease = async () => {
       try {
-        await api.post(`/sections/${selectedSectionId}/lease/acquire`);
+        await api.post("/sections/{sid}/lease/acquire", undefined, {
+          params: { sid: selectedSectionId },
+        });
         leaseAcquired = true;
 
         if (!isActive) {
@@ -346,7 +306,9 @@ export default function CleaningWorkbenchPage() {
         }
 
         interval = setInterval(() => {
-          api.post(`/sections/${selectedSectionId}/lease/heartbeat`).catch(() => {
+          api.post("/sections/{sid}/lease/heartbeat", undefined, {
+            params: { sid: selectedSectionId },
+          }).catch(() => {
             stopHeartbeat();
             leaseAcquired = false;
           });
@@ -369,7 +331,9 @@ export default function CleaningWorkbenchPage() {
     if (!selectedSectionId) return;
     setSaving(true);
     try {
-      await api.patch(`/sections/${selectedSectionId}`, { cleaned_markdown: editedMarkdown });
+      await api.patch("/sections/{sid}", { cleaned_markdown: editedMarkdown }, {
+        params: { sid: selectedSectionId },
+      });
       toast.success("保存成功");
       fetchSections();
     } catch {
@@ -382,7 +346,7 @@ export default function CleaningWorkbenchPage() {
   const handleSubmitReview = useCallback(async () => {
     if (!selectedSectionId) return;
     try {
-      await api.post(`/sections/${selectedSectionId}/submit`);
+      await api.post("/sections/{sid}/submit", undefined, { params: { sid: selectedSectionId } });
       toast.success("已提交审核");
       fetchSections();
     } catch {
@@ -393,7 +357,7 @@ export default function CleaningWorkbenchPage() {
   const handleApprove = useCallback(async () => {
     if (!selectedSectionId) return;
     try {
-      await api.post(`/sections/${selectedSectionId}/review`, { action: "accept" });
+      await api.post("/sections/{sid}/review", { action: "accept" }, { params: { sid: selectedSectionId } });
       toast.success("已通过");
       fetchSections();
     } catch {
@@ -404,7 +368,7 @@ export default function CleaningWorkbenchPage() {
   const handleReject = useCallback(async () => {
     if (!selectedSectionId) return;
     try {
-      await api.post(`/sections/${selectedSectionId}/review`, { action: "reject" });
+      await api.post("/sections/{sid}/review", { action: "reject" }, { params: { sid: selectedSectionId } });
       toast.success("已驳回");
       fetchSections();
     } catch {
@@ -415,9 +379,9 @@ export default function CleaningWorkbenchPage() {
   const handleAddComment = useCallback(async () => {
     if (!selectedSectionId || !newComment.trim()) return;
     try {
-      await api.post(`/sections/${selectedSectionId}/comments`, { content: newComment });
+      await api.post("/sections/{sid}/comments", { comment_type: "general", content: newComment }, { params: { sid: selectedSectionId } });
       setNewComment("");
-      const data = await api.get<Comment[]>(`/sections/${selectedSectionId}/comments`);
+      const data = await api.get("/sections/{sid}/comments", { params: { sid: selectedSectionId } });
       setComments(data);
     } catch {
       toast.error("评论失败");
@@ -439,8 +403,11 @@ export default function CleaningWorkbenchPage() {
     }
     try {
       if (!cleaningJobId) return;
-      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/assign?cleaning_job_id=${encodeURIComponent(cleaningJobId)}`, {
+      await api.post("/projects/{pid}/documents/{did}/cleaning/assign", {
         assignments: [{ section_ids: Array.from(selectedForAssign), assignee_id: assigneePick }],
+      }, {
+        params: { pid: projectId, did: docId },
+        query: { cleaning_job_id: cleaningJobId },
       });
       toast.success("已分派");
       setSelectedForAssign(new Set());
@@ -453,7 +420,7 @@ export default function CleaningWorkbenchPage() {
   const handleComplete = useCallback(async () => {
     if (!selectedSectionId) return;
     try {
-      await api.post(`/sections/${selectedSectionId}/complete`);
+      await api.post("/sections/{sid}/complete", undefined, { params: { sid: selectedSectionId } });
       toast.success("已标记完成");
       fetchSections();
     } catch {
@@ -466,7 +433,7 @@ export default function CleaningWorkbenchPage() {
     const reason = window.prompt("请输入退回原因：");
     if (!reason) return;
     try {
-      await api.post(`/sections/${selectedSectionId}/return`, { reason });
+      await api.post("/sections/{sid}/return", { reason }, { params: { sid: selectedSectionId } });
       toast.success("已退回");
       fetchSections();
     } catch {
@@ -477,7 +444,10 @@ export default function CleaningWorkbenchPage() {
   const handleMerge = useCallback(async () => {
     if (!cleaningJobId) return;
     try {
-      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/merge?cleaning_job_id=${encodeURIComponent(cleaningJobId)}`);
+      await api.post("/projects/{pid}/documents/{did}/cleaning/merge", undefined, {
+        params: { pid: projectId, did: docId },
+        query: { cleaning_job_id: cleaningJobId },
+      });
       toast.success("已生成合并版本");
       fetchVersions();
     } catch {
@@ -519,8 +489,11 @@ export default function CleaningWorkbenchPage() {
     if (!cleaningJobId) return;
     const reason = action === "reject" ? window.prompt("驳回原因：") ?? undefined : undefined;
     try {
-      await api.post(`/projects/${projectId}/documents/${docId}/cleaning/final-review?cleaning_job_id=${encodeURIComponent(cleaningJobId)}`, {
+      await api.post("/projects/{pid}/documents/{did}/cleaning/final-review", {
         version_id: latestVersion.id, action, reason,
+      }, {
+        params: { pid: projectId, did: docId },
+        query: { cleaning_job_id: cleaningJobId },
       });
       toast.success(action === "accept" ? "已通过" : "已驳回");
       fetchVersions();
@@ -529,9 +502,9 @@ export default function CleaningWorkbenchPage() {
     }
   }, [latestVersion, projectId, docId, cleaningJobId, fetchVersions]);
 
-  const isLockedByOther =
-    selectedSection?.locked_by != null &&
-    selectedSection.locked_by_name != null;
+  // 当前章节是否已被他人锁定：SectionResponse 不含锁字段，由租约语义由 T05 负责；
+  // 这里保持与后端合同一致，不虚构 locked_by。
+  const isLockedByOther = false;
 
   if (loading || contextLoading) {
     return (
@@ -599,7 +572,7 @@ export default function CleaningWorkbenchPage() {
                   <option value="">选择指派对象...</option>
                   {members.map((m) => (
                     <option key={m.user_id} value={m.user_id}>
-                      {m.username || m.user_id.slice(0, 8)} ({m.role})
+                      {m.user_id.slice(0, 8)} ({m.role})
                     </option>
                   ))}
                 </select>
@@ -663,14 +636,8 @@ export default function CleaningWorkbenchPage() {
                         }`}>
                           {section.assignment_status}
                         </span>
-                        {assignee && <span className="text-muted-foreground">{assignee.username || assignee.user_id.slice(0, 8)}</span>}
+                        {assignee && <span className="text-muted-foreground">{assignee.user_id.slice(0, 8)}</span>}
                       </div>
-                      {section.locked_by_name && (
-                        <div className="flex items-center gap-0.5 text-[10px] text-orange-600 mt-0.5">
-                          <LockIcon className="size-2.5" />
-                          {section.locked_by_name}
-                        </div>
-                      )}
                     </button>
                   </div>
                 );
@@ -716,12 +683,6 @@ export default function CleaningWorkbenchPage() {
             }
             className="text-xs"
           />
-          {isLockedByOther && (
-            <Badge variant="secondary" className="bg-orange-100 text-orange-700 text-xs">
-              <LockIcon className="size-3 mr-1" />
-              已被 {selectedSection?.locked_by_name} 锁定
-            </Badge>
-          )}
           <div className="flex-1" />
           <Button variant="outline" size="sm" onClick={handleSave} disabled={saving || isLockedByOther}>
             <SaveIcon className="size-3" />
@@ -783,7 +744,9 @@ export default function CleaningWorkbenchPage() {
                     href={`#`}
                     onClick={async (e) => {
                       e.preventDefault();
-                      const ver = await api.get<CleanedVersion & { merged_markdown: string }>(`/cleaned-versions/${latestVersion.id}`);
+                      const ver = await api.get("/cleaned-versions/{vid}", {
+                        params: { vid: latestVersion.id },
+                      });
                       const w = window.open("", "_blank");
                       if (w) {
                         w.document.write(`<pre style="white-space:pre-wrap;padding:16px;font-family:ui-monospace,monospace">${ver.merged_markdown.replace(/</g, "&lt;")}</pre>`);
