@@ -19,6 +19,7 @@ ErrorResponse.code 联合中登记并补充合同测试。
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from fastapi import FastAPI
@@ -57,9 +58,9 @@ def _inject_error_responses(op: dict[str, Any], path: str, method: str) -> None:
     opid = str(op.get("operationId", ""))
     if ("lease" in opid or "conflict" in opid) and "409" not in responses:
         responses["409"] = _response("冲突", _ERROR_REF)
-    # 422：字段校验。
-    if "422" not in responses:
-        responses["422"] = _response("请求参数校验失败", _VALIDATION_REF)
+    # 422：字段校验。始终覆盖为 ValidationErrorResponse（FastAPI 默认注入的是
+    # HTTPValidationError，前端需用统一可判别类型）。
+    responses["422"] = _response("请求参数校验失败", _VALIDATION_REF)
     # 500：内部错误。
     if "500" not in responses:
         responses["500"] = _response("服务器内部错误", _ERROR_REF)
@@ -133,5 +134,12 @@ def build_custom_openapi(app: FastAPI) -> dict[str, Any]:
             if method.lower() not in ("get", "post", "put", "patch", "delete"):
                 continue
             _inject_error_responses(op, path, method.lower())
+
+    # FastAPI 默认注入的 HTTPValidationError 已被 ValidationErrorResponse 取代，
+    # 不再被任何响应引用时移除，避免前端生成冗余/混淆类型。
+    if "HTTPValidationError" in schemas:
+        raw = json.dumps(schema)
+        if "#/components/schemas/HTTPValidationError" not in raw:
+            schemas.pop("HTTPValidationError")
 
     return schema
