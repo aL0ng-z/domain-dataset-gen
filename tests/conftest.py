@@ -84,7 +84,11 @@ async def _test_engine() -> AsyncGenerator[AsyncEngine, None]:
 
 @pytest.fixture(scope="session")
 async def _prepare_schema(_test_engine) -> AsyncGenerator[None, None]:
-    """按当前模型创建全部表（幂等；不覆盖已有表，真实迁移由 smoke test 覆盖）。"""
+    """按当前模型创建全部表（幂等；不覆盖已有表，真实迁移由 smoke test 覆盖）。
+
+    Session 开始时清空全部业务表，避免上一次被中断/并发的测试残留数据
+    （如其他 worktree 复用同一测试库）导致 org 等 fixture 的用户创建冲突。
+    """
     from app import models  # noqa: F401  # 确保所有模型已注册
     from app.database import Base
 
@@ -93,6 +97,8 @@ async def _prepare_schema(_test_engine) -> AsyncGenerator[None, None]:
     async with _test_engine.begin() as conn:
         await conn.execute(text('CREATE SCHEMA IF NOT EXISTS public'))
         await conn.run_sync(Base.metadata.create_all)
+    async with _test_engine.begin() as conn:
+        await conn.execute(text(_TRUNCATE_ALL_SQL))
     yield
 
 
