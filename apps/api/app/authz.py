@@ -75,6 +75,54 @@ def _flat_404(detail: str):
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
+class ProjectChainError(Exception):
+    """后台任务项目链不一致（跨项目引用或损坏数据）。"""
+
+
+async def verify_project_chain(
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    checks: list[tuple[type, uuid.UUID]],
+    *,
+    detail: str = "项目链不一致",
+) -> None:
+    """worker 专用：校验目标资源与配置引用均属于同一 project_id。
+
+    在执行外部 IO 或写数据前调用（任务卡 §2.9）。任一资源不存在或不属于
+    project_id 时抛出 :class:`ProjectChainError`，调用方将任务标记失败，
+    不产生部分写入。
+    """
+    resolver = ProjectResourceResolver(db)
+    resolvers = {
+        Document: resolver.document,
+        ModelConfig: resolver.model_config,
+        ParserProfile: resolver.parser_profile,
+        ChunkProfile: resolver.chunk_profile,
+        ExportProfile: resolver.export_profile,
+        TaskPolicy: resolver.task_policy,
+        PromptTemplate: resolver.prompt_template,
+        CuratedItem: resolver.curated_item,
+        Dataset: resolver.dataset,
+        Benchmark: resolver.benchmark,
+        Task: resolver.task,
+        Chunk: resolver.chunk,
+        Section: resolver.section,
+        CleanedDocumentVersion: resolver.cleaned_version,
+        ChunkSet: resolver.chunk_set,
+        GenerationRun: resolver.generation_run,
+        Candidate: resolver.candidate,
+        ParseJob: resolver.parse_job,
+        CleaningJob: resolver.cleaning_job,
+        Export: resolver.export,
+    }
+    for model, resource_id in checks:
+        fn = resolvers.get(model)
+        if fn is None:
+            raise ProjectChainError(f"verify_project_chain 未注册: {model.__name__}")
+        if await fn(project_id, resource_id) is None:
+            raise ProjectChainError(detail)
+
+
 async def check_project_member(
     db: AsyncSession,
     pid: uuid.UUID,

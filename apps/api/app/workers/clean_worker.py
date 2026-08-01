@@ -35,6 +35,20 @@ async def run_clean(
         doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one()
         parse_job = (await db.execute(select(ParseJob).where(ParseJob.id == parse_job_id))).scalar_one()
 
+        # 项目链复核：以 API 授权的 task.project_id 为锚点，doc/parse_job 同项目。
+        from app.authz import ProjectChainError, verify_project_chain
+        from app.models.task import Task
+
+        task_row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
+        if task_row is None:
+            raise ProjectChainError("task 不存在")
+        await verify_project_chain(
+            db,
+            task_row.project_id,
+            [(Document, document_id), (ParseJob, parse_job_id)],
+            detail="清洗任务项目链不一致",
+        )
+
         if cleaning_job_id is not None:
             cleaning_job = (
                 await db.execute(

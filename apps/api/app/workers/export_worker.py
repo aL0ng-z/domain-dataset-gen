@@ -150,6 +150,10 @@ async def run_export_dataset(
     await task_service.update_status(task_id, "processing", progress=10)
 
     try:
+        # 项目链复核：export profile 与目标资源必须属于 project_id
+        # （执行外部 MinIO IO/写数据前，任务卡 §2.9）。
+        from app.authz import verify_project_chain
+
         # Load export profile
         profile = (
             await db.execute(select(ExportProfile).where(ExportProfile.id == export_profile_id))
@@ -158,6 +162,14 @@ async def run_export_dataset(
 
         if fmt not in FORMAT_HANDLERS:
             raise ValueError(f"不支持的导出格式: {fmt}")
+
+        # 项目链复核：export profile 与 dataset 必须属于 project_id。
+        await verify_project_chain(
+            db,
+            project_id,
+            [(ExportProfile, export_profile_id), (Dataset, dataset_id)],
+            detail="数据集导出项目链不一致",
+        )
 
         # Load dataset and items
         dataset = (
@@ -270,6 +282,10 @@ async def run_export_benchmark(
     await task_service.update_status(task_id, "processing", progress=10)
 
     try:
+        # 项目链复核：export profile 与目标资源必须属于 project_id
+        # （执行外部 MinIO IO/写数据前，任务卡 §2.9）。
+        from app.authz import verify_project_chain
+
         # Load export profile
         profile = (
             await db.execute(select(ExportProfile).where(ExportProfile.id == export_profile_id))
@@ -278,6 +294,14 @@ async def run_export_benchmark(
 
         if fmt not in FORMAT_HANDLERS:
             raise ValueError(f"不支持的导出格式: {fmt}")
+
+        # 项目链复核：export profile 与 benchmark 必须属于 project_id。
+        await verify_project_chain(
+            db,
+            project_id,
+            [(ExportProfile, export_profile_id), (Benchmark, benchmark_id)],
+            detail="基准集导出项目链不一致",
+        )
 
         # Load benchmark and cases
         benchmark = (

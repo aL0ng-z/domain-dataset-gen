@@ -23,6 +23,20 @@ async def run_chunk(
         doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one()
         profile = (await db.execute(select(ChunkProfile).where(ChunkProfile.id == chunk_profile_id))).scalar_one()
 
+        # 项目链复核：以 task.project_id 为锚点，doc/chunk profile 同项目。
+        from app.authz import ProjectChainError, verify_project_chain
+        from app.models.task import Task
+
+        task_row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
+        if task_row is None:
+            raise ProjectChainError("task 不存在")
+        await verify_project_chain(
+            db,
+            task_row.project_id,
+            [(Document, document_id), (ChunkProfile, chunk_profile_id)],
+            detail="切分任务项目链不一致",
+        )
+
         source_cleaning_job_id: uuid.UUID | None = None
         if doc.active_clean_version_id is not None:
             active_version = (
