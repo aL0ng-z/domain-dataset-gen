@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, isAbortError } from "@/lib/api";
+import { onAuthFailure, resetAuthFailureGuard } from "@/lib/auth";
 import { createApiMockServer } from "@/lib/__mocks__/api-server";
 
 describe("api client with mock server", () => {
@@ -9,6 +10,7 @@ describe("api client with mock server", () => {
   beforeEach(() => {
     server = createApiMockServer();
     server.install();
+    resetAuthFailureGuard();
   });
 
   afterEach(() => {
@@ -94,5 +96,86 @@ describe("api client with mock server", () => {
     server.mock("GET", "/broken", { networkError: true });
 
     await expect(api.get("/broken")).rejects.toThrow("Failed to fetch");
+  });
+
+  it("20 个并发 401 只产生 1 次 refresh，成功后各自重试 1 次", async () => {
+    localStorage.setItem("access_token", "old-token");
+    localStorage.setItem("refresh_token", "refresh-1");
+
+    // /items 每次都 401，之后 refresh 成功，重试也 401（用于统计重试次数）
+    server.mock("GET", "/items", () => ({
+      status: 401,
+      body: { detail: "unauthorized" },
+    }));
+    server.onPost("/auth/refresh", {
+      access_token: "new-token",
+      refresh_token: "refresh-2",
+    });
+
+    const results = await Promise.all(
+      Array.from({ length: 20 }, () =>
+        api.get("/items").then(
+          () => "resolved",
+          () => "rejected",
+        ),
+      ),
+    );
+
+    // 刷新只发生 1 次（single-flight）
+    expect(server.getHandler("POST", "/auth/refresh")?.callCount).toBe(1);
+    // 每个请求只重试一次：初始 1 + 重试 1 = 2 次 /items 调用，共 40 次
+    expect(server.getHandler("GET", "/items")?.callCount).toBe(40);
+    // 全部一致失败（重试后仍 401），无无限重试
+    expect(results).toEqual(Array.from({ length: 20 }, () => "rejected"));
+  });
+
+  it("刷新失败时只执行一次清理，所有等待请求一致失败且不残留令牌", async () => {
+    const failureListener = vi.fn();
+    const unsub = onAuthFailure(failureListener);
+    try {
+      localStorage.setItem("access_token", "old-token");
+      localStorage.setItem("refresh_token", "refresh-1");
+
+      server.mock("GET", "/items", () => ({
+        status: 401,
+        body: { detail: "unauthorized" },
+      }));
+      server.mock("POST", "/auth/refresh", {
+        status: 401,
+        body: { detail: "refresh invalid" },
+      });
+
+      const results = await Promise.all(
+        Array.from({ length: 20 }, () =>
+          api.get("/items").then(
+            () => "resolved",
+            () => "rejected",
+          ),
+        ),
+      );
+
+      expect(server.getHandler("POST", "/auth/refresh")?.callCount).toBe(1);
+      // 全部一致失败
+      expect(results).toEqual(Array.from({ length: 20 }, () => "rejected"));
+      // 只触发一次统一清理回调
+      expect(failureListener).toHaveBeenCalledTimes(1);
+      // 令牌已原子清除
+      expect(localStorage.getItem("access_token")).toBeNull();
+      expect(localStorage.getItem("refresh_token")).toBeNull();
+    } finally {
+      unsub();
+    }
+  });
+
+  it("login/refresh 请求本身不做 401 重试（排除刷新逻辑）", async () => {
+    localStorage.setItem("refresh_token", "refresh-1");
+    server.mock("POST", "/auth/refresh", {
+      status: 401,
+      body: { detail: "invalid" },
+    });
+
+    await expect(api.post("/auth/refresh", { refresh_token: "x" })).rejects.toThrow();
+    // 只调用 1 次，不触发刷新循环
+    expect(server.getHandler("POST", "/auth/refresh")?.callCount).toBe(1);
   });
 });

@@ -167,7 +167,8 @@ export function onAuthFailure(listener: AuthFailureListener): () => void {
   return () => authFailureListeners.delete(listener);
 }
 
-function resetAuthFailureGuard(): void {
+/** 复位认证失败守卫（登录时自动调用；测试在 beforeEach 显式复位以防跨用例污染）。 */
+export function resetAuthFailureGuard(): void {
   authFailed = false;
 }
 

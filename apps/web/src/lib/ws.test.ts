@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 
 import { createWsClient, type WsClient } from "@/lib/ws";
+import { TokenStore } from "@/lib/auth";
 
 /** 内存 WebSocket mock：记录发送消息与 close，模拟 onmessage/onclose。 */
 class FakeWebSocket {
@@ -68,6 +69,8 @@ describe("ws client", () => {
     unsub();
     ws.emit(JSON.stringify({ event: "task.updated", data: { id: 2 } }));
     expect(handler).toHaveBeenCalledTimes(1);
+
+    client.disconnect();
   });
 
   it("断开连接后按退避策略重连", () => {
@@ -95,6 +98,55 @@ describe("ws client", () => {
       const countAfterDisconnect = FakeWebSocket.instances.length;
       vi.advanceTimersByTime(5000);
       expect(FakeWebSocket.instances.length).toBe(countAfterDisconnect);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("令牌轮换后关闭旧连接并使用新令牌重连", () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      TokenStore.setTokens("old-access", "refresh-1");
+
+      const client: WsClient = createWsClient("ws://test/ws");
+      client.connect();
+      const first = FakeWebSocket.instances[0];
+      first.open();
+
+      // 令牌轮换：写新 access token -> 旧连接被关闭 -> 退避后重连读取新令牌
+      TokenStore.setTokens("new-access", "refresh-2");
+
+      // 关闭触发 onclose -> scheduleReconnect（1s）
+      vi.advanceTimersByTime(1000);
+      expect(FakeWebSocket.instances.length).toBe(2);
+      const second = FakeWebSocket.instances[1];
+      expect(second.url).toContain("token=new-access");
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("logout 清除令牌后不再自动重连", () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      TokenStore.setTokens("old-access", "refresh-1");
+
+      const client: WsClient = createWsClient("ws://test/ws");
+      client.connect();
+      const first = FakeWebSocket.instances[0];
+      first.open();
+
+      // logout：清空令牌 -> 完全断开且不重连
+      TokenStore.clearTokens();
+      expect(first.closed).toBe(true);
+
+      const countAfter = FakeWebSocket.instances.length;
+      vi.advanceTimersByTime(5000);
+      expect(FakeWebSocket.instances.length).toBe(countAfter);
     } finally {
       vi.useRealTimers();
       vi.unstubAllGlobals();
