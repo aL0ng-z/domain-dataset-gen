@@ -1,8 +1,11 @@
-import { refreshToken } from "./auth";
+import { TokenStore, handleAuthFailure, refreshToken } from "./auth";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 const DEFAULT_TIMEOUT = 15000; // 15s for normal reads
 const LONG_TIMEOUT = 300000;   // 5min for uploads/writes
+
+/** 刷新逻辑排除的路径：登录/刷新本身不做 401 重试（任务卡 §6）。 */
+const NO_RETRY_PATHS = ["/auth/login", "/auth/refresh"];
 
 export interface ApiRequestOptions {
   signal?: AbortSignal;
@@ -76,17 +79,8 @@ function fetchWithTimeout(
     });
 }
 
-async function fetchApi<T>(
-  path: string,
-  options?: RequestInit,
-  timeout?: number,
-  signal?: AbortSignal,
-): Promise<T> {
-  const token =
-    typeof window !== "undefined"
-      ? localStorage.getItem("access_token")
-      : null;
-
+function buildHeaders(options?: RequestInit): Record<string, string> {
+  const token = TokenStore.getAccessToken();
   const headers: Record<string, string> = {
     ...(options?.headers as Record<string, string>),
   };
@@ -94,7 +88,21 @@ async function fetchApi<T>(
   if (!(options?.body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
   }
+  return headers;
+}
 
+function isNoRetryPath(path: string): boolean {
+  return NO_RETRY_PATHS.some((p) => path === p || path.startsWith(`${p}/`));
+}
+
+async function fetchApi<T>(
+  path: string,
+  options?: RequestInit,
+  timeout?: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  // 首个请求：立即带上当前 access token
+  let headers = buildHeaders(options);
   let res = await fetchWithTimeout(
     `${API_BASE}${path}`,
     { ...options, headers },
@@ -102,10 +110,12 @@ async function fetchApi<T>(
     signal,
   );
 
-  if (res.status === 401) {
+  // 401 处理：仅对非登录/刷新请求触发一次 single-flight 刷新，并各重试一次。
+  if (res.status === 401 && !isNoRetryPath(path)) {
     const refreshed = await refreshToken();
     if (refreshed) {
-      headers["Authorization"] = `Bearer ${localStorage.getItem("access_token")}`;
+      // 刷新成功后使用最新 access token 重试（不复用首次请求的旧 Authorization 头）
+      headers = buildHeaders(options);
       res = await fetchWithTimeout(
         `${API_BASE}${path}`,
         { ...options, headers },
@@ -113,6 +123,11 @@ async function fetchApi<T>(
         signal,
       );
     }
+  }
+
+  // 重试后仍然 401（或刷新失败）：原子清理并触发一次统一认证失败回调
+  if (res.status === 401) {
+    handleAuthFailure();
   }
 
   if (!res.ok) {

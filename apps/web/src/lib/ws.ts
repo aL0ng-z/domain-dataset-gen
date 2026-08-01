@@ -1,3 +1,5 @@
+import { TokenStore, subscribeToTokenChange } from "./auth";
+
 export type WsMessageHandler = (data: unknown) => void;
 
 export interface WsClient {
@@ -12,6 +14,7 @@ export function createWsClient(url: string): WsClient {
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let intentionalClose = false;
+  let unsubscribeTokenChange: (() => void) | null = null;
   const listeners = new Map<string, Set<WsMessageHandler>>();
 
   const MAX_BACKOFF = 30000;
@@ -37,11 +40,8 @@ export function createWsClient(url: string): WsClient {
 
     intentionalClose = false;
 
-    const token =
-      typeof window !== "undefined"
-        ? localStorage.getItem("access_token")
-        : null;
-
+    // 统一经 TokenStore 读取令牌（任务卡 §6：WebSocket 获取令牌必须经过统一认证模块）。
+    const token = TokenStore.getAccessToken();
     const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
 
     ws = new WebSocket(wsUrl);
@@ -78,11 +78,32 @@ export function createWsClient(url: string): WsClient {
     };
   }
 
+  /**
+   * 令牌变化处理（任务卡 §6、§11 验收标准 9）：
+   * - 令牌轮换（新 access token）-> 关闭旧连接触发退避重连，重连时读取新令牌；
+   * - 令牌被清除（logout）-> 完全断开且不再自动重连。
+   */
+  function handleTokenChange() {
+    if (intentionalClose) return; // 已主动断开（logout）
+    if (TokenStore.getAccessToken()) {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        // 关闭会触发 onclose -> scheduleReconnect -> connect() 读取新令牌
+        ws.close();
+      }
+    } else {
+      disconnect();
+    }
+  }
+
   function disconnect() {
     intentionalClose = true;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
+    }
+    if (unsubscribeTokenChange) {
+      unsubscribeTokenChange();
+      unsubscribeTokenChange = null;
     }
     if (ws) {
       ws.close();
@@ -108,6 +129,11 @@ export function createWsClient(url: string): WsClient {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(data));
     }
+  }
+
+  // 客户端被创建即订阅令牌变化（首个 connect 前若令牌已存在也不会误连）
+  if (!unsubscribeTokenChange) {
+    unsubscribeTokenChange = subscribeToTokenChange(handleTokenChange);
   }
 
   return { connect, disconnect, subscribe, send };

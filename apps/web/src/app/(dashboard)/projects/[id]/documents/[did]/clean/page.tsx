@@ -15,6 +15,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { StatusBadge } from "@/components/status-badge";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { TokenStore } from "@/lib/auth";
 import { useWs } from "@/hooks/use-ws";
 import {
   ArrowLeftIcon,
@@ -215,7 +216,7 @@ export default function CleaningWorkbenchPage() {
 
   // PDF URL: direct backend URL with auth token
   const pdfUrl = useMemo(() => {
-    const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
+    const token = TokenStore.getAccessToken();
     if (!token) return "";
     return `${API_BASE}/projects/${projectId}/documents/${docId}/file?token=${encodeURIComponent(token)}`;
   }, [projectId, docId]);
