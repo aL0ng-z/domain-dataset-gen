@@ -61,6 +61,10 @@ TEST_DB_URL = (
     f"postgresql+asyncpg://{settings.postgres_user}:{settings.postgres_password}"
     f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
 )
+# 禁用 asyncpg 语句缓存：每次测试结束会 TRUNCATE 全表（涉及 catalog 锁），
+# 而 PREPARE 语句与 TRUNCATE 会竞争 AccessExclusiveLock，导致间歇性
+# DeadlockDetectedError。statement_cache_size=0 关闭 PREPARE，从根上消除该竞态。
+TEST_ENGINE_OPTIONS = {"connect_args": {"statement_cache_size": 0}}
 TEST_REDIS_URL = f"redis://{settings.redis_host}:{settings.redis_port}"
 
 
@@ -71,7 +75,7 @@ TEST_REDIS_URL = f"redis://{settings.redis_host}:{settings.redis_port}"
 
 @pytest.fixture(scope="session")
 async def _test_engine() -> AsyncGenerator[AsyncEngine, None]:
-    engine = create_async_engine(TEST_DB_URL, echo=False)
+    engine = create_async_engine(TEST_DB_URL, echo=False, **TEST_ENGINE_OPTIONS)
     try:
         yield engine
     finally:
