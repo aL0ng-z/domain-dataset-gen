@@ -93,9 +93,10 @@
 
 ### 验证状态
 
-- 后端：`python -m ruff check apps/api libs tests scripts` 通过；`python -m pytest -q tests/contract/test_openapi.py tests/contract/test_core_response_shapes.py` 27 项通过；全量 `python -m pytest -q` 通过。
-- 前端：`npm run lint` 0 problems；`npm exec tsc -- --noEmit` 通过；`npm test -- --run` 13 项通过（含 api-contract 6 项）；`npm run build` 通过。
+- 后端：`python -m ruff check apps/api libs tests scripts` 通过；`python -m pytest -q tests/contract/test_openapi.py tests/contract/test_core_response_shapes.py` 27 项通过；全量 `python -m pytest -q` 72 项通过。
+- 前端：`npm run lint` 0 problems；`npm exec tsc -- --noEmit` 通过；`npm test -- --run` 19 项通过（含 api-contract 6 项）；`npm run build` 通过。
 - 合同门禁：`python scripts/export_openapi.py --check` 通过（连续两次生成字节一致）；`npm run api:check` 通过（generated.ts 与 openapi.json 一致 + 无旧合同模式）。
+- 测试基础设施修复：conftest 的逐表 TRUNCATE DO 循环改为单语句 TRUNCATE，测试引擎关闭 asyncpg 语句缓存（`statement_cache_size=0`），并在 session 开始时清空业务表，消除多 worktree 并发访问同一测试库时的间歇性死锁与残留数据冲突。
 
 ---
 
