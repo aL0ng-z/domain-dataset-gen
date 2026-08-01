@@ -1,9 +1,9 @@
 import asyncio
 
 from fastapi import WebSocket, WebSocketDisconnect
-from jose import JWTError, jwt
+from jose import JWTError
 
-from app.config import settings
+from app.core.jwt import TokenType, resolve_user_id
 
 
 class ConnectionManager:
@@ -64,11 +64,18 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+# WebSocket 未认证统一关闭码（任务卡 §5.2）。
+WS_UNAUTHORIZED_CLOSE_CODE = 4401
+
+
 def validate_ws_token(token: str) -> str | None:
-    """Validate JWT and return user_id, or None if invalid."""
+    """校验 access token 并返回 user_id，无效返回 None。
+
+    仅接受 type=access 的令牌；收到 refresh token 同样拒绝。
+    """
     try:
-        payload = jwt.decode(token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
-        return payload.get("sub")
+        user_id = resolve_user_id(token, TokenType.ACCESS)
+        return str(user_id)
     except JWTError:
         return None
 
@@ -77,7 +84,7 @@ async def task_websocket_endpoint(websocket: WebSocket, pid: str):
     # Validate token from query params
     token = websocket.query_params.get("token")
     if not token or validate_ws_token(token) is None:
-        await websocket.close(code=4001)
+        await websocket.close(code=WS_UNAUTHORIZED_CLOSE_CODE)
         return
 
     await manager.connect(websocket, pid)

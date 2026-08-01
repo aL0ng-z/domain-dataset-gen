@@ -120,7 +120,8 @@ async def get_document_file(
 ):
     """Serve PDF file. Supports both Authorization header and ?token= query param (for iframe)."""
     from jose import JWTError
-    from jose import jwt as jose_jwt
+
+    from app.core.jwt import TokenType, resolve_user_id
 
     # Extract token from Authorization header or query param
     raw_token = token
@@ -133,10 +134,7 @@ async def get_document_file(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
 
     try:
-        payload = jose_jwt.decode(raw_token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
+        resolve_user_id(raw_token, TokenType.ACCESS)
     except JWTError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败") from e
 

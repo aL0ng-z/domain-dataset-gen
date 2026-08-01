@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class LoginRequest(BaseModel):
@@ -14,10 +14,12 @@ class RegisterRequest(BaseModel):
 
 
 class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
+    """登录/刷新响应。access_token 仅用于受保护入口；refresh_token 仅用于刷新接口。"""
+
+    access_token: str = Field(description="access token（type=access），用于受保护 HTTP/PDF/WebSocket 入口")
+    refresh_token: str = Field(description="refresh token（type=refresh），仅用于 POST /api/auth/refresh")
+    token_type: str = Field(default="bearer", description="令牌类型，恒为 bearer")
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(description="有效的 refresh token（type=refresh）")

@@ -1,13 +1,20 @@
-import uuid
-from datetime import UTC, datetime, timedelta
+import logging
 
-from jose import jwt
+from jose import JWTError
 from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.core.jwt import (
+    INVALID_TOKEN_MESSAGE,
+    TokenType,
+    create_access_token,
+    create_refresh_token,
+    resolve_user_id,
+)
 from app.models.user import User
+
+logger = logging.getLogger(__name__)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -45,29 +52,23 @@ class AuthService:
         return user
 
     def create_access_token(self, user: User) -> str:
-        expire = datetime.now(UTC) + timedelta(minutes=settings.jwt_access_token_expire_minutes)
-        payload = {"sub": str(user.id), "role": user.role, "exp": expire, "iat": datetime.now(UTC)}
-        return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+        return create_access_token(user.id, role=user.role)
 
     def create_refresh_token(self, user: User) -> str:
-        expire = datetime.now(UTC) + timedelta(days=settings.jwt_refresh_token_expire_days)
-        payload = {"sub": str(user.id), "type": "refresh", "exp": expire, "iat": datetime.now(UTC)}
-        return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+        return create_refresh_token(user.id)
 
     async def refresh_tokens(self, refresh_token: str) -> tuple[str, str]:
-        from jose import JWTError
-
+        """仅接受 refresh token：解码校验 type=refresh、sub 为 UUID，再确认用户存在且启用。"""
         try:
-            payload = jwt.decode(refresh_token, settings.jwt_secret_key, algorithms=[settings.jwt_algorithm])
-            if payload.get("type") != "refresh":
-                raise ValueError("无效的刷新令牌")
-            user_id = payload.get("sub")
-        except JWTError as e:
-            raise ValueError("无效的刷新令牌") from e
+            user_id = resolve_user_id(refresh_token, TokenType.REFRESH)
+        except JWTError:
+            logger.warning("refresh 令牌校验失败")
+            raise ValueError(INVALID_TOKEN_MESSAGE) from None
 
-        result = await self.db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+        result = await self.db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if user is None or not user.is_active:
-            raise ValueError("用户不存在或已停用")
+            logger.warning("refresh 令牌对应的用户不存在或已停用")
+            raise ValueError(INVALID_TOKEN_MESSAGE)
 
         return self.create_access_token(user), self.create_refresh_token(user)

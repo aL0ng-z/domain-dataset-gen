@@ -192,6 +192,7 @@ def create_access_token(user_id: uuid.UUID, *, role: str = "editor", secret: str
 
     payload = {
         "sub": str(user_id),
+        "type": "access",
         "role": role,
         "exp": datetime.now(UTC) + timedelta(minutes=30),
         "iat": datetime.now(UTC),
