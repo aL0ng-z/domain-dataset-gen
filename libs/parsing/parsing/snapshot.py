@@ -274,7 +274,9 @@ def redact_url(url: str) -> str:
         (key, "[REDACTED]" if normalized_key(key) in _FORBIDDEN_NORMALIZED or "signature" in normalized_key(key) else value)
         for key, value in query
     ]
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(cleaned), parts.fragment))
+    # urlencode 默认会编码方括号；用 safe 保留它们，避免 [REDACTED] 变成 %5B...%5D。
+    encoded_query = urlencode(cleaned, safe="[]")
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, encoded_query, parts.fragment))
 
 
 def mask_authorization_headers(headers: dict[str, str]) -> dict[str, str]:

@@ -200,7 +200,7 @@ def _local_manager_options(security: dict, functional_options: dict) -> dict:
 
 
 def _safe_error_message(exc: Exception) -> str:
-    """把异常转成无秘密的错误消息（截断、去 query、去响应体）。"""
+    """把异常转成无秘密的错误消息（截断、去 signed query、去 Authorization 头值）。"""
     from app.security.snapshot import redact_url
 
     message = str(exc)
@@ -211,4 +211,14 @@ def _safe_error_message(exc: Exception) -> str:
         urls = _re.findall(r"https?://[^\s'\"]+", message)
         for url in urls:
             message = message.replace(url, redact_url(url))
+    # 若异常消息包含 Authorization / Bearer / api-key 头值，替换为 [REDACTED]。
+    import re as _re2
+
+    message = _re2.sub(
+        r"(?i)(authorization|proxy-authorization|x-api-key)[:=]\s*(Bearer\s+)?\S+",
+        r"\1: [REDACTED]",
+        message,
+    )
+    message = _re2.sub(r"(?i)\bBearer\s+[A-Za-z0-9._\-]+", "Bearer [REDACTED]", message)
+    # 若消息含响应体/文件大块内容（base64/长文本），截断到安全长度。
     return message[:2000]
