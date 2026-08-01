@@ -15,7 +15,8 @@ import {
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { usePagination } from "@/hooks/use-pagination";
-import { api, type PaginatedResponse } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import {
   ArrowLeftIcon,
   TrashIcon,
@@ -23,27 +24,10 @@ import {
   Loader2Icon,
 } from "lucide-react";
 
-interface DatasetDetail {
-  id: string;
-  name: string;
-  description?: string;
-  item_count: number;
-  status: string;
-}
-
-interface DatasetItem {
-  id: string;
-  curated_item_id: string;
-  content_preview?: string;
-  item_type?: string;
-  created_at: string;
-}
-
-interface ExportProfile {
-  id: string;
-  name: string;
-  format: string;
-}
+type DatasetDetail = components["schemas"]["DatasetResponse"];
+type DatasetItem = components["schemas"]["DatasetItemResponse"];
+type ExportProfile = components["schemas"]["ExportProfileResponse"];
+type ExportProfilesPage = components["schemas"]["PaginatedResponse_ExportProfileResponse_"];
 
 export default function DatasetDetailPage() {
   const params = useParams<{ id: string; did: string }>();
@@ -62,17 +46,19 @@ export default function DatasetDetailPage() {
   const fetchData = useCallback(() => {
     setLoading(true);
     Promise.all([
-      api.get<DatasetDetail>(
-        `/projects/${projectId}/datasets/${datasetId}`
-      ),
-      api.get<PaginatedResponse<DatasetItem>>(
-        `/projects/${projectId}/datasets/${datasetId}/items?page=${page}&page_size=${pageSize}`
-      ),
+      api.get("/projects/{pid}/datasets/{did}", {
+        params: { pid: projectId, did: datasetId },
+      }),
+      api.get("/projects/{pid}/datasets/{did}/items", {
+        params: { pid: projectId, did: datasetId },
+        query: { page, page_size: pageSize },
+      }),
       api
-        .get<{ items: ExportProfile[] }>(
-          `/projects/${projectId}/export-profiles?page=1&page_size=50`
-        )
-        .catch(() => ({ items: [] })),
+        .get("/projects/{pid}/export-profiles/", {
+          params: { pid: projectId },
+          query: { page: 1, page_size: 50 },
+        })
+        .catch(() => ({ items: [] as ExportProfile[] } as ExportProfilesPage)),
     ])
       .then(([ds, itemsData, profiles]) => {
         setDataset(ds);
@@ -94,9 +80,9 @@ export default function DatasetDetailPage() {
   const handleRemoveItem = useCallback(
     async (itemId: string) => {
       try {
-        await api.delete(
-          `/projects/${projectId}/datasets/${datasetId}/items/${itemId}`
-        );
+        await api.delete("/projects/{pid}/datasets/{did}/items/{item_id}", {
+          params: { pid: projectId, did: datasetId, item_id: itemId },
+        });
         toast.success("已移除");
         fetchData();
       } catch {
@@ -113,10 +99,11 @@ export default function DatasetDetailPage() {
     }
     setExporting(true);
     try {
-      await api.post(
-        `/projects/${projectId}/datasets/${datasetId}/export`,
-        { export_profile_id: selectedProfile }
-      );
+      await api.post("/projects/{pid}/datasets/{did}/export", {
+        export_profile_id: selectedProfile,
+      }, {
+        params: { pid: projectId, did: datasetId },
+      });
       toast.success("导出任务已发起");
     } catch {
       toast.error("导出失败");
@@ -127,25 +114,19 @@ export default function DatasetDetailPage() {
 
   const itemColumns: ColumnDef<DatasetItem>[] = [
     {
-      key: "content",
-      header: "内容预览",
+      key: "ordinal",
+      header: "序号",
       className: "max-w-md",
+      render: (row) => <span>{row.ordinal}</span>,
+    },
+    {
+      key: "curated_item_id",
+      header: "知识条目 ID",
       render: (row) => (
-        <span className="truncate block max-w-md">
-          {row.content_preview || "(空)"}
+        <span className="font-mono text-xs truncate block max-w-md">
+          {row.curated_item_id}
         </span>
       ),
-    },
-    {
-      key: "item_type",
-      header: "类型",
-      render: (row) => row.item_type || "-",
-    },
-    {
-      key: "created_at",
-      header: "添加时间",
-      render: (row) =>
-        new Date(row.created_at).toLocaleString("zh-CN"),
     },
     {
       key: "actions",

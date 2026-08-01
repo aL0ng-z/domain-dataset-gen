@@ -8,8 +8,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { usePagination } from "@/hooks/use-pagination";
-import { api, type PaginatedResponse } from "@/lib/api";
-import { Input } from "@/components/ui/input";
+import { api, formatJsonPreview } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { Textarea } from "@/components/ui/textarea";
 import {
   ChevronDownIcon,
@@ -17,18 +17,7 @@ import {
   CheckCircleIcon,
 } from "lucide-react";
 
-interface Candidate {
-  id: string;
-  status: string;
-  content?: string;
-  chunk_id?: string;
-  chunk_content?: string;
-  template_name?: string;
-  verdict?: string;
-  evidence_spans?: string;
-  reject_reason?: string;
-  created_at: string;
-}
+type Candidate = components["schemas"]["CandidateResponse"];
 
 const VERDICT_OPTIONS = [
   { value: "supported", label: "支持" },
@@ -39,7 +28,7 @@ const VERDICT_OPTIONS = [
 
 const STATUS_OPTIONS = [
   { value: "all", label: "全部状态" },
-  { value: "pending", label: "待审核" },
+  { value: "review_pending", label: "待审核" },
   { value: "approved", label: "已通过" },
   { value: "rejected", label: "已拒绝" },
 ];
@@ -62,11 +51,16 @@ export default function CandidatesPage() {
   const fetchCandidates = useCallback(() => {
     setLoading(true);
     const statusParam =
-      statusFilter !== "all" ? `&status=${statusFilter}` : "";
+      statusFilter !== "all" ? statusFilter : undefined;
     api
-      .get<PaginatedResponse<Candidate>>(
-        `/candidates?project_id=${projectId}&page=${page}&page_size=${pageSize}${statusParam}`
-      )
+      .get("/candidates", {
+        query: {
+          project_id: projectId,
+          page,
+          page_size: pageSize,
+          status: statusParam,
+        },
+      })
       .then((data) => {
         setCandidates(data.items);
         setTotal(data.total);
@@ -76,20 +70,11 @@ export default function CandidatesPage() {
   }, [projectId, page, pageSize, statusFilter]);
 
   useEffect(() => {
-
-
     // 延迟到下一事件循环再触发请求，避免在 effect 内同步 setState
-
-
     // （react-hooks/set-state-in-effect），并通过 cleanup 取消未完成的调度。
-
-
     const timer = setTimeout(fetchCandidates, 0);
 
-
     return () => clearTimeout(timer);
-
-
   }, [fetchCandidates]);
 
   const handleExpand = useCallback(
@@ -99,25 +84,32 @@ export default function CandidatesPage() {
       } else {
         setExpandedId(id);
         const c = candidates.find((x) => x.id === id);
-        setReviewVerdict(c?.verdict || "supported");
-        setReviewEvidence(c?.evidence_spans || "");
+        setReviewVerdict(c?.review_verdict || "supported");
+        setReviewEvidence(
+          c?.review_evidence_spans
+            ? formatJsonPreview(c.review_evidence_spans)
+            : "",
+        );
         setReviewRejectReason(c?.reject_reason || "");
       }
     },
-    [expandedId, candidates]
+    [expandedId, candidates],
   );
 
   const handleReview = useCallback(
     async (candidateId: string, action: "approve" | "reject") => {
       try {
         await api.post(
-          `/candidates/${candidateId}/review`,
+          "/candidates/{cid}/review",
           {
-            action,
             verdict: reviewVerdict,
-            evidence_spans: reviewEvidence,
-            reject_reason: action === "reject" ? reviewRejectReason : undefined,
-          }
+            evidence_spans: reviewEvidence
+              ? JSON.parse(reviewEvidence)
+              : null,
+            reject_reason:
+              action === "reject" ? reviewRejectReason || null : null,
+          },
+          { params: { cid: candidateId } },
         );
         toast.success(action === "approve" ? "已通过" : "已拒绝");
         setExpandedId(null);
@@ -126,22 +118,22 @@ export default function CandidatesPage() {
         toast.error("审核操作失败");
       }
     },
-    [reviewVerdict, reviewEvidence, reviewRejectReason, fetchCandidates]
+    [reviewVerdict, reviewEvidence, reviewRejectReason, fetchCandidates],
   );
 
   const handlePromote = useCallback(
     async (candidateId: string) => {
       try {
-        await api.post(
-          `/candidates/${candidateId}/promote-to-curated`
-        );
+        await api.post("/candidates/{cid}/promote-to-curated", undefined, {
+          params: { cid: candidateId },
+        });
         toast.success("已提升为知识资产");
         fetchCandidates();
       } catch {
         toast.error("提升失败");
       }
     },
-    [fetchCandidates]
+    [fetchCandidates],
   );
 
   const columns: ColumnDef<Candidate>[] = [
@@ -165,14 +157,14 @@ export default function CandidatesPage() {
       className: "max-w-sm",
       render: (row) => (
         <span className="truncate block max-w-sm">
-          {row.content?.slice(0, 100) || "(空)"}
+          {formatJsonPreview(row.content).slice(0, 100) || "(空)"}
         </span>
       ),
     },
     {
-      key: "template",
-      header: "模板",
-      render: (row) => row.template_name || "-",
+      key: "candidate_type",
+      header: "类型",
+      render: (row) => row.candidate_type || "-",
     },
     {
       key: "status",
@@ -180,16 +172,15 @@ export default function CandidatesPage() {
       render: (row) => <StatusBadge status={row.status} />,
     },
     {
-      key: "verdict",
+      key: "review_verdict",
       header: "判定",
       render: (row) =>
-        row.verdict ? <StatusBadge status={row.verdict} /> : "-",
+        row.review_verdict ? <StatusBadge status={row.review_verdict} /> : "-",
     },
     {
       key: "created_at",
       header: "创建时间",
-      render: (row) =>
-        new Date(row.created_at).toLocaleString("zh-CN"),
+      render: (row) => new Date(row.created_at).toLocaleString("zh-CN"),
     },
     {
       key: "actions",
@@ -266,19 +257,9 @@ export default function CandidatesPage() {
                           候选内容
                         </div>
                         <pre className="whitespace-pre-wrap text-sm font-mono bg-muted/50 rounded p-3 max-h-64 overflow-auto">
-                          {c.content || "(空)"}
+                          {formatJsonPreview(c.content) || "(空)"}
                         </pre>
                       </div>
-                      {c.chunk_content && (
-                        <div>
-                          <div className="text-sm font-medium mb-1">
-                            源分块
-                          </div>
-                          <pre className="whitespace-pre-wrap text-xs font-mono bg-blue-50 dark:bg-blue-950 rounded p-3 max-h-40 overflow-auto">
-                            {c.chunk_content}
-                          </pre>
-                        </div>
-                      )}
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                           <label className="text-sm font-medium">
@@ -300,15 +281,16 @@ export default function CandidatesPage() {
                         </div>
                         <div>
                           <label className="text-sm font-medium">
-                            证据引用
+                            证据引用 (JSON)
                           </label>
-                          <Input
+                          <Textarea
                             value={reviewEvidence}
                             onChange={(e) =>
                               setReviewEvidence(e.target.value)
                             }
-                            placeholder="原文引用片段"
-                            className="mt-1"
+                            placeholder='{"pages":[1],"quote":"原文"}'
+                            className="mt-1 font-mono text-xs"
+                            rows={3}
                           />
                         </div>
                       </div>

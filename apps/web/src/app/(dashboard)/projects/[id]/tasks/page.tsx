@@ -7,20 +7,12 @@ import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { usePagination } from "@/hooks/use-pagination";
-import { api, type PaginatedResponse } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { useWs } from "@/hooks/use-ws";
 import { RefreshCwIcon, XCircleIcon, RotateCwIcon } from "lucide-react";
 
-interface TaskItem {
-  id: string;
-  task_type: string;
-  status: string;
-  progress: number;
-  error_message?: string;
-  created_at: string;
-  started_at?: string;
-  completed_at?: string;
-}
+type TaskItem = components["schemas"]["TaskResponse"];
 
 const TASK_TYPE_LABELS: Record<string, string> = {
   parse: "文档解析",
@@ -61,14 +53,16 @@ export default function TasksPage() {
 
   const fetchTasks = useCallback((silent = false) => {
     if (!silent) setLoading(true);
-    const typeParam =
-      typeFilter !== "all" ? `&task_type=${typeFilter}` : "";
-    const statusParam =
-      statusFilter !== "all" ? `&status=${statusFilter}` : "";
     api
-      .get<PaginatedResponse<TaskItem>>(
-        `/projects/${projectId}/tasks?page=${page}&page_size=${pageSize}${typeParam}${statusParam}`
-      )
+      .get("/projects/{pid}/tasks/", {
+        params: { pid: projectId },
+        query: {
+          page,
+          page_size: pageSize,
+          task_type: typeFilter !== "all" ? typeFilter : undefined,
+          status: statusFilter !== "all" ? statusFilter : undefined,
+        },
+      })
       .then((data) => {
         setTasks(data.items);
         setTotal(data.total);
@@ -93,9 +87,9 @@ export default function TasksPage() {
   const handleCancel = useCallback(
     async (taskId: string) => {
       try {
-        await api.post(
-          `/projects/${projectId}/tasks/${taskId}/cancel`
-        );
+        await api.post("/projects/{pid}/tasks/{tid}/cancel", undefined, {
+          params: { pid: projectId, tid: taskId },
+        });
         toast.success("任务已取消");
         fetchTasks();
       } catch {
@@ -108,9 +102,9 @@ export default function TasksPage() {
   const handleRetry = useCallback(
     async (taskId: string) => {
       try {
-        await api.post(
-          `/projects/${projectId}/tasks/${taskId}/retry`
-        );
+        await api.post("/projects/{pid}/tasks/{tid}/retry", undefined, {
+          params: { pid: projectId, tid: taskId },
+        });
         toast.success("已重试任务");
         fetchTasks();
       } catch {

@@ -14,7 +14,8 @@ import {
 } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { Textarea } from "@/components/ui/textarea";
-import { api } from "@/lib/api";
+import { api, formatJsonPreview, parseJsonObject } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import {
   ArrowLeftIcon,
   SaveIcon,
@@ -22,34 +23,9 @@ import {
   HistoryIcon,
 } from "lucide-react";
 
-interface CuratedItemDetail {
-  id: string;
-  item_type: string;
-  status: string;
-  content: string;
-  heading_path?: string;
-  version: number;
-  evidence_links?: EvidenceLink[];
-  revision_history?: Revision[];
-  created_at: string;
-  updated_at: string;
-}
-
-interface EvidenceLink {
-  document_id?: string;
-  document_name?: string;
-  chunk_id?: string;
-  pages?: string;
-  heading_path?: string;
-  quote_text?: string;
-}
-
-interface Revision {
-  version: number;
-  content_preview?: string;
-  changed_by?: string;
-  changed_at: string;
-}
+type CuratedItemDetail = components["schemas"]["CuratedItemResponse"];
+type EvidenceLink = components["schemas"]["EvidenceLinkResponse"];
+type CuratedRevision = components["schemas"]["CuratedRevisionResponse"];
 
 export default function CuratedItemDetailPage() {
   const params = useParams<{ id: string; cid: string }>();
@@ -58,48 +34,51 @@ export default function CuratedItemDetailPage() {
 
   const [item, setItem] = useState<CuratedItemDetail | null>(null);
   const [editContent, setEditContent] = useState("");
+  const [evidenceLinks, setEvidenceLinks] = useState<EvidenceLink[]>([]);
+  const [revisions, setRevisions] = useState<CuratedRevision[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
   const fetchItem = useCallback(() => {
-    api
-      .get<CuratedItemDetail>(
-        `/projects/${projectId}/curated-items/${itemId}`
-      )
-      .then((data) => {
+    const pid = { pid: projectId, iid: itemId };
+    Promise.all([
+      api.get("/projects/{pid}/curated-items/{iid}", { params: pid }),
+      api.get("/projects/{pid}/curated-items/{iid}/evidence-links", { params: pid }).catch(() => [] as EvidenceLink[]),
+      api.get("/projects/{pid}/curated-items/{iid}/revisions", { params: pid }).catch(() => [] as CuratedRevision[]),
+    ])
+      .then(([data, links, revs]) => {
         setItem(data);
-        setEditContent(data.content || "");
+        setEditContent(formatJsonPreview(data.content));
+        setEvidenceLinks(links);
+        setRevisions(revs);
       })
       .catch(() => toast.error("加载知识资产详情失败"))
       .finally(() => setLoading(false));
   }, [projectId, itemId]);
 
   useEffect(() => {
-
-
     // 延迟到下一事件循环再触发请求，避免在 effect 内同步 setState
-
-
+    // （react-hooks/set-state-in-effect），并通过 cleanup 取消未完成的调度。
     const timer = setTimeout(fetchItem, 0);
 
-
     return () => clearTimeout(timer);
-
-
   }, [fetchItem]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
     try {
+      // 请求前解析校验：确认编辑内容为 JSON object。
+      const parsed = parseJsonObject(editContent);
       await api.patch(
-        `/projects/${projectId}/curated-items/${itemId}`,
-        { content: editContent }
+        "/projects/{pid}/curated-items/{iid}",
+        { content: parsed },
+        { params: { pid: projectId, iid: itemId } },
       );
       toast.success("保存成功");
       fetchItem();
     } catch {
-      toast.error("保存失败");
+      toast.error("保存失败（内容必须是 JSON 对象）");
     } finally {
       setSaving(false);
     }
@@ -141,9 +120,6 @@ export default function CuratedItemDetailPage() {
             <div className="flex items-center gap-2 mt-1">
               <StatusBadge status={item.status} />
               <span className="text-sm text-muted-foreground">
-                v{item.version}
-              </span>
-              <span className="text-sm text-muted-foreground">
                 {item.item_type}
               </span>
             </div>
@@ -173,7 +149,7 @@ export default function CuratedItemDetailPage() {
         <div className="lg:col-span-2 space-y-6">
           <Card>
             <CardHeader>
-              <CardTitle>内容</CardTitle>
+              <CardTitle>内容 (JSON)</CardTitle>
             </CardHeader>
             <CardContent>
               <Textarea
@@ -193,25 +169,25 @@ export default function CuratedItemDetailPage() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {item.evidence_links && item.evidence_links.length > 0 ? (
+              {evidenceLinks.length > 0 ? (
                 <div className="space-y-3">
-                  {item.evidence_links.map((link, idx) => (
+                  {evidenceLinks.map((link) => (
                     <div
-                      key={idx}
+                      key={link.id}
                       className="border rounded-lg p-3 text-sm"
                     >
                       <div className="grid grid-cols-2 gap-2">
                         <div>
                           <span className="text-muted-foreground">
-                            文档:{" "}
+                            文档 ID:{" "}
                           </span>
-                          {link.document_name || link.document_id || "-"}
+                          {link.document_id || "-"}
                         </div>
                         <div>
                           <span className="text-muted-foreground">
-                            页码:{" "}
+                            分块 ID:{" "}
                           </span>
-                          {link.pages || "-"}
+                          {link.chunk_id || "-"}
                         </div>
                         <div>
                           <span className="text-muted-foreground">
@@ -221,9 +197,9 @@ export default function CuratedItemDetailPage() {
                         </div>
                         <div>
                           <span className="text-muted-foreground">
-                            分块ID:{" "}
+                            页码:{" "}
                           </span>
-                          {link.chunk_id || "-"}
+                          {link.source_pages ? formatJsonPreview(link.source_pages) : "-"}
                         </div>
                       </div>
                       {link.quote_text && (
@@ -254,34 +230,29 @@ export default function CuratedItemDetailPage() {
                 <CardTitle>修订历史</CardTitle>
               </CardHeader>
               <CardContent>
-                {item.revision_history &&
-                item.revision_history.length > 0 ? (
+                {revisions.length > 0 ? (
                   <div className="space-y-2">
-                    {item.revision_history.map((rev) => (
+                    {revisions.map((rev) => (
                       <div
-                        key={rev.version}
+                        key={rev.id}
                         className="border rounded p-2 text-xs"
                       >
                         <div className="flex items-center justify-between">
-                          <span className="font-medium">
-                            v{rev.version}
+                          <span className="font-mono">
+                            {rev.id.slice(0, 8)}
                           </span>
                           <span className="text-muted-foreground">
-                            {new Date(
-                              rev.changed_at
-                            ).toLocaleString("zh-CN")}
+                            {new Date(rev.created_at).toLocaleString("zh-CN")}
                           </span>
                         </div>
-                        {rev.changed_by && (
+                        {rev.revision_note && (
                           <div className="text-muted-foreground mt-0.5">
-                            修改者: {rev.changed_by}
+                            备注: {rev.revision_note}
                           </div>
                         )}
-                        {rev.content_preview && (
-                          <div className="mt-1 truncate">
-                            {rev.content_preview}
-                          </div>
-                        )}
+                        <div className="mt-1 truncate">
+                          {formatJsonPreview(rev.content)}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -300,8 +271,12 @@ export default function CuratedItemDetailPage() {
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
               <div>
-                <span className="text-muted-foreground">标题路径: </span>
-                {item.heading_path || "-"}
+                <span className="text-muted-foreground">状态: </span>
+                {item.status}
+              </div>
+              <div>
+                <span className="text-muted-foreground">候选 ID: </span>
+                <span className="font-mono text-xs">{item.candidate_id}</span>
               </div>
               <div>
                 <span className="text-muted-foreground">创建时间: </span>

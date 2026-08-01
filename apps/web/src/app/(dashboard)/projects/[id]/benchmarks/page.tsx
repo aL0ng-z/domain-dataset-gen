@@ -8,7 +8,8 @@ import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { usePagination } from "@/hooks/use-pagination";
-import { api, type PaginatedResponse } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { PlusIcon } from "lucide-react";
 import {
   Dialog,
@@ -21,14 +22,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
-interface Benchmark {
-  id: string;
-  name: string;
-  description?: string;
-  case_count: number;
-  status: string;
-  created_at: string;
-}
+type Benchmark = components["schemas"]["BenchmarkResponse"];
 
 export default function BenchmarksPage() {
   const params = useParams<{ id: string }>();
@@ -44,9 +38,10 @@ export default function BenchmarksPage() {
   const fetchBenchmarks = useCallback(() => {
     setLoading(true);
     api
-      .get<PaginatedResponse<Benchmark>>(
-        `/projects/${projectId}/benchmarks?page=${page}&page_size=${pageSize}`
-      )
+      .get("/projects/{pid}/benchmarks/", {
+        params: { pid: projectId },
+        query: { page, page_size: pageSize },
+      })
       .then((data) => {
         setBenchmarks(data.items);
         setTotal(data.total);
@@ -78,9 +73,11 @@ export default function BenchmarksPage() {
       return;
     }
     try {
-      await api.post(`/projects/${projectId}/benchmarks`, {
+      await api.post("/projects/{pid}/benchmarks/", {
         name: formName,
         description: formDesc,
+      }, {
+        params: { pid: projectId },
       });
       toast.success("基准集创建成功");
       setDialogOpen(false);
@@ -109,11 +106,6 @@ export default function BenchmarksPage() {
       key: "description",
       header: "描述",
       render: (row) => row.description || "-",
-    },
-    {
-      key: "case_count",
-      header: "用例数",
-      render: (row) => row.case_count,
     },
     {
       key: "status",

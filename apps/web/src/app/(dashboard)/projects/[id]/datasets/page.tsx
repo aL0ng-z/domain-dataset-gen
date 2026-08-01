@@ -8,7 +8,8 @@ import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { usePagination } from "@/hooks/use-pagination";
-import { api, type PaginatedResponse } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { PlusIcon } from "lucide-react";
 import {
   Dialog,
@@ -21,14 +22,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
-interface Dataset {
-  id: string;
-  name: string;
-  description?: string;
-  item_count: number;
-  status: string;
-  created_at: string;
-}
+type Dataset = components["schemas"]["DatasetResponse"];
 
 export default function DatasetsPage() {
   const params = useParams<{ id: string }>();
@@ -44,9 +38,10 @@ export default function DatasetsPage() {
   const fetchDatasets = useCallback(() => {
     setLoading(true);
     api
-      .get<PaginatedResponse<Dataset>>(
-        `/projects/${projectId}/datasets?page=${page}&page_size=${pageSize}`
-      )
+      .get("/projects/{pid}/datasets/", {
+        params: { pid: projectId },
+        query: { page, page_size: pageSize },
+      })
       .then((data) => {
         setDatasets(data.items);
         setTotal(data.total);
@@ -78,9 +73,11 @@ export default function DatasetsPage() {
       return;
     }
     try {
-      await api.post(`/projects/${projectId}/datasets`, {
+      await api.post("/projects/{pid}/datasets/", {
         name: formName,
         description: formDesc,
+      }, {
+        params: { pid: projectId },
       });
       toast.success("数据集创建成功");
       setDialogOpen(false);
@@ -109,11 +106,6 @@ export default function DatasetsPage() {
       key: "description",
       header: "描述",
       render: (row) => row.description || "-",
-    },
-    {
-      key: "item_count",
-      header: "条目数",
-      render: (row) => row.item_count,
     },
     {
       key: "status",

@@ -7,19 +7,11 @@ import { toast } from "sonner";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { usePagination } from "@/hooks/use-pagination";
-import { api, type PaginatedResponse } from "@/lib/api";
+import { api, formatJsonPreview } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { Button } from "@/components/ui/button";
 
-interface CuratedItem {
-  id: string;
-  item_type: string;
-  status: string;
-  content_preview?: string;
-  heading_path?: string;
-  version: number;
-  created_at: string;
-  updated_at: string;
-}
+type CuratedItem = components["schemas"]["CuratedItemResponse"];
 
 const STATUS_OPTIONS = [
   { value: "all", label: "全部状态" },
@@ -48,13 +40,19 @@ export default function CuratedPage() {
   const fetchItems = useCallback(() => {
     setLoading(true);
     const statusParam =
-      statusFilter !== "all" ? `&status=${statusFilter}` : "";
+      statusFilter !== "all" ? statusFilter : undefined;
     const typeParam =
-      typeFilter !== "all" ? `&item_type=${typeFilter}` : "";
+      typeFilter !== "all" ? typeFilter : undefined;
     api
-      .get<PaginatedResponse<CuratedItem>>(
-        `/projects/${projectId}/curated-items?page=${page}&page_size=${pageSize}${statusParam}${typeParam}`
-      )
+      .get("/projects/{pid}/curated-items/", {
+        params: { pid: projectId },
+        query: {
+          page,
+          page_size: pageSize,
+          status: statusParam,
+          item_type: typeParam,
+        },
+      })
       .then((data) => {
         setItems(data.items);
         setTotal(data.total);
@@ -90,7 +88,7 @@ export default function CuratedPage() {
           href={`/projects/${projectId}/curated/${row.id}`}
           className="text-primary hover:underline truncate block max-w-md"
         >
-          {row.content_preview || "(空)"}
+          {formatJsonPreview(row.content).slice(0, 80) || "(空)"}
         </Link>
       ),
     },
@@ -106,16 +104,6 @@ export default function CuratedPage() {
       key: "status",
       header: "状态",
       render: (row) => <StatusBadge status={row.status} />,
-    },
-    {
-      key: "version",
-      header: "版本",
-      render: (row) => `v${row.version}`,
-    },
-    {
-      key: "heading_path",
-      header: "标题路径",
-      render: (row) => row.heading_path || "-",
     },
     {
       key: "updated_at",

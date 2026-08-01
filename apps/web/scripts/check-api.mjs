@@ -1,4 +1,3 @@
-// eslint-disable-next-line no-restricted-imports
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
