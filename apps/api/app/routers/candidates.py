@@ -4,8 +4,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver, authorize_flat_resource, check_project_member
 from app.database import get_db
-from app.dependencies import get_current_user, require_role
+from app.dependencies import get_current_user
 from app.models.user import User
 from app.schemas.candidate import (
     CandidateCommentCreate,
@@ -26,11 +27,12 @@ router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 async def list_candidates(
     project_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
     status: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ):
+    await check_project_member(db, project_id, current_user, UserRole.viewer)
     service = CandidateService(db)
     items, total = await service.list_by_project(project_id, status=status, page=page, page_size=page_size)
     return PaginatedResponse(items=[CandidateResponse.model_validate(i) for i in items], total=total, page=page, page_size=page_size)
@@ -40,10 +42,13 @@ async def list_candidates(
 async def get_candidate(
     cid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
-    service = CandidateService(db)
-    candidate = await service.get(cid)
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.candidate_project_id(cid), UserRole.viewer
+    )
+    candidate = await resolver.candidate(pid, cid)
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
     return candidate
@@ -54,11 +59,18 @@ async def update_candidate(
     cid: uuid.UUID,
     body: CandidateUpdate,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
-    service = CandidateService(db)
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.candidate_project_id(cid), UserRole.editor
+    )
+    candidate = await resolver.candidate(pid, cid)
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
     if body.content is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="内容不能为空")
+    service = CandidateService(db)
     candidate = await service.update_content(cid, body.content)
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
@@ -70,8 +82,15 @@ async def review_candidate(
     cid: uuid.UUID,
     body: CandidateReview,
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(require_role(UserRole.reviewer))],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.candidate_project_id(cid), UserRole.reviewer
+    )
+    candidate = await resolver.candidate(pid, cid)
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
     service = CandidateService(db)
     candidate = await service.review(
         candidate_id=cid,
@@ -92,11 +111,14 @@ async def add_comment(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
-    service = CandidateService(db)
-    # Verify candidate exists
-    candidate = await service.get(cid)
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.candidate_project_id(cid), UserRole.editor
+    )
+    candidate = await resolver.candidate(pid, cid)
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
+    service = CandidateService(db)
     return await service.add_comment(cid, current_user.id, body.content)
 
 
@@ -104,13 +126,16 @@ async def add_comment(
 async def list_comments(
     cid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
-    service = CandidateService(db)
-    # Verify candidate exists
-    candidate = await service.get(cid)
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.candidate_project_id(cid), UserRole.viewer
+    )
+    candidate = await resolver.candidate(pid, cid)
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
+    service = CandidateService(db)
     return await service.list_comments(cid)
 
 
@@ -118,8 +143,15 @@ async def list_comments(
 async def promote_to_curated(
     cid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(require_role(UserRole.reviewer))],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.candidate_project_id(cid), UserRole.reviewer
+    )
+    candidate = await resolver.candidate(pid, cid)
+    if candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
     service = CandidateService(db)
     try:
         curated_item = await service.promote_to_curated(cid, current_user.id)

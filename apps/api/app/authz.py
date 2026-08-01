@@ -50,6 +50,31 @@ def _role_level(role: str | UserRole) -> int:
     return ROLE_HIERARCHY.get(UserRole(role), -1)
 
 
+async def authorize_flat_resource(
+    db: AsyncSession,
+    user: User,
+    project_id: uuid.UUID | None,
+    min_role: UserRole,
+    *,
+    not_found_detail: str = "资源不存在",
+):
+    """平铺路由授权：反查出的 project_id 不存在时返回 None，否则校验成员/角色。
+
+    返回 project_id；资源不存在（无法反查）时调用方应返回 404，不得泄露任何对象信息。
+    全局 admin 可绕过成员/角色检查，但仍需通过调用方后续的 scoped load 绑定项目。
+    """
+    if project_id is None:
+        raise _flat_404(not_found_detail)
+    await check_project_member(db, project_id, user, min_role)
+    return project_id
+
+
+def _flat_404(detail: str):
+    from fastapi import HTTPException, status
+
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+
 async def check_project_member(
     db: AsyncSession,
     pid: uuid.UUID,
@@ -230,6 +255,49 @@ class ProjectResourceResolver:
                 )
                 return None
         return chunk
+
+    # ------------------------------------------------------------------
+    # 平铺路由归属反查：由资源 ID 反查唯一 project_id（数据库外键是归属事实源）。
+    # 供 /api/sections、/api/chunks、/api/candidates、/api/cleaned-versions 等
+    # 无 URL pid 的路由使用：先反查 pid -> 校验成员/角色 -> scoped load。
+    # ------------------------------------------------------------------
+
+    async def section_project_id(self, sid: uuid.UUID) -> uuid.UUID | None:
+        return await self._one(
+            select(Document.project_id)
+            .join(Section, Section.document_id == Document.id)
+            .where(Section.id == sid)
+        )
+
+    async def chunk_project_id(self, cid: uuid.UUID) -> uuid.UUID | None:
+        return await self._one(
+            select(Document.project_id)
+            .join(Chunk, Chunk.document_id == Document.id)
+            .where(Chunk.id == cid)
+        )
+
+    async def candidate_project_id(self, cid: uuid.UUID) -> uuid.UUID | None:
+        return await self._one(
+            select(Document.project_id)
+            .join(Chunk, Chunk.id == Candidate.chunk_id)
+            .join(Document, Document.id == Chunk.document_id)
+            .where(Candidate.id == cid)
+        )
+
+    async def cleaned_version_project_id(self, vid: uuid.UUID) -> uuid.UUID | None:
+        return await self._one(
+            select(Document.project_id)
+            .join(CleanedDocumentVersion, CleanedDocumentVersion.document_id == Document.id)
+            .where(CleanedDocumentVersion.id == vid)
+        )
+
+    async def generation_run_project_id(self, gid: uuid.UUID) -> uuid.UUID | None:
+        return await self._one(
+            select(Document.project_id)
+            .join(GenerationRun, GenerationRun.chunk_id == Chunk.id)
+            .join(Document, Document.id == Chunk.document_id)
+            .where(GenerationRun.id == gid)
+        )
 
     # ------------------------------------------------------------------
     # 归属链：资源 -> Chunk -> Document.project_id

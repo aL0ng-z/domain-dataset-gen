@@ -4,12 +4,17 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver, authorize_flat_resource
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.models.chunk import Chunk
+from app.models.config import ModelConfig
+from app.models.prompt_template import PromptTemplate
 from app.models.user import User
 from app.schemas.chunk import ChunkResponse, ChunkUpdate, GenerateRequest
 from app.schemas.task import TaskResponse
 from app.services.chunk_service import ChunkService
+from domain.enums import UserRole
 
 router = APIRouter(prefix="/api/chunks", tags=["chunks"])
 
@@ -18,10 +23,13 @@ router = APIRouter(prefix="/api/chunks", tags=["chunks"])
 async def get_chunk(
     cid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
-    service = ChunkService(db)
-    chunk = await service.get_chunk(cid)
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.chunk_project_id(cid), UserRole.viewer
+    )
+    chunk = await resolver.chunk(pid, cid)
     if chunk is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chunk不存在")
     return chunk
@@ -32,8 +40,15 @@ async def update_chunk(
     cid: uuid.UUID,
     body: ChunkUpdate,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.chunk_project_id(cid), UserRole.editor
+    )
+    chunk = await resolver.chunk(pid, cid)
+    if chunk is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chunk不存在")
     service = ChunkService(db)
     chunk = await service.update_chunk(cid, **body.model_dump(exclude_unset=True))
     if chunk is None:
@@ -49,6 +64,20 @@ async def generate_from_chunk(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.chunk_project_id(cid), UserRole.editor
+    )
+    # 请求体引用的 prompt template 与 model config 必须属于同一项目（任务卡 §5.1）。
+    await resolver.ensure_in_project(
+        pid,
+        [
+            (Chunk, cid),
+            (PromptTemplate, body.prompt_template_id),
+            (ModelConfig, body.model_config_id),
+        ],
+    )
+
     service = ChunkService(db)
     try:
         task, gen_run = await service.create_generate_task(
@@ -60,8 +89,25 @@ async def generate_from_chunk(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
-    # Schedule background generation worker
-    from app.workers.generate_worker import run_generate
+    # Schedule background generation worker（独立会话，避免复用请求会话）。
+    from app.database import async_session_factory
+    from app.workers.generate_worker import run_generate_single
 
-    background_tasks.add_task(run_generate, str(gen_run.id), str(task.id))
+    async def _run():
+        async with async_session_factory() as session:
+            try:
+                await run_generate_single(
+                    task.id,
+                    cid,
+                    body.prompt_template_id,
+                    body.model_config_id,
+                    pid,
+                    session,
+                    redis=None,
+                )
+                await session.commit()
+            except Exception:
+                await session.rollback()
+
+    background_tasks.add_task(_run)
     return task
