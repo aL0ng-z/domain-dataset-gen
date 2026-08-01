@@ -360,28 +360,12 @@ class ResourceFactory:
         return profile
 
     async def create_parse_job(self, document_id: uuid.UUID, parser_profile_id: uuid.UUID, status: str = "queued"):
-        # 测试库存在 ck_parse_jobs_snapshot_complete 约束且 snapshot_schema_version
-        # 默认 1：必须显式置 0（快照字段不在 ORM 模型中），否则任何 INSERT 都违反约束。
-        from sqlalchemy import text
-
         from app.models.parse import ParseJob
 
-        row_id = uuid.uuid4()
-        await self.session.execute(
-            text(
-                "INSERT INTO parse_jobs "
-                "(id, document_id, parser_profile_id, status, snapshot_schema_version) "
-                "VALUES (:id, :did, :ppid, :st, 0)"
-            ),
-            {
-                "id": row_id,
-                "did": document_id,
-                "ppid": parser_profile_id,
-                "st": status,
-            },
-        )
+        job = ParseJob(document_id=document_id, parser_profile_id=parser_profile_id, status=status)
+        self.session.add(job)
         await self.session.flush()
-        job = await self.session.get(ParseJob, row_id)
+        await self.session.refresh(job)
         return job
 
     async def create_cleaning_job(self, document_id: uuid.UUID, parse_job_id: uuid.UUID, started_by: uuid.UUID):
