@@ -205,7 +205,7 @@ type RelativePaths = {
 type MethodOf<Path extends keyof RelativePaths, M extends "get" | "post" | "put" | "patch" | "delete"> =
   NonNullable<RelativePaths[Path][M]>;
 
-type BodyParams<Op> = Op extends { requestBody: { content: { "application/json": infer B } } }
+type BodyParams<Op> = Op extends { requestBody?: { content: { "application/json": infer B } } }
   ? B
   : never;
 

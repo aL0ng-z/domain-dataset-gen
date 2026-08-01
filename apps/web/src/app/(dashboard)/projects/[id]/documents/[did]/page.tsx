@@ -15,6 +15,7 @@ import {
 import { StatusBadge } from "@/components/status-badge";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { useWs } from "@/hooks/use-ws";
 import {
   Dialog,
@@ -32,50 +33,11 @@ import {
   Trash2Icon,
 } from "lucide-react";
 
-interface DocumentDetail {
-  id: string;
-  filename: string;
-  status: string;
-  file_size: number;
-  page_count?: number;
-  mime_type?: string;
-  storage_key?: string;
-  uploaded_by?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-interface ParseJob {
-  id: string;
-  status: string;
-  parser_profile_id?: string;
-  started_at?: string;
-  completed_at?: string;
-  error_message?: string;
-  created_at: string;
-}
-
-interface ProfileOption {
-  id: string;
-  name: string;
-  is_default: boolean;
-}
-
-interface CleaningJobContext {
-  id: string;
-  parse_job_id: string;
-  status: string;
-  parser_profile_id: string;
-  parser_profile_name?: string;
-  parse_completed_at?: string;
-  created_at: string;
-  completed_at?: string;
-}
-
-interface CleaningStartResult {
-  cleaning_job_id: string;
-  reused: boolean;
-}
+type DocumentDetail = components["schemas"]["DocumentResponse"];
+type ParseJob = components["schemas"]["ParseJobResponse"];
+type ProfileOption = components["schemas"]["ParserProfileResponse"] | components["schemas"]["ChunkProfileResponse"];
+type CleaningJobContext = components["schemas"]["CleaningJobResponse"];
+type CleaningStartResult = components["schemas"]["CleaningStartResponse"];
 
 export default function DocumentDetailPage() {
   const params = useParams<{ id: string; did: string }>();
@@ -83,8 +45,7 @@ export default function DocumentDetailPage() {
   const projectId = params.id;
   const docId = params.did;
   const [doc, setDoc] = useState<DocumentDetail | null>(null);
-  const [parseJobs, setParseJobs] = useState<ParseJob[]>([]);
-  const [cleaningJobs, setCleaningJobs] = useState<CleaningJobContext[]>([]);
+  const [parseJobs, setParseJobs] = useState<ParseJob[]>([]);  const [cleaningJobs, setCleaningJobs] = useState<CleaningJobContext[]>([]);
   const [parserProfiles, setParserProfiles] = useState<ProfileOption[]>([]);
   const [chunkProfiles, setChunkProfiles] = useState<ProfileOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -98,30 +59,27 @@ export default function DocumentDetailPage() {
   // Fetch all data; silent=true skips the loading spinner (used for WS refreshes)
   const fetchData = useCallback((silent = false) => {
     if (!silent) setLoading(true);
+    const base = { pid: projectId, did: docId };
     Promise.all([
-      api.get<DocumentDetail>(
-        `/projects/${projectId}/documents/${docId}`
-      ),
+      api.get("/projects/{pid}/documents/{did}", { params: base }),
       api
-        .get<ParseJob[]>(
-          `/projects/${projectId}/documents/${docId}/parse-jobs`
-        )
+        .get("/projects/{pid}/documents/{did}/parse-jobs", { params: base })
         .catch(() => [] as ParseJob[]),
       api
-        .get<CleaningJobContext[]>(
-          `/projects/${projectId}/documents/${docId}/cleaning-jobs`
-        )
+        .get("/projects/{pid}/documents/{did}/cleaning-jobs", { params: base })
         .catch(() => [] as CleaningJobContext[]),
       api
-        .get<{ items: ProfileOption[] }>(
-          `/projects/${projectId}/parser-profiles?page=1&page_size=50`
-        )
-        .catch(() => ({ items: [] })),
+        .get("/projects/{pid}/parser-profiles/", {
+          params: { pid: projectId },
+          query: { page: 1, page_size: 50 },
+        })
+        .catch(() => ({ items: [] as ProfileOption[] })),
       api
-        .get<{ items: ProfileOption[] }>(
-          `/projects/${projectId}/chunk-profiles?page=1&page_size=50`
-        )
-        .catch(() => ({ items: [] })),
+        .get("/projects/{pid}/chunk-profiles/", {
+          params: { pid: projectId },
+          query: { page: 1, page_size: 50 },
+        })
+        .catch(() => ({ items: [] as ProfileOption[] })),
     ])
       .then(([docData, jobsData, cleanJobsData, parserData, chunkData]) => {
         setDoc(docData);
@@ -169,10 +127,11 @@ export default function DocumentDetailPage() {
     }
     setActionLoading("parse");
     try {
-      await api.post(
-        `/projects/${projectId}/documents/${docId}/parse`,
-        { parser_profile_id: selectedParserId }
-      );
+      await api.post("/projects/{pid}/documents/{did}/parse", {
+        parser_profile_id: selectedParserId,
+      }, {
+        params: { pid: projectId, did: docId },
+      });
       toast.success("解析任务已发起");
       fetchData(true);
     } catch {
@@ -190,10 +149,11 @@ export default function DocumentDetailPage() {
     }
     setActionLoading("chunk");
     try {
-      await api.post(
-        `/projects/${projectId}/documents/${docId}/chunk`,
-        { chunk_profile_id: profile.id }
-      );
+      await api.post("/projects/{pid}/documents/{did}/chunk", {
+        chunk_profile_id: profile.id,
+      }, {
+        params: { pid: projectId, did: docId },
+      });
       toast.success("切分任务已发起");
       fetchData(true);
     } catch {
@@ -210,10 +170,11 @@ export default function DocumentDetailPage() {
   const startCleanAndNavigate = useCallback(async (parseJobId: string) => {
     setActionLoading("clean");
     try {
-      const result = await api.post<CleaningStartResult>(
-        `/projects/${projectId}/documents/${docId}/cleaning/start`,
-        { parse_job_id: parseJobId }
-      );
+      const result = await api.post("/projects/{pid}/documents/{did}/cleaning/start", {
+        parse_job_id: parseJobId,
+      }, {
+        params: { pid: projectId, did: docId },
+      });
       toast.success(result.reused ? "正在进入已有清洗工作台" : "清洗任务已发起，正在进入工作台");
       router.push(cleanUrlFor(result.cleaning_job_id));
     } catch {
@@ -241,9 +202,9 @@ export default function DocumentDetailPage() {
     if (!deleteJobId) return;
     setDeleteLoading(true);
     try {
-      await api.delete(
-        `/projects/${projectId}/documents/${docId}/parse-jobs/${deleteJobId}`
-      );
+      await api.delete("/projects/{pid}/documents/{did}/parse-jobs/{jid}", {
+        params: { pid: projectId, did: docId, jid: deleteJobId },
+      });
       toast.success("解析记录已删除");
       setDeleteJobId(null);
       fetchData(true);
@@ -423,8 +384,10 @@ export default function DocumentDetailPage() {
               <div className="font-medium">{doc.page_count ?? "-"}</div>
             </div>
             <div>
-              <div className="text-muted-foreground">MIME类型</div>
-              <div className="font-medium">{doc.mime_type ?? "-"}</div>
+              <div className="text-muted-foreground">SHA256</div>
+              <div className="font-mono text-xs truncate max-w-40">
+                {doc.sha256.slice(0, 16)}…
+              </div>
             </div>
             <div>
               <div className="text-muted-foreground">更新时间</div>
