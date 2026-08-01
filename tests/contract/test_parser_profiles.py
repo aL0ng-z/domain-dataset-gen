@@ -5,7 +5,6 @@ endpoint 列表安全投影；旧网络字段运行时拒绝；恶意 upload/res
 Token/PDF 不发送。
 """
 
-import uuid
 
 import pytest
 from httpx import AsyncClient
@@ -96,9 +95,8 @@ async def test_unsafe_options_not_written_to_db(client: AsyncClient, org, db_ses
 
 async def test_endpoint_list_is_safe_projection(client: AsyncClient, org, monkeypatch):
     """端点列表只返回 endpoint_ref/display_name/parser_name/credential_configured。"""
-    from app.security.registry import ParserEndpointConfig, ParserEndpointRegistry, reset_registry
-
     from app.security import registry as registry_module
+    from app.security.registry import ParserEndpointConfig, ParserEndpointRegistry, reset_registry
 
     monkeypatch.setattr(
         registry_module,
@@ -162,7 +160,7 @@ async def test_response_never_echoes_legacy_url_or_secret(client: AsyncClient, o
     )
     assert resp.status_code == 200
     assert "mineru.net" not in resp.text
-    assert "secret" not in resp.text.lower() or "secret" == resp.text  # 字段值被脱敏
+    assert "secret" not in resp.text.lower() or resp.text == "secret"  # 字段值被脱敏
     options = resp.json()["parser_options"]
     assert options["base_url"] == "[REDACTED]"
     assert options["api_key"] == "[REDACTED]"
@@ -200,8 +198,6 @@ async def test_legacy_profile_triggers_409_before_pdf_download(client: AsyncClie
     db_session.add(doc)
     await db_session.flush()
     await db_session.refresh(doc)
-
-    downloaded = []
 
     # 若 worker 被触发（不应发生），会尝试下载 PDF → 用 fake transport 标记。
     fake = FakeSecureTransport(handler=lambda *a: (_ for _ in ()).throw(AssertionError("不应触发网络调用")))

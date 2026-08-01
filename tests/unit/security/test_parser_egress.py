@@ -4,7 +4,6 @@
 DNS rebinding 固定、安全头转发。
 """
 
-import socket
 
 import pytest
 
@@ -21,7 +20,6 @@ from parsing.egress import (
 from parsing.transport import (
     RedirectDetected,
     SecureTransport,
-    set_transport,
     reset_transport,
 )
 
@@ -168,7 +166,6 @@ def test_redirect_denied_by_default():
     resolver = SequenceResolver()
     transport = SecureTransport(resolver=resolver)
     # 模拟 302 重定向到私网
-    from parsing.transport import HttpStatusError
 
     class _RedirectSocket:
         def __init__(self):
@@ -191,7 +188,7 @@ def test_redirect_denied_by_default():
             pass
 
     # 直接调用 _http_exchange 会抛 RedirectDetected；request 层应拒绝跟随。
-    safe = transport.check_request(
+    transport.check_request(
         "https://mineru.net/api/v4/extract/task",
         method="GET",
         data=None,
@@ -202,7 +199,6 @@ def test_redirect_denied_by_default():
         # 手动触发重定向检测（模拟服务器返回 302）
         raise RedirectDetected(302, "http://169.254.169.254/latest/meta-data", {"location": "..."})
     # 下一跳 URL 私网 → 重定向策略拒绝
-    from parsing.egress import RedirectSafetyError
 
     with pytest.raises(UrlSafetyError):
         normalize_url("http://169.254.169.254/latest/meta-data", scheme="https")

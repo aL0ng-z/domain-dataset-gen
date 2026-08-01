@@ -131,9 +131,8 @@ def test_parser_profile_response_redacts_nested_secret_recursively():
 def test_freeze_profile_rejects_network_urls_for_remote_parser(monkeypatch):
     """含旧网络字段的 profile 在冻结时 fail closed。"""
     from app.models.config import ParserProfile
-    from app.security.registry import ParserEndpointConfig, ParserEndpointRegistry, reset_registry
-
     from app.security import registry as registry_module
+    from app.security.registry import ParserEndpointConfig, ParserEndpointRegistry, reset_registry
 
     monkeypatch.setattr(
         registry_module,
