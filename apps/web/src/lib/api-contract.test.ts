@@ -1,6 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createApiMockServer } from "@/lib/__mocks__/api-server";
 import { api, ApiErrorException, formatJsonPreview } from "@/lib/api";
@@ -98,7 +96,7 @@ describe("api-contract: 分页与 JSON 字段合同", () => {
   });
 
   it("业务错误按稳定 code 判别，不读取中文 detail", async () => {
-    server.mock("GET", "/projects/p1/datasets", {
+    server.mock("GET", "/projects/p1/datasets/", {
       status: 404,
       body: {
         code: "NOT_FOUND",
@@ -108,7 +106,7 @@ describe("api-contract: 分页与 JSON 字段合同", () => {
     });
 
     const err: ApiErrorException = await api
-      .get("/projects/{pid}/datasets", { params: { pid: "p1" } })
+      .get("/projects/{pid}/datasets/", { params: { pid: "p1" } })
       .then(
         () => new Error("unexpected resolve") as never,
         (e: unknown) => e as ApiErrorException,
