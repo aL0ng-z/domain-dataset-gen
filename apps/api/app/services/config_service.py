@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base
+from app.models.config import ParserProfile
 
 
 class ConfigService:
@@ -86,3 +87,57 @@ class ConfigService:
         await self.db.flush()
         await self.db.refresh(obj)
         return obj
+
+
+class ParserProfileService(ConfigService):
+    """ParserProfile 专用 CRUD：endpoint_ref 服务端解析 + parser_options 白名单收紧。"""
+
+    def __init__(self, db: AsyncSession):
+        super().__init__(db, ParserProfile)
+
+    def _validate_for_parser(self, parser_name: str, options: dict | None) -> dict | None:
+        """按 parser_name 校验并收紧 parser_options；返回清理后的副本。
+
+        - 递归拒绝网络/秘密字段（base_url/upload_url/token 等）；
+        - 拒绝白名单外未知字段；
+        - endpoint_ref 必须存在、启用且 parser_name 匹配（在 create/update 内执行）。
+        """
+        from app.schemas.config import finalize_parser_options
+
+        return finalize_parser_options(parser_name, options)
+
+    def _resolve_endpoint_ref(self, parser_name: str, options: dict | None) -> None:
+        """endpoint_ref 必须存在、启用且 parser_name 匹配；否则抛 ValueError。"""
+        from app.security.registry import get_registry
+
+        endpoint_ref = (options or {}).get("endpoint_ref")
+        registry = get_registry()
+        if parser_name in ("pymupdf4llm", "mock"):
+            return
+        if not endpoint_ref:
+            raise ValueError("invalid_parser_endpoint: 缺少 endpoint_ref")
+        definition = registry.get(str(endpoint_ref))
+        if definition is None:
+            raise ValueError("invalid_parser_endpoint: 未知端点")
+        if definition.parser_name != parser_name:
+            raise ValueError("invalid_parser_endpoint: 解析器类型不匹配")
+
+    async def create(self, project_id: uuid.UUID, **kwargs) -> ParserProfile:
+        parser_name = kwargs.get("parser_name", "mock")
+        options = kwargs.get("parser_options")
+        # 先做白名单收紧与禁止字段拒绝（在 DB 写入前 fail closed）。
+        cleaned = self._validate_for_parser(parser_name, options)
+        self._resolve_endpoint_ref(parser_name, cleaned)
+        kwargs["parser_options"] = cleaned
+        return await super().create(project_id, **kwargs)
+
+    async def update(self, config_id: uuid.UUID, **kwargs) -> ParserProfile | None:
+        obj = await self.get(config_id)
+        if obj is None:
+            return None
+        parser_name = kwargs.get("parser_name", obj.parser_name)
+        if kwargs.get("parser_options") is not None:
+            cleaned = self._validate_for_parser(parser_name, kwargs["parser_options"])
+            self._resolve_endpoint_ref(parser_name, cleaned)
+            kwargs["parser_options"] = cleaned
+        return await super().update(config_id, **kwargs)

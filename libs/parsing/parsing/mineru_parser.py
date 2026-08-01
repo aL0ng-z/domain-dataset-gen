@@ -3,13 +3,12 @@ from __future__ import annotations
 import io
 import json
 import time
-import urllib.error
-import urllib.request
 import uuid
 import zipfile
 from typing import Any
 
 from parsing.base import BaseParser, ParseResult
+from parsing.transport import InvalidJson, get_transport
 
 DEFAULT_TASK_URL = "https://mineru.net/api/v4/extract/task"
 
@@ -20,6 +19,8 @@ class MineruParser(BaseParser):
     MinerU's token-protected API cannot accept local bytes at the single-task
     endpoint. For an uploaded PDF, use its signed batch-upload flow, poll the
     asynchronous result, then extract Markdown from the returned ZIP archive.
+
+    所有出站调用经统一安全 transport；凭证只在请求局部注入，绝不进入共享 options。
     """
 
     def parse(self, pdf_data: bytes) -> ParseResult:
@@ -35,6 +36,7 @@ class MineruParser(BaseParser):
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        security = self._security_context()
 
         data_id = uuid.uuid4().hex
         model_version = str(self.options.get("model_version", "vlm"))
@@ -51,6 +53,7 @@ class MineruParser(BaseParser):
             data=json.dumps(request_payload).encode("utf-8"),
             headers=headers,
             timeout=timeout,
+            security=security,
         )
         task_data = self._require_success(upload_task, "申请 MinerU 上传地址失败")
         batch_id = task_data.get("batch_id")
@@ -58,19 +61,20 @@ class MineruParser(BaseParser):
         if not batch_id or not isinstance(file_urls, list) or not file_urls:
             raise ValueError("MinerU API 未返回 batch_id 或文件上传地址")
 
-        self._upload_pdf(str(file_urls[0]), pdf_data, timeout)
+        self._upload_pdf(str(file_urls[0]), pdf_data, timeout, security)
         extract_result = self._poll_result(
             f"{urls['results']}/{batch_id}",
             headers,
             timeout=timeout,
             poll_interval=poll_interval,
             max_wait=max_wait,
+            security=security,
         )
         archive_url = extract_result.get("full_zip_url")
         if not archive_url:
             raise ValueError("MinerU 解析完成但未返回结果归档地址")
 
-        archive_bytes = self._request_bytes(str(archive_url), timeout=timeout)
+        archive_bytes = self._request_bytes(str(archive_url), timeout=timeout, security=security)
         markdown, archive_json, files = self._extract_archive(archive_bytes)
         pages = self._pages_from_content_list(archive_json)
         page_count = self._find_page_count(extract_result, archive_json)
@@ -96,8 +100,22 @@ class MineruParser(BaseParser):
             page_mapping=[{"page_number": page["page_number"]} for page in pages],
         )
 
+    # ------------------------------------------------------------------ #
+    # 安全上下文：worker 注入的 credential/artifact 允许集合。
+    # ------------------------------------------------------------------ #
+
+    def _security_context(self) -> dict[str, Any]:
+        """从 options 读取安全上下文（由 worker/registry 注入，非项目用户可写）。"""
+        return self.options.get("_security") or {}
+
+    def _credential_origins(self) -> tuple:
+        return tuple(self._security_context().get("credential_origins") or ())
+
     def _resolve_urls(self) -> dict[str, str]:
-        task_url = str(self.options.get("base_url", DEFAULT_TASK_URL)).rstrip("/")
+        """URL 完全由服务端 registry 的 base_url 派生；不支持项目用户自定义 base_url。"""
+        security = self._security_context()
+        base_url = security.get("base_url") or DEFAULT_TASK_URL
+        task_url = str(base_url).rstrip("/")
         if not task_url:
             task_url = DEFAULT_TASK_URL
         marker = "/api/v4"
@@ -106,8 +124,8 @@ class MineruParser(BaseParser):
             raise ValueError("MinerU API 地址必须包含 /api/v4 路径")
         api_root = task_url[: marker_index + len(marker)]
         return {
-            "upload": str(self.options.get("upload_url", f"{api_root}/file-urls/batch")).rstrip("/"),
-            "results": str(self.options.get("results_url", f"{api_root}/extract-results/batch")).rstrip("/"),
+            "upload": f"{api_root}/file-urls/batch",
+            "results": f"{api_root}/extract-results/batch",
         }
 
     def _as_float(self, name: str, default: float) -> float:
@@ -120,38 +138,49 @@ class MineruParser(BaseParser):
             raise ValueError(f"MinerU 参数 {name} 不能小于 0")
         return value
 
-    def _request_json(self, url: str, data: bytes | None, headers: dict[str, str], timeout: float) -> dict:
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
-        raw = self._open(req, timeout)
+    # ------------------------------------------------------------------ #
+    # 统一 transport 请求：所有 URL 走同一安全边界。
+    # ------------------------------------------------------------------ #
+
+    def _request_json(
+        self,
+        url: str,
+        data: bytes | None,
+        headers: dict[str, str],
+        timeout: float,
+        security: dict[str, Any],
+    ) -> dict:
+        transport = get_transport()
         try:
-            result = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError as exc:
+            payload, _ = transport.request_json(
+                url,
+                method="POST" if data is not None else "GET",
+                data=data,
+                headers=headers,
+                credential_origins=self._credential_origins(),
+                read_timeout=timeout,
+            )
+        except InvalidJson as exc:
             raise ValueError("MinerU API 返回了无法解析的 JSON") from exc
-        if not isinstance(result, dict):
+        if not isinstance(payload, dict):
             raise ValueError("MinerU API 返回格式错误")
-        return result
+        return payload
 
-    def _request_bytes(self, url: str, timeout: float) -> bytes:
-        return self._open(urllib.request.Request(url, method="GET"), timeout, expose_error_body=False)
+    def _request_bytes(self, url: str, timeout: float, security: dict[str, Any]) -> bytes:
+        transport = get_transport()
+        body, _ = transport.get_bytes(url, headers={}, read_timeout=timeout)
+        return body
 
-    def _upload_pdf(self, url: str, pdf_data: bytes, timeout: float) -> None:
-        # Signed OSS upload URLs are generated without a Content-Type value.
-        # urllib otherwise injects application/x-www-form-urlencoded for bytes.
-        req = urllib.request.Request(url, data=pdf_data, headers={"Content-Type": ""}, method="PUT")
-        self._open(req, timeout, expose_error_body=False)
-
-    def _open(self, req: urllib.request.Request, timeout: float, expose_error_body: bool = True) -> bytes:
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                return response.read()
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            if expose_error_body:
-                body = exc.read().decode("utf-8", errors="replace")[:1000]
-                detail = f": {body}"
-            raise ValueError(f"MinerU API HTTP 错误 ({exc.code}){detail}") from exc
-        except urllib.error.URLError as exc:
-            raise ValueError(f"无法连接 MinerU 服务: {exc.reason}") from exc
+    def _upload_pdf(self, url: str, pdf_data: bytes, timeout: float, security: dict[str, Any]) -> None:
+        transport = get_transport()
+        # Signed OSS upload URLs 不携带 provider Authorization；只做 scheme/origin 校验。
+        transport.request_raw(
+            url,
+            method="PUT",
+            data=pdf_data,
+            headers={"Content-Type": ""},
+            read_timeout=timeout,
+        )
 
     def _require_success(self, response: dict, action: str) -> dict:
         if response.get("code") not in (None, 0):
@@ -169,10 +198,11 @@ class MineruParser(BaseParser):
         timeout: float,
         poll_interval: float,
         max_wait: float,
+        security: dict[str, Any],
     ) -> dict:
         deadline = time.monotonic() + max_wait
         while True:
-            response = self._request_json(url, data=None, headers=headers, timeout=timeout)
+            response = self._request_json(url, data=None, headers=headers, timeout=timeout, security=security)
             data = self._require_success(response, "查询 MinerU 解析结果失败")
             result = data.get("extract_result", data)
             if isinstance(result, list):

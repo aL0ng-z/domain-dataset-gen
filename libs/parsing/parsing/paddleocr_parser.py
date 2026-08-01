@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import base64
 import json
-import urllib.error
-import urllib.request
 from typing import Any
 
 from parsing.base import BaseParser, ParseResult
+from parsing.transport import InvalidJson, get_transport
 
 
 class PaddleOCRParser(BaseParser):
-    """PaddleOCR official document parsing API wrapper."""
+    """PaddleOCR official document parsing API wrapper.
+
+    所有出站调用经统一安全 transport；Token 只在请求局部注入到绑定的唯一 endpoint。
+    """
 
     def parse(self, pdf_data: bytes) -> ParseResult:
         endpoint = self._resolve_endpoint()
@@ -31,22 +33,18 @@ class PaddleOCRParser(BaseParser):
             "Authorization": f"{self.options.get('auth_scheme', 'token')} {api_key}",
         }
         timeout = self._timeout()
-        req = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
 
+        transport = get_transport()
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")[:1000]
-            raise ValueError(f"PaddleOCR API HTTP 错误 ({exc.code}): {body}") from exc
-        except urllib.error.URLError as exc:
-            raise ValueError(f"无法连接 PaddleOCR 服务: {exc.reason}") from exc
-        except json.JSONDecodeError as exc:
+            result, _ = transport.request_json(
+                endpoint,
+                method="POST",
+                data=json.dumps(payload).encode("utf-8"),
+                headers=headers,
+                credential_origins=self._credential_origins(),
+                read_timeout=timeout,
+            )
+        except InvalidJson as exc:
             raise ValueError("PaddleOCR API 返回了无法解析的 JSON") from exc
 
         pages = self._result_pages(result)
@@ -86,10 +84,22 @@ class PaddleOCRParser(BaseParser):
             page_mapping=page_mapping,
         )
 
+    # ------------------------------------------------------------------ #
+    # 安全上下文：worker 注入的 credential 允许集合。
+    # ------------------------------------------------------------------ #
+
+    def _security_context(self) -> dict[str, Any]:
+        return self.options.get("_security") or {}
+
+    def _credential_origins(self) -> tuple:
+        return tuple(self._security_context().get("credential_origins") or ())
+
     def _resolve_endpoint(self) -> str:
-        endpoint = str(self.options.get("base_url", "")).rstrip("/")
+        """endpoint 由服务端 registry 派生，不支持项目用户自定义 base_url。"""
+        security = self._security_context()
+        endpoint = str(security.get("base_url", "")).rstrip("/")
         if not endpoint:
-            raise ValueError("PaddleOCR 解析器需要配置 API 地址 (base_url)")
+            raise ValueError("PaddleOCR 解析器需要配置服务端端点 (base_url)")
         if not endpoint.endswith("/layout-parsing"):
             raise ValueError("PaddleOCR API 地址必须是以 /layout-parsing 结尾的完整端点")
         return endpoint

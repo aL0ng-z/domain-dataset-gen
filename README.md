@@ -523,8 +523,26 @@ python -m pytest -q
 - `tests/integration/`：数据库/API 集成测试，使用隔离测试库 `datasetgen_test`
   （PostgreSQL 55432、Redis 56379、MinIO 19000），每个测试结束后 TRUNCATE 清理，
   保证无残留业务数据、Redis key 或 MinIO 对象。
-- `tests/contract/`：外部服务 adapter 契约测试（LLM、MinIO），默认使用 fake，
-  不发出真实网络请求。
+- `tests/contract/`：外部服务 adapter 契约测试（LLM、MinIO、解析器出站安全），
+  默认使用 fake，不发出真实网络请求。
+
+解析器出站与凭证安全（T03）专项测试：
+
+```powershell
+python -m pytest -q tests/unit/security/test_parser_egress.py tests/contract/test_parser_profiles.py tests/integration/test_parse_job_config_snapshot.py tests/test_remote_parsers.py tests/test_parser_credentials.py
+python -m ruff check apps/api/app/security apps/api/app/models/parse.py apps/api/app/schemas apps/api/app/workers/parse_worker.py libs/parsing tests
+```
+
+迁移验收：
+
+```powershell
+python scripts/migrate_parser_profiles.py --dry-run
+python scripts/migrate_parser_profiles.py --check
+python -m pytest -q tests/integration/test_parse_job_snapshot_migration.py
+```
+
+> 注意：运行上述集成/迁移命令前需启动测试基础设施（见下）。迁移命令默认连
+> `datasetgen_test`，请勿在开发库上执行。
 
 集成测试需要测试基础设施已启动：
 

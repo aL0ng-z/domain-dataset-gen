@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, field_serializer, field_validator
+from pydantic import BaseModel, field_serializer, field_validator, model_validator
 
+from app.security.snapshot import find_forbidden_keys, redact, validate_parser_options
 from domain.schemas import BaseSchema
 
 
@@ -49,18 +50,37 @@ class ModelConfigResponse(BaseSchema):
 PARSER_SECRET_KEYS = {"api_key", "access_token", "token"}
 
 
-def _validate_parser_options(options: dict | None) -> dict | None:
-    if options and PARSER_SECRET_KEYS.intersection(options):
-        raise ValueError("解析器 API 密钥必须配置在后端环境变量中，不能保存到 ParserProfile")
-    return options
-
-
 class ParserProfileCreate(BaseModel):
     name: str
     parser_name: str = "mock"
     parser_options: dict | None = None
 
-    _no_embedded_secrets = field_validator("parser_options")(_validate_parser_options)
+    @field_validator("parser_options")
+    @classmethod
+    def _validate_parser_options(cls, options: dict | None) -> dict | None:
+        if options is None:
+            return None
+        # 禁止字段检查必须递归、大小写不敏感并规范化连字符/下划线。
+        forbidden = find_forbidden_keys(options)
+        if forbidden:
+            raise ValueError("unsafe_parser_option: 禁用字段")
+        return options
+
+    @field_validator("parser_name")
+    @classmethod
+    def _validate_parser_name(cls, parser_name: str) -> str:
+        from parsing import AVAILABLE_PARSERS
+
+        if parser_name not in AVAILABLE_PARSERS:
+            raise ValueError(f"invalid_parser_name: {parser_name}")
+        return parser_name
+
+    @model_validator(mode="after")
+    def _validate_options_whitelist(self) -> "ParserProfileCreate":
+        """按 parser_name 白名单拒绝未知字段（422 字段级错误）。"""
+        if self.parser_options is not None:
+            validate_parser_options(self.parser_name, self.parser_options)
+        return self
 
 
 class ParserProfileUpdate(BaseModel):
@@ -68,7 +88,34 @@ class ParserProfileUpdate(BaseModel):
     parser_name: str | None = None
     parser_options: dict | None = None
 
-    _no_embedded_secrets = field_validator("parser_options")(_validate_parser_options)
+    @field_validator("parser_options")
+    @classmethod
+    def _validate_parser_options(cls, options: dict | None) -> dict | None:
+        if options is None:
+            return None
+        forbidden = find_forbidden_keys(options)
+        if forbidden:
+            raise ValueError("unsafe_parser_option: 禁用字段")
+        return options
+
+    @field_validator("parser_name")
+    @classmethod
+    def _validate_parser_name(cls, parser_name: str | None) -> str | None:
+        if parser_name is None:
+            return None
+        from parsing import AVAILABLE_PARSERS
+
+        if parser_name not in AVAILABLE_PARSERS:
+            raise ValueError(f"invalid_parser_name: {parser_name}")
+        return parser_name
+
+    @model_validator(mode="after")
+    def _validate_options_whitelist(self) -> "ParserProfileUpdate":
+        # Update 场景：parser_name 可能未传；白名单校验在 service.update 读到
+        # 既有 parser_name 后再执行一次（此处仅当显式传 parser_name 时校验）。
+        if self.parser_options is not None and self.parser_name is not None:
+            validate_parser_options(self.parser_name, self.parser_options)
+        return self
 
 
 class ParserProfileResponse(BaseSchema):
@@ -86,11 +133,26 @@ class ParserProfileResponse(BaseSchema):
     def redact_parser_options(self, options: dict | None) -> dict | None:
         if not options:
             return options
-        sanitized = dict(options)
-        had_secret = any(sanitized.pop(key, None) is not None for key in PARSER_SECRET_KEYS)
-        if had_secret:
-            sanitized["credential_configured"] = True
-        return sanitized
+        return redact(dict(options))
+
+
+class ParserEndpointOption(BaseModel):
+    """项目用户可选的端点只读信息；不返回主机/IP/端口/allowlist 或网络区域内部细节。"""
+
+    endpoint_ref: str
+    display_name: str
+    parser_name: str
+    credential_configured: bool
+
+
+class ParserEndpointListResponse(BaseSchema):
+    items: list[ParserEndpointOption]
+
+
+# 供 CRUD 服务在创建/更新时执行白名单校验的辅助函数。
+def finalize_parser_options(parser_name: str, options: dict | None) -> dict | None:
+    """按 parser_name 白名单收紧 parser_options；拒绝未知字段与网络/秘密字段。"""
+    return validate_parser_options(parser_name, options)
 
 
 # --- ChunkProfile ---

@@ -197,17 +197,32 @@ async def trigger_parse(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
 
+    # T03: 先校验 profile 与 registry，再创建 Task/ParseJob；409 前不得下载 PDF。
+    from app.models.config import ParserProfile
+    from app.services.parse_freeze_service import ParseFreezeError, freeze_parse_job
+
+    profile = (
+        await db.execute(select(ParserProfile).where(ParserProfile.id == body.parser_profile_id))
+    ).scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="解析器配置不存在")
+
+    # 预冻结校验（不写入）：endpoint 存在、凭证就绪、无旧网络字段。
+    try:
+        from app.services.parse_freeze_service import freeze_profile_policy
+
+        freeze_profile_policy(profile, require_credential_ready=True)
+    except ParseFreezeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
+
     # Reuse app-level Redis connection for publishing task.created event
     task_service = TaskService(db, request.app.state.redis)
     task = await task_service.create_task(pid, "parse", "document", did, current_user.id)
 
-    # Create ParseJob immediately so frontend can see it right away
-    parse_job = ParseJob(
-        document_id=did,
-        parser_profile_id=body.parser_profile_id,
-        status="queued",
+    # 在同一事务内原子冻结 profile/policy 快照并创建 ParseJob。
+    parse_job = await freeze_parse_job(
+        db, document_id=did, profile=profile, require_credential_ready=True
     )
-    db.add(parse_job)
 
     doc.status = "parsing"
     await db.commit()

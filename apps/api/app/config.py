@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     mineru_api_token: SecretStr | None = None
     paddleocr_api_token: SecretStr | None = None
 
+    # T03: 服务端 ParserEndpointRegistry。JSON 数组：
+    # [{"endpoint_ref": "...", "parser_name": "...", "network_zone": "public-remote",
+    #   "base_url": "https://...", "credential_ref": "env:MINERU_API_TOKEN",
+    #   "credential_origins": ["https://mineru.net"],
+    #   "artifact_origins": [{"usage": "upload", "suffix": "*.oss-cn-*.aliyuncs.com"}],
+    #   "redirect_policy": "deny", ...}]
+    # 解析器真正使用的 URL/Token 全部由此 registry 派生，ParserProfile 只存 endpoint_ref。
+    parser_endpoint_registry: str = "[]"
+    # managed-local 服务的 admin 精确地址清单（URL -> 内部请求），供本地服务解析器使用。
+    parser_managed_local_urls: dict[str, str] = {}
+
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000

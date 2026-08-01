@@ -66,6 +66,15 @@ TEST_DB_URL = (
 TEST_REDIS_URL = f"redis://{settings.redis_host}:{settings.redis_port}"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_parser_transport():
+    """每个测试结束后重置全局 parser transport，避免 fake 泄漏到后续测试。"""
+    from parsing.transport import reset_transport
+
+    yield
+    reset_transport()
+
+
 # ---------------------------------------------------------------------------
 # 数据库：session 级 engine；schema 创建一次；每个测试结束 TRUNCATE。
 # ---------------------------------------------------------------------------
