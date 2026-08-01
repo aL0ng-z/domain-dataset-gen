@@ -19,7 +19,7 @@ export interface MockResponseOptions {
   status?: number;
   /** 模拟网络延迟（毫秒）。传 0 表示立即返回。 */
   delay?: number;
-  /** 响应体。缺省表示空 body。 */
+  /** 响应体。缺省表示空 body；传 Blob/ArrayBuffer 时按二进制原样返回。 */
   body?: unknown;
   /** 额外响应头。 */
   headers?: Record<string, string>;
@@ -124,7 +124,18 @@ export function createApiMockServer() {
     }
 
     const status = routeOptions.status ?? 200;
-    const body = routeOptions.body === undefined ? null : JSON.stringify(routeOptions.body);
+    let body: BodyInit | null = null;
+    if (routeOptions.body !== undefined) {
+      // Blob 先转 ArrayBuffer 再交给 Response：jsdom 的 Blob 缺少 .stream()，
+      // 直接作为 Response body 会抛 "object.stream is not a function"。
+      if (routeOptions.body instanceof Blob) {
+        body = await routeOptions.body.arrayBuffer();
+      } else if (routeOptions.body instanceof ArrayBuffer) {
+        body = routeOptions.body;
+      } else {
+        body = JSON.stringify(routeOptions.body);
+      }
+    }
     return new Response(body, {
       status,
       headers: { "Content-Type": "application/json", ...routeOptions.headers },

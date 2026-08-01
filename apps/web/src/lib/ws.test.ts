@@ -154,4 +154,76 @@ describe("ws client", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("4401 认证失败：触发统一认证恢复且不自动重连", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    localStorage.setItem("access_token", "token-abc");
+
+    const client: WsClient = createWsClient("ws://test/ws");
+    client.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // 服务端以 4401 关闭 -> 应触发认证恢复（handleAuthFailure 清除令牌）
+    ws.close(4401);
+    expect(localStorage.getItem("access_token")).toBeNull();
+    // 不自动重连
+    expect(FakeWebSocket.instances.length).toBe(1);
+
+    client.disconnect();
+  });
+
+  it("4403 无项目权限：停止重连并广播 ws_forbidden 事件", () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      localStorage.setItem("access_token", "token-abc");
+
+      const client: WsClient = createWsClient("ws://test/ws");
+      const handler = vi.fn();
+      client.subscribe("*", handler);
+      client.connect();
+      const ws = FakeWebSocket.instances[0];
+      ws.open();
+
+      // 服务端以 4403 关闭 -> 停止重连，广播 ws_forbidden
+      ws.close(4403);
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({ event: "ws_forbidden" }));
+      expect(FakeWebSocket.instances.length).toBe(1);
+
+      // 即使推进时间也不重连
+      vi.advanceTimersByTime(5000);
+      expect(FakeWebSocket.instances.length).toBe(1);
+
+      client.disconnect();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("4403 后获得新令牌：重置权限拒绝并重新连接", () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      TokenStore.setTokens("old-access", "refresh-1");
+
+      const client: WsClient = createWsClient("ws://test/ws");
+      client.connect();
+      const first = FakeWebSocket.instances[0];
+      first.open();
+      first.close(4403); // 权限拒绝 -> 停止重连
+
+      expect(FakeWebSocket.instances.length).toBe(1);
+
+      // 新令牌出现 -> 重置拒绝标记并重连
+      TokenStore.setTokens("new-access", "refresh-2");
+      expect(FakeWebSocket.instances.length).toBe(2);
+      const second = FakeWebSocket.instances[1];
+      expect(second.url).toContain("token=new-access");
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
 });
