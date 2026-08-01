@@ -327,6 +327,7 @@ class ProjectResourceResolver:
     async def candidate_project_id(self, cid: uuid.UUID) -> uuid.UUID | None:
         return await self._one(
             select(Document.project_id)
+            .select_from(Candidate)
             .join(Chunk, Chunk.id == Candidate.chunk_id)
             .join(Document, Document.id == Chunk.document_id)
             .where(Candidate.id == cid)
@@ -342,7 +343,8 @@ class ProjectResourceResolver:
     async def generation_run_project_id(self, gid: uuid.UUID) -> uuid.UUID | None:
         return await self._one(
             select(Document.project_id)
-            .join(GenerationRun, GenerationRun.chunk_id == Chunk.id)
+            .select_from(GenerationRun)
+            .join(Chunk, Chunk.id == GenerationRun.chunk_id)
             .join(Document, Document.id == Chunk.document_id)
             .where(GenerationRun.id == gid)
         )

@@ -157,16 +157,19 @@ def validate_ws_token(token: str) -> str | None:
         return None
 
 
-async def _authorize_ws(websocket: WebSocket, pid: str) -> str | None:
+async def _authorize_ws(websocket: WebSocket, pid: str) -> tuple[str | None, int]:
     """accept 前完成 access-token、启用用户与项目 viewer 校验。
 
-    通过返回 user_id；任一失败返回 None（关闭码由调用方决定）。
+    返回 (user_id, close_code)：
+    - 通过：user_id 非 None；
+    - 认证失败（token 无效/用户不存在/已停用）-> close_code=4401；
+    - 权限不足（非成员/角色不足/项目不存在）-> close_code=4403。
     任何失败都不会创建 Redis pubsub 订阅（订阅在 accept 后才启动）。
     """
     token = websocket.query_params.get("token")
     raw_user_id = None if not token else validate_ws_token(token)
     if raw_user_id is None:
-        return None
+        return None, WS_UNAUTHORIZED_CLOSE_CODE
 
     from app.authz import check_project_member
 
@@ -174,36 +177,35 @@ async def _authorize_ws(websocket: WebSocket, pid: str) -> str | None:
         user_id = uuid.UUID(raw_user_id)
         project_id = uuid.UUID(pid)
     except ValueError:
-        return None
+        return None, WS_UNAUTHORIZED_CLOSE_CODE
 
     try:
         async with _ws_auth_session() as session:
             user = (await session.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
             if user is None or not user.is_active:
                 logger.warning("WS 授权失败：用户不存在或已停用 %s", raw_user_id)
-                return None
+                return None, WS_UNAUTHORIZED_CLOSE_CODE
             # 项目 viewer 及以上成员；非成员 / 角色不足 / 项目不存在均关闭。
             await check_project_member(session, project_id, user, UserRole.viewer)
     except HTTPException as e:
         logger.warning("WS 授权失败：项目成员校验拒绝 %s pid=%s detail=%s", raw_user_id, pid, e.detail)
-        return None
+        return None, WS_FORBIDDEN_CLOSE_CODE
     except Exception as e:
         logger.warning("WS 授权失败：内部异常 %s pid=%s: %r", raw_user_id, pid, e)
-        return None
-    return str(user_id)
+        return None, WS_UNAUTHORIZED_CLOSE_CODE
+    return str(user_id), 0
 
 
 async def task_websocket_endpoint(websocket: WebSocket, pid: str):
-    # 认证失败（无效/refresh token、停用用户）-> 4401。
+    # accept 前完成 access-token、启用用户与项目 viewer 校验（任务卡 §5.3）。
     token = websocket.query_params.get("token")
     if not token or validate_ws_token(token) is None:
         await websocket.close(code=WS_UNAUTHORIZED_CLOSE_CODE)
         return
 
-    # 项目成员/角色校验：非成员、角色不足或项目不存在 -> 4403。
-    user_id = await _authorize_ws(websocket, pid)
+    user_id, close_code = await _authorize_ws(websocket, pid)
     if user_id is None:
-        await websocket.close(code=WS_FORBIDDEN_CLOSE_CODE)
+        await websocket.close(code=close_code)
         return
 
     await manager.connect(websocket, pid, user_id)
