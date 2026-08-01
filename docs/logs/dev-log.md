@@ -130,6 +130,56 @@
 
 ---
 
+## T02 项目资源对象级授权（2026-08-02）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `apps/api/app/authz.py` | 集中式 `check_project_member` + `ProjectResourceResolver`（SQL join 校验归属链）、`authorize_flat_resource`、`verify_project_chain` | 已完成 |
+| `apps/api/app/dependencies.py` | `require_project_member` 委托 authz 模块，语义不变 | 已完成 |
+| 嵌套路由（documents/tasks/config/prompt_templates/curated_items/datasets/benchmarks/exports） | 全部 GET/PATCH/DELETE/action 经 scoped resolver；请求体外键引用同项目校验 | 已完成 |
+| 平铺路由（sections/chunks/candidates/cleaned-versions） | 经归属链反查 project_id 后校验成员/角色再 scoped load | 已完成 |
+| PDF | 移除 query token，仅 Bearer + 项目 viewer；`Cache-Control: private, no-store`；授权先于 MinIO | 已完成 |
+| WebSocket | accept/订阅前完成 token + 启用用户 + 项目 viewer；广播前复核；撤权先关闭(4403)再发送；停用用户 4401 | 已完成 |
+| 后台任务 worker | parse/clean/chunk/generate/export 复核 task/资源/配置项目链，不一致标记失败无部分写入 | 已完成 |
+| 前端 | `api.getBlob` 携带 Authorization 下载 PDF Blob + revoke；WS 4401 走认证恢复、4403 停止重连 | 已完成 |
+| 测试 | `tests/integration/authorization/` 49 用例 + PDF 4 + WS 5 + 静态合同 2；前端新增 WS 4401/4403 与 PDF 授权 | 已完成 |
+| 迁移 | `52eb455d64d3` 归属链 join 索引；upgrade→downgrade→upgrade 通过 | 已完成 |
+| 审计 | `scripts/data-ownership-audit.py` 存量孤儿/跨项目引用审计通过 | 已完成 |
+| 文档 | `docs/authorization-matrix.md` 权限矩阵 + OpenAPI Bearer 关联静态校验 | 已完成 |
+
+### 设计决策
+
+- **对象归属是唯一授权事实**：任何客户端提供的父子 ID（did/cid/bid/tid 等）都不
+  作为授权依据；所有查询带项目谓词（join/EXISTS），资源不存在或不属于 pid 统一
+  404，不泄露哪一个 ID 存在。
+- **admin 只绕过成员/角色，不绕过路径绑定**：`check_project_member` 对全局 admin
+  直接返回，但资源归属校验在 resolver 中独立执行，admin 用错误 pid 访问真实资源
+  仍 404。
+- **平铺路由反查项目**：sections/chunks/candidates/cleaned-versions 无 URL pid，
+  通过 `Document.project_id` 外键链反查唯一项目后复用同一授权函数。
+- **冗余外键一致性**：Chunk.section_id 与其 document_id 指向不同 Document 时拒绝
+  访问并记录安全告警（任务卡 §4）。
+- **WS 跨事件循环**：授权查询使用短生命周期 NullPool engine（`_ws_auth_session`），
+  避免 TestClient 等独立线程循环复用全局连接池导致 asyncpg InterfaceError。
+- **并发线性化**：广播前逐一复核成员与启用状态；撤销提交后的新请求全部 403；
+  WS 已连接后撤权，先关闭(4403)再发送，客户端收不到事件。
+
+### 验证状态
+
+- 后端授权套件：`python -m pytest -q tests/integration/authorization
+  tests/integration/test_pdf_authorization.py
+  tests/integration/test_task_websocket_authorization.py` 全部通过。
+- 迁移 smoke：空库 `upgrade head → downgrade -1 → upgrade head` 通过。
+- 存量数据审计：`scripts/data-ownership-audit.py` 未发现孤儿或跨项目引用。
+- OpenAPI：134/137 操作关联 Bearer（另 3 个为公开的 login/refresh/health）。
+- 前端：`npm test -- --run` 38 passed（新增 PDF Blob 授权 + WS 4401/4403）；
+  `npm run lint` 0 problems；`npm exec tsc -- --noEmit` 通过；
+  `npm run build` 通过。
+
+---
+
 ## Code Review 修复方案与任务卡拆分（2026-07-31）
 
 ### 本轮总览
