@@ -133,8 +133,30 @@ async def db_session(_test_session_factory, _test_engine, _prepare_schema) -> As
             yield session
         finally:
             await session.rollback()
+            await _truncate_with_retry(_test_engine)
+
+
+async def _truncate_with_retry(_test_engine) -> None:
+    """TRUNCATE 带死锁重试。
+
+    多 worktree 并发访问同一测试库时，两个独立 pytest 进程可能同时 TRUNCATE/INSERT，
+    触发 PostgreSQL 死锁（异步事务竞争）。deadlock 由 PG 检测后自动回滚受害方，
+    这里按 sqlstate 40P01（deadlock_detected）捕获并稍作退避后重试，直至成功。
+    """
+    import asyncio
+
+    for attempt in range(6):
+        try:
             async with _test_engine.begin() as conn:
                 await conn.execute(text(_TRUNCATE_ALL_SQL))
+            return
+        except Exception as exc:  # noqa: BLE001 - 需要统一捕获并判断是否死锁
+            sqlstate = getattr(exc, "sqlstate", None) or getattr(getattr(exc, "orig", None), "sqlstate", None)
+            if sqlstate != "40P01":
+                raise
+            if attempt == 5:
+                raise
+            await asyncio.sleep(0.2 * (attempt + 1))
 
 
 @pytest.fixture(scope="session")
