@@ -44,6 +44,25 @@ FORBIDDEN_OPTION_KEYS = frozenset(
 #: 规范化后与禁止字段等价的别名（去掉连字符/下划线）。
 _FORBIDDEN_NORMALIZED = frozenset(key.replace("-", "").replace("_", "").lower() for key in FORBIDDEN_OPTION_KEYS)
 
+#: 快照扫描的秘密键名（不含 base_url/upload_url 等网络字段——那些是 profile options
+#: 的禁止项，但 policy 快照中 registry 派生的规范 URL 是合法执行信息）。
+SNAPSHOT_SECRET_KEYS = frozenset(
+    {
+        "api_key",
+        "access_token",
+        "token",
+        "secret",
+        "credential",
+        "authorization",
+        "password",
+        "auth_scheme",
+        "sig",
+        "signature",
+        "x_api_key",
+    }
+)
+_SNAPSHOT_SECRET_NORMALIZED = frozenset(k.replace("-", "").replace("_", "").lower() for k in SNAPSHOT_SECRET_KEYS)
+
 #: 快照中禁止出现的值特征：预签名 URL query、Authorization 头值等。
 _VALUE_PATTERNS = (
     re.compile(r"X-Amz-Signature=", re.IGNORECASE),
@@ -213,7 +232,7 @@ def scan_for_secrets(value: Any, _path: str = "") -> list[str]:
     if isinstance(value, dict):
         for key, item in value.items():
             path = f"{_path}.{key}" if _path else key
-            if is_forbidden_option_key(key):
+            if normalized_key(key) in _SNAPSHOT_SECRET_NORMALIZED:
                 hits.append(path)
             hits.extend(scan_for_secrets(item, path))
     elif isinstance(value, list):
