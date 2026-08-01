@@ -61,6 +61,75 @@
 
 ---
 
+## T01 JWT 令牌语义与前端认证状态（2026-08-01）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `apps/api/app/core/jwt.py` | 统一 JWT 解码/签发模块：TokenType、encode/decode_token、resolve_user_id | 已完成 |
+| `apps/api/app/services/auth_service.py` | access 明确 type=access；refresh 保持 type=refresh；refresh_tokens 只接受 refresh | 已完成 |
+| `apps/api/app/dependencies.py` | get_current_user 只接受 access token；401 携带 WWW-Authenticate: Bearer | 已完成 |
+| `apps/api/app/routers/documents.py` | PDF 入口复用统一 access 校验，删除重复 jose.decode | 已完成 |
+| `apps/api/app/ws/task_ws.py` | WebSocket 复用统一 access 校验；未认证关闭码 4401 | 已完成 |
+| `apps/api/app/schemas/auth.py` | TokenResponse/RefreshRequest 字段说明补充 | 已完成 |
+| `apps/web/src/lib/auth.ts` | TokenStore 唯一读写入口 + single-flight 刷新 + 令牌代数 + 跨标签页同步 | 已完成 |
+| `apps/web/src/lib/api.ts` | 401 仅对非登录/刷新请求单次刷新重试；失败原子清理 | 已完成 |
+| `apps/web/src/lib/ws.ts` | 经 TokenStore 取令牌；轮换重连、logout 停止重连 | 已完成 |
+| `apps/web/src/contexts/auth-context.tsx` | bootstrapping/authenticated/refreshing/anonymous 状态机 | 已完成 |
+| `tests/integration/test_auth_tokens.py` | access/refresh 分离、负向矩阵、停用用户、日志脱敏、WS 订阅 | 已完成 |
+| `tests/integration/test_protected_token_types.py` | 受保护入口矩阵、WWW-Authenticate、jwt.decode 静态守卫 | 已完成 |
+| `apps/web` 测试 | auth/api/ws/auth-context 并发、乱序、退出回归测试 | 已完成 |
+| `tests/conftest.py` | 集成测试清理改为单语句 TRUNCATE，消除跨测试死锁 | 已完成 |
+
+### 设计决策
+
+- **单一令牌语义**：access token 明确 `type=access`，refresh 保持 `type=refresh`；
+  全仓仅 `app/core/jwt.py` 负责解码与签发，HTTP/PDF/WebSocket 一律复用
+  `decode_token`/`resolve_user_id`，静态搜索守卫验证无业务入口直接调用 `jwt.decode`。
+- **声明校验**：python-jose 的 `options.require` 不强制声明存在，`decode_token`
+  在解码后手工校验 sub/type/iat/exp 存在、type 与预期一致；sub 的 UUID 解析失败
+  统一按 401 处理，不产生 500。
+- **用户事实源**：令牌解码后仍从数据库确认用户存在且启用；停用后未过期 token 立即失效。
+- **日志脱敏**：认证失败仅记录不带 token 的告警文案，测试断言日志不含原 token。
+- **前端 single-flight**：`refreshToken` 共享同一 Promise，并发 401 只发一次刷新；
+  令牌代数（generation）保证晚到的旧刷新响应不覆盖新登录会话；失败仅触发一次
+  原子清理与认证失败回调，路由守卫据此跳登录页。
+- **前端状态机**：AuthContext 区分 bootstrapping/authenticated/refreshing/anonymous，
+  避免初始化时误跳登录页；storage 事件同步跨标签页登录/刷新/退出。
+- **部署影响**：历史缺少 type 声明的 token 全部失效，发布后用户需重新登录
+  （与任务卡"明确不做"一致，不引入兼容后门）。
+- **测试底座修复**：原 `db_session` 清理按表循环 `TRUNCATE CASCADE`，逐表获取
+  ACCESS EXCLUSIVE 锁，在连续多个 org-based 集成测试时与下一测试的未提交 INSERT
+  并发形成 PostgreSQL 死锁（原有测试即可复现）。改为单语句 TRUNCATE 一次声明全部
+  业务表，PostgreSQL 原子获取全部锁，彻底消除跨测试死锁。
+
+### 验证状态
+
+- 后端集成测试：`python -m pytest -q tests/integration/test_auth_tokens.py
+  tests/integration/test_protected_token_types.py` 21 passed；
+  与既有 `test_auth_login_flow.py` 合并运行 28 passed；全仓 `python -m pytest -q`
+  66 passed。
+- Ruff：`python -m ruff check apps/api/app/services/auth_service.py
+  apps/api/app/dependencies.py apps/api/app/routers/auth.py apps/api/app/ws/task_ws.py tests`
+  全部通过。
+- 前端：`npm test -- --run` 32 passed（新增 29 用例）；
+  `npm run lint` 0 problems；`npm exec tsc -- --noEmit` 通过；
+  `npm run build` 通过。
+- 全仓搜索除 `app/core/jwt.py` 外不存在业务入口直接调用 `jwt.decode`。
+- 验收命令逐项：
+  - access 可访问 /me、refresh 对 /me 稳定 401：`test_access_can_me_refresh_cannot`
+  - refresh 对业务 API/PDF/WS 全部拒绝且不建订阅：`test_refresh_rejected_*`、
+    `test_refresh_token_ws_rejected_without_subscription`
+  - 刷新负向矩阵（缺 type/过期/伪造/非 UUID sub）：`test_refresh_accepts_only_refresh_token`
+  - 停用用户两类 token 即时失效且日志无 token：`test_deactivated_user_*`
+  - Authorization 缺失/格式错误/算法不匹配参数化：`test_protected_endpoint_auth_header_variants`
+  - 20 并发 401 只 1 次刷新：`auth.test.ts / api.test.ts`
+  - 旧响应不覆盖新会话：`auth.test.ts 令牌代数`
+  - WS 令牌轮换重连/logout 停止重连：`ws.test.ts`
+
+---
+
 ## Code Review 修复方案与任务卡拆分（2026-07-31）
 
 ### 本轮总览
