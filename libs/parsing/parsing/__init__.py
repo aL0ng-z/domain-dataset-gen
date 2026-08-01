@@ -6,19 +6,24 @@ from parsing.paddleocr_local_service_parser import PaddleOCRLocalServiceParser  
 from parsing.paddleocr_parser import PaddleOCRParser  # noqa: F401
 from parsing.pymupdf_parser import PymupdfParser  # noqa: F401
 
+#: 可用解析器注册表（schema/worker 白名单依据）。
+PARSERS: dict[str, type[BaseParser]] = {
+    "pymupdf4llm": PymupdfParser,
+    "mineru": MineruParser,
+    "mineru_local": MineruLocalParser,
+    "mineru_local_service": MineruLocalServiceParser,
+    "paddleocr": PaddleOCRParser,
+    "paddleocr_local_service": PaddleOCRLocalServiceParser,
+    # Backward compat
+    "mock": PymupdfParser,
+}
+
+#: 当前可用的解析器名（schema/worker 白名单依据）。
+AVAILABLE_PARSERS = frozenset(PARSERS.keys())
+
 
 def get_parser(parser_name: str, options: dict | None = None) -> BaseParser:
-    parsers = {
-        "pymupdf4llm": PymupdfParser,
-        "mineru": MineruParser,
-        "mineru_local": MineruLocalParser,
-        "mineru_local_service": MineruLocalServiceParser,
-        "paddleocr": PaddleOCRParser,
-        "paddleocr_local_service": PaddleOCRLocalServiceParser,
-        # Backward compat
-        "mock": PymupdfParser,
-    }
-    parser_cls = parsers.get(parser_name)
+    parser_cls = PARSERS.get(parser_name)
     if parser_cls is None:
         raise ValueError(
             "未知的解析器: "

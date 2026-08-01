@@ -54,7 +54,25 @@ def test_parser_profile_response_redacts_legacy_secret():
     )
 
     options = profile.model_dump()["parser_options"]
+    # 递归脱敏：禁用字段一律替换为 [REDACTED]，不泄露 URL 或 secret。
     assert options == {
-        "base_url": "https://mineru.net/api/v4/extract/task",
-        "credential_configured": True,
+        "base_url": "[REDACTED]",
+        "api_key": "[REDACTED]",
     }
+
+
+def test_parser_profile_response_redacts_nested_secret_recursively():
+    profile = ParserProfileResponse(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        name="legacy-nested",
+        version=1,
+        is_default=False,
+        parser_name="mineru",
+        parser_options={"nested": {"api_key": "secret", "keep": 1}},
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+
+    options = profile.model_dump()["parser_options"]
+    assert options == {"nested": {"api_key": "[REDACTED]", "keep": 1}}
