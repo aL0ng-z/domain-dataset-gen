@@ -1,4 +1,4 @@
-import { TokenStore, subscribeToTokenChange } from "./auth";
+import { TokenStore, handleAuthFailure, subscribeToTokenChange } from "./auth";
 
 export type WsMessageHandler = (data: unknown) => void;
 
@@ -9,11 +9,16 @@ export interface WsClient {
   send: (data: unknown) => void;
 }
 
+/** 服务端 WebSocket 关闭码（任务卡 §5.1、§6）。 */
+export const WS_UNAUTHORIZED_CLOSE = 4401; // 认证失败 -> 走 T01 刷新恢复
+export const WS_FORBIDDEN_CLOSE = 4403;    // 无项目权限 -> 停止重连
+
 export function createWsClient(url: string): WsClient {
   let ws: WebSocket | null = null;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let intentionalClose = false;
+  let permissionDenied = false;
   let unsubscribeTokenChange: (() => void) | null = null;
   const listeners = new Map<string, Set<WsMessageHandler>>();
 
@@ -25,7 +30,7 @@ export function createWsClient(url: string): WsClient {
   }
 
   function scheduleReconnect() {
-    if (intentionalClose) return;
+    if (intentionalClose || permissionDenied) return;
     const delay = getBackoff();
     reconnectAttempt++;
     reconnectTimer = setTimeout(() => {
@@ -68,8 +73,22 @@ export function createWsClient(url: string): WsClient {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event: CloseEvent) => {
       ws = null;
+      // 4403：无项目权限 -> 停止重连并提示（任务卡 §6）。
+      if (event.code === WS_FORBIDDEN_CLOSE) {
+        permissionDenied = true;
+        listeners.forEach((set) => {
+          set.forEach((h) => h({ event: "ws_forbidden", code: WS_FORBIDDEN_CLOSE }));
+        });
+        return;
+      }
+      // 4401：认证失败 -> 触发 T01 统一刷新/退出流程（任务卡 §6）。
+      if (event.code === WS_UNAUTHORIZED_CLOSE) {
+        handleAuthFailure();
+        intentionalClose = true;
+        return;
+      }
       scheduleReconnect();
     };
 
@@ -80,15 +99,21 @@ export function createWsClient(url: string): WsClient {
 
   /**
    * 令牌变化处理（任务卡 §6、§11 验收标准 9）：
-   * - 令牌轮换（新 access token）-> 关闭旧连接触发退避重连，重连时读取新令牌；
+   * - 令牌轮换（新 access token）-> 重置权限拒绝状态并关闭旧连接触发重连；
    * - 令牌被清除（logout）-> 完全断开且不再自动重连。
    */
   function handleTokenChange() {
     if (intentionalClose) return; // 已主动断开（logout）
     if (TokenStore.getAccessToken()) {
+      const wasDenied = permissionDenied;
+      // 新令牌出现：清除之前的权限拒绝标记，允许重新建立连接。
+      permissionDenied = false;
       if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         // 关闭会触发 onclose -> scheduleReconnect -> connect() 读取新令牌
         ws.close();
+      } else if (wasDenied) {
+        // 之前因 4403 停止重连：现在有新令牌，显式重连。
+        connect();
       }
     } else {
       disconnect();

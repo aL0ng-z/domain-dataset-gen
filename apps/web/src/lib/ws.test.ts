@@ -13,10 +13,11 @@ class FakeWebSocket {
   url: string;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number; reason?: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   sent: string[] = [];
   closed = false;
+  closeCode = 1000;
 
   constructor(url: string) {
     this.url = url;
@@ -27,10 +28,11 @@ class FakeWebSocket {
     this.sent.push(data);
   }
 
-  close() {
+  close(code?: number) {
     this.closed = true;
     this.readyState = 0;
-    if (this.onclose) this.onclose();
+    this.closeCode = code ?? 1000;
+    if (this.onclose) this.onclose({ code: this.closeCode });
   }
 
   /** 测试辅助：模拟服务端推消息。 */
