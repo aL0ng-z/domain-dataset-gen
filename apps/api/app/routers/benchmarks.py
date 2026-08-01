@@ -23,7 +23,7 @@ from domain.schemas import PaginatedResponse
 router = APIRouter(prefix="/api/projects/{pid}/benchmarks", tags=["benchmarks"])
 
 
-@router.post("/", response_model=BenchmarkResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=BenchmarkResponse, status_code=status.HTTP_201_CREATED, operation_id="benchmark_create")
 async def create_benchmark(
     pid: uuid.UUID,
     body: BenchmarkCreate,
@@ -34,7 +34,7 @@ async def create_benchmark(
     return await service.create_benchmark(pid, body.name, body.description, current_user.id)
 
 
-@router.get("/", response_model=PaginatedResponse[BenchmarkResponse])
+@router.get("/", response_model=PaginatedResponse[BenchmarkResponse], operation_id="benchmark_list")
 async def list_benchmarks(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -47,7 +47,7 @@ async def list_benchmarks(
     return PaginatedResponse(items=benchmarks, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{bid}", response_model=BenchmarkResponse)
+@router.get("/{bid}", response_model=BenchmarkResponse, operation_id="benchmark_get")
 async def get_benchmark(
     pid: uuid.UUID,
     bid: uuid.UUID,
@@ -61,7 +61,7 @@ async def get_benchmark(
     return benchmark
 
 
-@router.patch("/{bid}", response_model=BenchmarkResponse)
+@router.patch("/{bid}", response_model=BenchmarkResponse, operation_id="benchmark_update")
 async def update_benchmark(
     pid: uuid.UUID,
     bid: uuid.UUID,
@@ -76,7 +76,7 @@ async def update_benchmark(
     return benchmark
 
 
-@router.delete("/{bid}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{bid}", status_code=status.HTTP_204_NO_CONTENT, operation_id="benchmark_delete")
 async def delete_benchmark(
     pid: uuid.UUID,
     bid: uuid.UUID,
@@ -88,18 +88,25 @@ async def delete_benchmark(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
 
 
-@router.get("/{bid}/cases", response_model=list[BenchmarkCaseResponse])
+@router.get(
+    "/{bid}/cases",
+    response_model=PaginatedResponse[BenchmarkCaseResponse],
+    operation_id="benchmark_list_cases",
+)
 async def list_cases(
     pid: uuid.UUID,
     bid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
 ):
     service = BenchmarkService(db)
-    return await service.list_cases(bid)
+    items, total = await service.list_cases_paginated(bid, page, page_size)
+    return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
 
-@router.post("/{bid}/cases", response_model=BenchmarkCaseResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{bid}/cases", response_model=BenchmarkCaseResponse, status_code=status.HTTP_201_CREATED, operation_id="benchmark_add_case")
 async def add_case(
     pid: uuid.UUID,
     bid: uuid.UUID,
@@ -114,7 +121,7 @@ async def add_case(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
 
-@router.delete("/{bid}/cases/{case_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{bid}/cases/{case_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="benchmark_remove_case")
 async def remove_case(
     pid: uuid.UUID,
     bid: uuid.UUID,
@@ -127,7 +134,7 @@ async def remove_case(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准案例不存在")
 
 
-@router.post("/{bid}/export", response_model=ExportResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{bid}/export", response_model=ExportResponse, status_code=status.HTTP_201_CREATED, operation_id="benchmark_export")
 async def export_benchmark(
     pid: uuid.UUID,
     bid: uuid.UUID,

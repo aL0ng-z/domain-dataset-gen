@@ -23,7 +23,7 @@ from domain.schemas import PaginatedResponse
 router = APIRouter(prefix="/api/projects/{pid}/datasets", tags=["datasets"])
 
 
-@router.post("/", response_model=DatasetResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=DatasetResponse, status_code=status.HTTP_201_CREATED, operation_id="dataset_create")
 async def create_dataset(
     pid: uuid.UUID,
     body: DatasetCreate,
@@ -34,7 +34,7 @@ async def create_dataset(
     return await service.create_dataset(pid, body.name, body.description, current_user.id)
 
 
-@router.get("/", response_model=PaginatedResponse[DatasetResponse])
+@router.get("/", response_model=PaginatedResponse[DatasetResponse], operation_id="dataset_list")
 async def list_datasets(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -47,7 +47,7 @@ async def list_datasets(
     return PaginatedResponse(items=datasets, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{did}", response_model=DatasetResponse)
+@router.get("/{did}", response_model=DatasetResponse, operation_id="dataset_get")
 async def get_dataset(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -61,7 +61,7 @@ async def get_dataset(
     return dataset
 
 
-@router.patch("/{did}", response_model=DatasetResponse)
+@router.patch("/{did}", response_model=DatasetResponse, operation_id="dataset_update")
 async def update_dataset(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -76,7 +76,7 @@ async def update_dataset(
     return dataset
 
 
-@router.delete("/{did}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{did}", status_code=status.HTTP_204_NO_CONTENT, operation_id="dataset_delete")
 async def delete_dataset(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -88,18 +88,25 @@ async def delete_dataset(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
 
 
-@router.get("/{did}/items", response_model=list[DatasetItemResponse])
+@router.get(
+    "/{did}/items",
+    response_model=PaginatedResponse[DatasetItemResponse],
+    operation_id="dataset_list_items",
+)
 async def list_items(
     pid: uuid.UUID,
     did: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
 ):
     service = DatasetService(db)
-    return await service.list_items(did)
+    items, total = await service.list_items_paginated(did, page, page_size)
+    return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
 
-@router.post("/{did}/items", response_model=DatasetItemResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{did}/items", response_model=DatasetItemResponse, status_code=status.HTTP_201_CREATED, operation_id="dataset_add_item")
 async def add_item(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -114,7 +121,7 @@ async def add_item(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
 
-@router.delete("/{did}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{did}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="dataset_remove_item")
 async def remove_item(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -127,7 +134,7 @@ async def remove_item(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集条目不存在")
 
 
-@router.post("/{did}/export", response_model=ExportResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{did}/export", response_model=ExportResponse, status_code=status.HTTP_201_CREATED, operation_id="dataset_export")
 async def export_dataset(
     pid: uuid.UUID,
     did: uuid.UUID,

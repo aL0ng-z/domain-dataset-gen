@@ -13,7 +13,7 @@ from app.services.clean_version_service import CleanVersionService
 router = APIRouter(prefix="/api/cleaned-versions", tags=["cleaned-versions"])
 
 
-@router.get("/{vid}", response_model=CleanedDocumentVersionDetailResponse)
+@router.get("/{vid}", response_model=CleanedDocumentVersionDetailResponse, operation_id="cleaned_version_get")
 async def get_cleaned_version(
     vid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],

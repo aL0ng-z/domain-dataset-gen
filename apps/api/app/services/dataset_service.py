@@ -66,6 +66,19 @@ class DatasetService:
         )
         return list(result.scalars().all())
 
+    async def list_items_paginated(
+        self, dataset_id: uuid.UUID, page: int = 1, page_size: int = 20
+    ) -> tuple[list[DatasetItem], int]:
+        """分页返回 Dataset items，total 为过滤后的总数。"""
+        offset = (page - 1) * page_size
+        base = select(DatasetItem).where(DatasetItem.dataset_id == dataset_id)
+        count_result = await self.db.execute(select(func.count()).select_from(base.subquery()))
+        total = count_result.scalar() or 0
+        result = await self.db.execute(
+            base.order_by(DatasetItem.ordinal).offset(offset).limit(page_size)
+        )
+        return list(result.scalars().all()), total
+
     async def add_item(self, dataset_id: uuid.UUID, curated_item_id: uuid.UUID) -> DatasetItem:
         # Validate curated item exists and is approved
         curated = (

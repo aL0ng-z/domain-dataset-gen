@@ -28,7 +28,7 @@ def _get_redis(request: Request):
     return getattr(request.app.state, "redis", None)
 
 
-@router.get("/{sid}", response_model=SectionResponse)
+@router.get("/{sid}", response_model=SectionResponse, operation_id="section_get")
 async def get_section(
     sid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -41,7 +41,7 @@ async def get_section(
     return section
 
 
-@router.patch("/{sid}", response_model=SectionResponse)
+@router.patch("/{sid}", response_model=SectionResponse, operation_id="section_update")
 async def update_section(
     sid: uuid.UUID,
     body: SectionUpdate,
@@ -55,7 +55,7 @@ async def update_section(
     return section
 
 
-@router.post("/{sid}/submit", response_model=SectionResponse)
+@router.post("/{sid}/submit", response_model=SectionResponse, operation_id="section_submit")
 async def submit_section(
     sid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -68,7 +68,7 @@ async def submit_section(
     return section
 
 
-@router.post("/{sid}/review", response_model=SectionResponse)
+@router.post("/{sid}/review", response_model=SectionResponse, operation_id="section_review")
 async def review_section(
     sid: uuid.UUID,
     body: SectionReview,
@@ -85,7 +85,7 @@ async def review_section(
     return section
 
 
-@router.post("/{sid}/lease/acquire", response_model=SectionLeaseResponse)
+@router.post("/{sid}/lease/acquire", response_model=SectionLeaseResponse, operation_id="section_lease_acquire")
 async def acquire_lease(
     sid: uuid.UUID,
     request: Request,
@@ -99,7 +99,7 @@ async def acquire_lease(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
 
 
-@router.post("/{sid}/lease/heartbeat", response_model=SectionLeaseResponse)
+@router.post("/{sid}/lease/heartbeat", response_model=SectionLeaseResponse, operation_id="section_lease_heartbeat")
 async def heartbeat_lease(
     sid: uuid.UUID,
     request: Request,
@@ -113,7 +113,7 @@ async def heartbeat_lease(
     return lease
 
 
-@router.post("/{sid}/lease/release", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/{sid}/lease/release", status_code=status.HTTP_204_NO_CONTENT, operation_id="section_lease_release")
 async def release_lease(
     sid: uuid.UUID,
     request: Request,
@@ -125,7 +125,7 @@ async def release_lease(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="租约不存在")
 
 
-@router.post("/{sid}/comments", response_model=SectionCommentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{sid}/comments", response_model=SectionCommentResponse, status_code=status.HTTP_201_CREATED, operation_id="section_add_comment")
 async def add_comment(
     sid: uuid.UUID,
     body: SectionCommentCreate,
@@ -136,7 +136,7 @@ async def add_comment(
     return await service.add_comment(sid, current_user.id, body.comment_type, body.content)
 
 
-@router.get("/{sid}/comments", response_model=list[SectionCommentResponse])
+@router.get("/{sid}/comments", response_model=list[SectionCommentResponse], operation_id="section_list_comments")
 async def list_comments(
     sid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -146,7 +146,7 @@ async def list_comments(
     return await service.list_comments(sid)
 
 
-@router.get("/{sid}/revisions", response_model=list[SectionRevisionResponse])
+@router.get("/{sid}/revisions", response_model=list[SectionRevisionResponse], operation_id="section_list_revisions")
 async def list_revisions(
     sid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -156,7 +156,7 @@ async def list_revisions(
     return await service.list_revisions(sid)
 
 
-@router.post("/{sid}/assign", response_model=SectionResponse)
+@router.post("/{sid}/assign", response_model=SectionResponse, operation_id="section_assign")
 async def assign_section_endpoint(
     sid: uuid.UUID,
     body: SectionAssignRequest,
@@ -170,7 +170,7 @@ async def assign_section_endpoint(
     return section
 
 
-@router.post("/{sid}/complete", response_model=SectionResponse)
+@router.post("/{sid}/complete", response_model=SectionResponse, operation_id="section_complete")
 async def complete_section_endpoint(
     sid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -187,7 +187,7 @@ async def complete_section_endpoint(
     return section
 
 
-@router.post("/{sid}/return", response_model=SectionResponse)
+@router.post("/{sid}/return", response_model=SectionResponse, operation_id="section_return")
 async def return_section_endpoint(
     sid: uuid.UUID,
     body: SectionReturnRequest,

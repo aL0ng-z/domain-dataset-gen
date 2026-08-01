@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
+from app.errors import register_exception_handlers
+from app.openapi import build_custom_openapi
 from app.routers import (
     auth,
     benchmarks,
@@ -48,6 +50,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+register_exception_handlers(app)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.api_cors_origins,
@@ -76,6 +80,8 @@ app.include_router(datasets.router)
 app.include_router(benchmarks.router)
 app.include_router(exports.router)
 app.include_router(cleaned_versions.router)
+
+app.openapi = lambda: build_custom_openapi(app)
 
 
 @app.get("/api/health")

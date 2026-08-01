@@ -23,7 +23,7 @@ from domain.schemas import PaginatedResponse
 router = APIRouter(prefix="/api/projects/{pid}/curated-items", tags=["curated-items"])
 
 
-@router.get("/", response_model=PaginatedResponse[CuratedItemResponse])
+@router.get("/", response_model=PaginatedResponse[CuratedItemResponse], operation_id="curated_item_list")
 async def list_curated_items(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -38,7 +38,7 @@ async def list_curated_items(
     return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{iid}", response_model=CuratedItemResponse)
+@router.get("/{iid}", response_model=CuratedItemResponse, operation_id="curated_item_get")
 async def get_curated_item(
     pid: uuid.UUID,
     iid: uuid.UUID,
@@ -52,7 +52,7 @@ async def get_curated_item(
     return item
 
 
-@router.patch("/{iid}", response_model=CuratedItemResponse)
+@router.patch("/{iid}", response_model=CuratedItemResponse, operation_id="curated_item_update")
 async def update_curated_item(
     pid: uuid.UUID,
     iid: uuid.UUID,
@@ -72,7 +72,7 @@ async def update_curated_item(
     return updated
 
 
-@router.get("/{iid}/revisions", response_model=list[CuratedRevisionResponse])
+@router.get("/{iid}/revisions", response_model=list[CuratedRevisionResponse], operation_id="curated_item_list_revisions")
 async def list_revisions(
     pid: uuid.UUID,
     iid: uuid.UUID,
@@ -86,7 +86,7 @@ async def list_revisions(
     return await service.list_revisions(iid)
 
 
-@router.get("/{iid}/evidence-links", response_model=list[EvidenceLinkResponse])
+@router.get("/{iid}/evidence-links", response_model=list[EvidenceLinkResponse], operation_id="curated_item_list_evidence_links")
 async def list_evidence_links(
     pid: uuid.UUID,
     iid: uuid.UUID,
@@ -100,7 +100,7 @@ async def list_evidence_links(
     return await service.list_evidence_links(iid)
 
 
-@router.post("/{iid}/add-to-dataset", response_model=DatasetItemResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{iid}/add-to-dataset", response_model=DatasetItemResponse, status_code=status.HTTP_201_CREATED, operation_id="curated_item_add_to_dataset")
 async def add_to_dataset(
     pid: uuid.UUID,
     iid: uuid.UUID,
@@ -118,7 +118,7 @@ async def add_to_dataset(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
 
-@router.post("/{iid}/add-to-benchmark", response_model=BenchmarkCaseResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{iid}/add-to-benchmark", response_model=BenchmarkCaseResponse, status_code=status.HTTP_201_CREATED, operation_id="curated_item_add_to_benchmark")
 async def add_to_benchmark(
     pid: uuid.UUID,
     iid: uuid.UUID,

@@ -37,7 +37,7 @@ class EvidenceLinkResponse(BaseSchema):
     curated_item_id: uuid.UUID
     document_id: uuid.UUID
     chunk_id: uuid.UUID
-    source_pages: list | None
+    source_pages: dict | None
     heading_path: str | None
     quote_text: str | None
 

@@ -66,3 +66,14 @@ class ChunkRequest(BaseSchema):
 class GenerateBatchRequest(BaseSchema):
     prompt_template_id: uuid.UUID
     model_config_id: uuid.UUID
+
+
+class AsyncTaskAcceptedResponse(BaseSchema):
+    """202 异步任务已接受的统一响应（无 body 以外的业务负载）。"""
+
+    task_id: uuid.UUID
+    message: str
+
+
+class BulkAssignResponse(BaseSchema):
+    assigned: int

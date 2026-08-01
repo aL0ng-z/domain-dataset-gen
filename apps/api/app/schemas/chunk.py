@@ -13,7 +13,7 @@ class ChunkResponse(BaseSchema):
     ordinal: int
     heading_path: str
     content: str
-    source_pages: list | None
+    source_pages: dict | None
     token_count: int
     status: str
     created_at: datetime

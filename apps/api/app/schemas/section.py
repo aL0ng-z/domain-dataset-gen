@@ -12,7 +12,7 @@ class SectionResponse(BaseSchema):
     document_id: uuid.UUID
     ordinal: int
     heading_path: str
-    source_pages: list | None
+    source_pages: dict | None
     raw_markdown: str
     cleaned_markdown: str | None
     status: str

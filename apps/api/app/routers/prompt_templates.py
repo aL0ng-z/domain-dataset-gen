@@ -22,7 +22,7 @@ from domain.schemas import PaginatedResponse
 router = APIRouter(prefix="/api/projects/{pid}/prompt-templates", tags=["prompt-templates"])
 
 
-@router.post("/", response_model=PromptTemplateResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=PromptTemplateResponse, status_code=status.HTTP_201_CREATED, operation_id="prompt_template_create")
 async def create_prompt_template(
     pid: uuid.UUID,
     body: PromptTemplateCreate,
@@ -33,7 +33,7 @@ async def create_prompt_template(
     return await service.create(project_id=pid, **body.model_dump())
 
 
-@router.get("/", response_model=PaginatedResponse[PromptTemplateResponse])
+@router.get("/", response_model=PaginatedResponse[PromptTemplateResponse], operation_id="prompt_template_list")
 async def list_prompt_templates(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -47,7 +47,7 @@ async def list_prompt_templates(
     return PaginatedResponse(items=templates, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{tid}", response_model=PromptTemplateResponse)
+@router.get("/{tid}", response_model=PromptTemplateResponse, operation_id="prompt_template_get")
 async def get_prompt_template(
     pid: uuid.UUID,
     tid: uuid.UUID,
@@ -61,7 +61,7 @@ async def get_prompt_template(
     return template
 
 
-@router.patch("/{tid}", response_model=PromptTemplateResponse)
+@router.patch("/{tid}", response_model=PromptTemplateResponse, operation_id="prompt_template_update")
 async def update_prompt_template(
     pid: uuid.UUID,
     tid: uuid.UUID,
@@ -77,7 +77,7 @@ async def update_prompt_template(
     return updated
 
 
-@router.post("/{tid}/duplicate", response_model=PromptTemplateResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{tid}/duplicate", response_model=PromptTemplateResponse, status_code=status.HTTP_201_CREATED, operation_id="prompt_template_duplicate")
 async def duplicate_prompt_template(
     pid: uuid.UUID,
     tid: uuid.UUID,
@@ -92,7 +92,7 @@ async def duplicate_prompt_template(
     return new_template
 
 
-@router.post("/{tid}/test-run", response_model=TestRunResponse)
+@router.post("/{tid}/test-run", response_model=TestRunResponse, operation_id="prompt_template_test_run")
 async def test_run_prompt_template(
     pid: uuid.UUID,
     tid: uuid.UUID,
@@ -111,7 +111,7 @@ async def test_run_prompt_template(
     return TestRunResponse(**result)
 
 
-@router.get("/{tid}/versions", response_model=list[PromptTemplateVersionResponse])
+@router.get("/{tid}/versions", response_model=list[PromptTemplateVersionResponse], operation_id="prompt_template_list_versions")
 async def list_prompt_template_versions(
     pid: uuid.UUID,
     tid: uuid.UUID,

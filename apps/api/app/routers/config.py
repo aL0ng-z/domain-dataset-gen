@@ -2,6 +2,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -42,8 +43,9 @@ def _make_config_router(
 ):
     """Factory to create CRUD router for a config profile type."""
     sub_router = APIRouter(prefix=prefix, tags=[tag])
+    resource = tag  # e.g. "model-configs" -> operation_id prefix
 
-    @sub_router.post("/", response_model=response_schema, status_code=status.HTTP_201_CREATED)
+    @sub_router.post("/", response_model=response_schema, status_code=status.HTTP_201_CREATED, operation_id=f"{resource}_create")
     async def create(
         pid: uuid.UUID,
         body: create_schema,
@@ -53,7 +55,7 @@ def _make_config_router(
         service = ConfigService(db, model_class)
         return await service.create(pid, **body.model_dump())
 
-    @sub_router.get("/", response_model=PaginatedResponse[response_schema])
+    @sub_router.get("/", response_model=PaginatedResponse[response_schema], operation_id=f"{resource}_list")
     async def list_all(
         pid: uuid.UUID,
         db: Annotated[AsyncSession, Depends(get_db)],
@@ -65,7 +67,7 @@ def _make_config_router(
         items, total = await service.list(pid, page, page_size)
         return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
-    @sub_router.get("/{config_id}", response_model=response_schema)
+    @sub_router.get("/{config_id}", response_model=response_schema, operation_id=f"{resource}_get")
     async def get(
         pid: uuid.UUID,
         config_id: uuid.UUID,
@@ -78,7 +80,7 @@ def _make_config_router(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置不存在")
         return obj
 
-    @sub_router.patch("/{config_id}", response_model=response_schema)
+    @sub_router.patch("/{config_id}", response_model=response_schema, operation_id=f"{resource}_update")
     async def update(
         pid: uuid.UUID,
         config_id: uuid.UUID,
@@ -92,7 +94,7 @@ def _make_config_router(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置不存在")
         return obj
 
-    @sub_router.delete("/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
+    @sub_router.delete("/{config_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id=f"{resource}_delete")
     async def delete(
         pid: uuid.UUID,
         config_id: uuid.UUID,
@@ -103,7 +105,7 @@ def _make_config_router(
         if not await service.delete(config_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置不存在")
 
-    @sub_router.post("/{config_id}/set-default", response_model=response_schema)
+    @sub_router.post("/{config_id}/set-default", response_model=response_schema, operation_id=f"{resource}_set_default")
     async def set_default(
         pid: uuid.UUID,
         config_id: uuid.UUID,
@@ -147,7 +149,14 @@ task_policy_router = _make_config_router(
 
 
 # ModelConfig has an extra test endpoint
-@model_config_router.post("/{config_id}/test")
+class ModelConfigTestResponse(BaseModel):
+    status: str
+    response: str | None = None
+    latency_ms: int | None = None
+    error: str | None = None
+
+
+@model_config_router.post("/{config_id}/test", response_model=ModelConfigTestResponse, operation_id="model_config_test")
 async def test_model_config(
     pid: uuid.UUID,
     config_id: uuid.UUID,
@@ -173,6 +182,6 @@ async def test_model_config(
             [{"role": "user", "content": "Reply with exactly: 连接成功"}],
             max_retries=1,
         )
-        return {"status": "success", "response": response.content.strip(), "latency_ms": response.latency_ms}
+        return ModelConfigTestResponse(status="success", response=response.content.strip(), latency_ms=response.latency_ms)
     except Exception as e:
-        return {"status": "error", "error": str(e)}
+        return ModelConfigTestResponse(status="error", error=str(e))

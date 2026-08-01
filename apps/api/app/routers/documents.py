@@ -22,6 +22,8 @@ from app.schemas.cleaned_version import (
     CleanedFinalReviewRequest,
 )
 from app.schemas.document import (
+    AsyncTaskAcceptedResponse,
+    BulkAssignResponse,
     ChunkRequest,
     CleaningJobResponse,
     CleaningStartRequest,
@@ -64,7 +66,7 @@ async def _get_cleaning_job(db: AsyncSession, document_id: uuid.UUID, cleaning_j
     return cleaning_job
 
 
-@router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED, operation_id="document_upload")
 async def upload_document(
     pid: uuid.UUID,
     file: UploadFile,
@@ -82,7 +84,7 @@ async def upload_document(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
 
-@router.get("/", response_model=PaginatedResponse[DocumentResponse])
+@router.get("/", response_model=PaginatedResponse[DocumentResponse], operation_id="document_list")
 async def list_documents(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -96,7 +98,7 @@ async def list_documents(
     return PaginatedResponse(items=docs, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{did}", response_model=DocumentResponse)
+@router.get("/{did}", response_model=DocumentResponse, operation_id="document_get")
 async def get_document(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -110,7 +112,7 @@ async def get_document(
     return doc
 
 
-@router.get("/{did}/file")
+@router.get("/{did}/file", operation_id="document_get_file")
 async def get_document_file(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -173,7 +175,7 @@ async def get_document_file(
     )
 
 
-@router.delete("/{did}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{did}", status_code=status.HTTP_204_NO_CONTENT, operation_id="document_delete")
 async def delete_document(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -185,7 +187,7 @@ async def delete_document(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
 
 
-@router.post("/{did}/parse", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{did}/parse", response_model=AsyncTaskAcceptedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="document_trigger_parse")
 async def trigger_parse(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -231,10 +233,10 @@ async def trigger_parse(
                 await bg_redis.close()
 
     background_tasks.add_task(_run)
-    return {"task_id": str(task.id), "message": "解析任务已创建"}
+    return AsyncTaskAcceptedResponse(task_id=task.id, message="解析任务已创建")
 
 
-@router.get("/{did}/parse-jobs", response_model=list[ParseJobResponse])
+@router.get("/{did}/parse-jobs", response_model=list[ParseJobResponse], operation_id="document_list_parse_jobs")
 async def list_parse_jobs(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -245,7 +247,7 @@ async def list_parse_jobs(
     return await service.list_parse_jobs(did)
 
 
-@router.get("/parse-jobs/{jid}", response_model=ParseJobResponse)
+@router.get("/parse-jobs/{jid}", response_model=ParseJobResponse, operation_id="document_get_parse_job")
 async def get_parse_job(
     pid: uuid.UUID,
     jid: uuid.UUID,
@@ -259,7 +261,7 @@ async def get_parse_job(
     return job
 
 
-@router.delete("/{did}/parse-jobs/{jid}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{did}/parse-jobs/{jid}", status_code=status.HTTP_204_NO_CONTENT, operation_id="document_delete_parse_job")
 async def delete_parse_job(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -272,7 +274,7 @@ async def delete_parse_job(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="解析任务不存在")
 
 
-@router.get("/{did}/cleaning-jobs", response_model=list[CleaningJobResponse])
+@router.get("/{did}/cleaning-jobs", response_model=list[CleaningJobResponse], operation_id="document_list_cleaning_jobs")
 async def list_cleaning_jobs(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -303,7 +305,7 @@ async def list_cleaning_jobs(
     ]
 
 
-@router.post("/{did}/cleaning/start", response_model=CleaningStartResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{did}/cleaning/start", response_model=CleaningStartResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="document_start_cleaning")
 async def start_cleaning(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -400,7 +402,7 @@ async def start_cleaning(
     }
 
 
-@router.get("/{did}/sections", response_model=PaginatedResponse[SectionResponse])
+@router.get("/{did}/sections", response_model=PaginatedResponse[SectionResponse], operation_id="document_list_sections")
 async def list_sections(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -427,7 +429,7 @@ async def list_sections(
     return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
 
-@router.post("/{did}/chunk", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{did}/chunk", response_model=AsyncTaskAcceptedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="document_trigger_chunk")
 async def trigger_chunk(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -461,10 +463,10 @@ async def trigger_chunk(
                 await redis_client.close()
 
     background_tasks.add_task(_run)
-    return {"task_id": str(task.id), "message": "切分任务已创建"}
+    return AsyncTaskAcceptedResponse(task_id=task.id, message="切分任务已创建")
 
 
-@router.get("/{did}/chunks", response_model=PaginatedResponse[ChunkResponse])
+@router.get("/{did}/chunks", response_model=PaginatedResponse[ChunkResponse], operation_id="document_list_chunks")
 async def list_chunks(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -487,7 +489,7 @@ async def list_chunks(
     return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
 
-@router.post("/{did}/generate-batch", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/{did}/generate-batch", response_model=AsyncTaskAcceptedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="document_trigger_generate_batch")
 async def trigger_generate_batch(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -530,10 +532,10 @@ async def trigger_generate_batch(
                 await redis_client.close()
 
     background_tasks.add_task(_run)
-    return {"task_id": str(task.id), "message": "批量生成任务已创建"}
+    return AsyncTaskAcceptedResponse(task_id=task.id, message="批量生成任务已创建")
 
 
-@router.post("/{did}/cleaning/assign", status_code=status.HTTP_200_OK)
+@router.post("/{did}/cleaning/assign", response_model=BulkAssignResponse, status_code=status.HTTP_200_OK, operation_id="document_bulk_assign_sections")
 async def bulk_assign_sections(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -565,11 +567,11 @@ async def bulk_assign_sections(
         doc.clean_status = "section_planned"
 
     await db.commit()
-    return {"assigned": total_assigned}
+    return BulkAssignResponse(assigned=total_assigned)
 
 
 @router.post(
-    "/{did}/cleaning/merge", response_model=CleanedDocumentVersionResponse, status_code=status.HTTP_201_CREATED
+    "/{did}/cleaning/merge", response_model=CleanedDocumentVersionResponse, status_code=status.HTTP_201_CREATED, operation_id="document_merge_clean_version"
 )
 async def merge_clean_version(
     pid: uuid.UUID,
@@ -587,7 +589,7 @@ async def merge_clean_version(
     return version
 
 
-@router.post("/{did}/cleaning/final-review", response_model=CleanedDocumentVersionResponse)
+@router.post("/{did}/cleaning/final-review", response_model=CleanedDocumentVersionResponse, operation_id="document_final_review_clean_version")
 async def final_review_clean_version(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -613,7 +615,7 @@ async def final_review_clean_version(
     return version
 
 
-@router.get("/{did}/cleaning/versions", response_model=list[CleanedDocumentVersionResponse])
+@router.get("/{did}/cleaning/versions", response_model=list[CleanedDocumentVersionResponse], operation_id="document_list_clean_versions")
 async def list_clean_versions(
     pid: uuid.UUID,
     did: uuid.UUID,

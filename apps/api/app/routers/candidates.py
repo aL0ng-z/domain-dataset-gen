@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -22,21 +22,25 @@ from domain.schemas import PaginatedResponse
 router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 
 
-@router.get("", response_model=PaginatedResponse)
+@router.get(
+    "",
+    response_model=PaginatedResponse[CandidateResponse],
+    operation_id="candidate_list",
+)
 async def list_candidates(
     project_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(get_current_user)],
     status: str | None = None,
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
 ):
     service = CandidateService(db)
     items, total = await service.list_by_project(project_id, status=status, page=page, page_size=page_size)
     return PaginatedResponse(items=[CandidateResponse.model_validate(i) for i in items], total=total, page=page, page_size=page_size)
 
 
-@router.get("/{cid}", response_model=CandidateResponse)
+@router.get("/{cid}", response_model=CandidateResponse, operation_id="candidate_get")
 async def get_candidate(
     cid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -49,7 +53,7 @@ async def get_candidate(
     return candidate
 
 
-@router.patch("/{cid}", response_model=CandidateResponse)
+@router.patch("/{cid}", response_model=CandidateResponse, operation_id="candidate_update")
 async def update_candidate(
     cid: uuid.UUID,
     body: CandidateUpdate,
@@ -65,7 +69,7 @@ async def update_candidate(
     return candidate
 
 
-@router.post("/{cid}/review", response_model=CandidateResponse)
+@router.post("/{cid}/review", response_model=CandidateResponse, operation_id="candidate_review")
 async def review_candidate(
     cid: uuid.UUID,
     body: CandidateReview,
@@ -85,7 +89,7 @@ async def review_candidate(
     return candidate
 
 
-@router.post("/{cid}/comments", response_model=CandidateCommentResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{cid}/comments", response_model=CandidateCommentResponse, status_code=status.HTTP_201_CREATED, operation_id="candidate_add_comment")
 async def add_comment(
     cid: uuid.UUID,
     body: CandidateCommentCreate,
@@ -100,7 +104,7 @@ async def add_comment(
     return await service.add_comment(cid, current_user.id, body.content)
 
 
-@router.get("/{cid}/comments", response_model=list[CandidateCommentResponse])
+@router.get("/{cid}/comments", response_model=list[CandidateCommentResponse], operation_id="candidate_list_comments")
 async def list_comments(
     cid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -114,7 +118,7 @@ async def list_comments(
     return await service.list_comments(cid)
 
 
-@router.post("/{cid}/promote-to-curated", response_model=CuratedItemResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{cid}/promote-to-curated", response_model=CuratedItemResponse, status_code=status.HTTP_201_CREATED, operation_id="candidate_promote_to_curated")
 async def promote_to_curated(
     cid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
