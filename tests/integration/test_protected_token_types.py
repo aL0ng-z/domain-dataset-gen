@@ -156,6 +156,7 @@ async def test_ws_matrix(app, make_user, make_project, db_session):
 
         # 非项目成员 access token -> 4403
         outsider = await make_user.create("ws_outsider", "viewer")
+        await db_session.commit()  # WS 授权用独立会话，必须先提交用户
         outsider_access = create_access_token(outsider.id)
         with pytest.raises(WebSocketDisconnect) as exc3, tc.websocket_connect(
             f"/ws/projects/{pid}/tasks?token={outsider_access}"

@@ -146,10 +146,11 @@ async def test_access_token_ws_connects(app, make_user, make_project, db_session
 
 
 @pytest.mark.integration
-async def test_access_token_ws_rejected_when_not_member(app, make_user, make_project):
+async def test_access_token_ws_rejected_when_not_member(app, make_user, make_project, db_session):
     """合法 access token 但非项目成员 -> 4403，且不创建 Redis 订阅。"""
     user = await make_user.create("ws_nonmember", "viewer")
     project = await make_project.create("WS 非成员", user.id)
+    await db_session.commit()  # WS 授权用独立会话，必须先提交用户/项目
     access = create_access_token(user.id)
     pid = str(project.id)
 
