@@ -109,24 +109,24 @@ def canonicalize_hostname(host: str) -> str:
 def normalize_url(
     url: str,
     *,
-    scheme: str = "https",
+    scheme: str | tuple[str, ...] = "https",
     allowed_port: int | None = None,
     allow_private_host: bool = False,
 ) -> tuple[str, Origin]:
     """规范化并校验 URL；返回 (规范化 URL, Origin)。任何非法项都抛 UrlSafetyError。
 
     - public-remote（默认）：仅 https；禁止 userinfo/fragment；端口必须匹配 registry。
-    - allow_private_host=True（仅 managed-local）：允许 http/https 与注册的精确端口，
-      host 必须来自 registry 的精确主机（此处不直接判定私网，交给 managed-local 精确匹配）。
+    - managed-local：允许 http/https（scheme 传入元组），host 必须来自 registry 的精确主机。
     """
     from urllib.parse import urlsplit, urlunsplit
 
+    allowed_schemes = (scheme,) if isinstance(scheme, str) else tuple(scheme)
     try:
         parts = urlsplit(url)
     except ValueError as exc:
         raise UrlSafetyError("unsafe_parser_url", "URL 无法解析") from exc
 
-    if parts.scheme.lower() != scheme:
+    if parts.scheme.lower() not in allowed_schemes:
         raise UrlSafetyError("unsafe_parser_url", "不允许的 URL scheme")
     if parts.username is not None or parts.password is not None:
         raise UrlSafetyError("unsafe_parser_url", "URL 禁止包含 userinfo")
@@ -143,11 +143,12 @@ def normalize_url(
     if port is not None and not (1 <= port <= 65535):
         raise UrlSafetyError("unsafe_parser_url", "URL 端口超出范围")
 
-    origin = Origin(scheme=scheme, host=host, port=port)
+    scheme_used = parts.scheme.lower()
+    origin = Origin(scheme=scheme_used, host=host, port=port)
     normalized_host = host + (f":{port}" if port not in (None, origin.default_port) else "")
     path = parts.path or "/"
     query = parts.query
-    normalized = urlunsplit((scheme, normalized_host, path, query, ""))
+    normalized = urlunsplit((scheme_used, normalized_host, path, query, ""))
     return normalized, origin
 
 
@@ -268,6 +269,11 @@ class SafeRequest:
     carries_credentials: bool = False
     #: 固定的已验证解析结果（DNS rebinding 防护）。
     pinned_ips: tuple[str, ...] = ()
+    #: 每请求覆盖的传输超时（None 用 transport 默认值）。
+    connect_timeout: float | None = None
+    read_timeout: float | None = None
+    #: 允许携带敏感头转发的精确 origin 集合（重定向每跳重验用）。
+    credential_origins: tuple[Origin, ...] = ()
 
 
 @dataclass

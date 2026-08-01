@@ -2,18 +2,20 @@ from __future__ import annotations
 
 import base64
 import json
-import urllib.error
-import urllib.parse
-import urllib.request
 from typing import Any
 
 from parsing.base import BaseParser, ParseResult
+from parsing.transport import InvalidJson, get_transport
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:9020/layout-parsing"
 
 
 class PaddleOCRLocalServiceParser(BaseParser):
-    """PaddleOCR-VL parser backed by a privately deployed PaddleX service."""
+    """PaddleOCR-VL parser backed by a privately deployed PaddleX service.
+
+    使用服务端 registry 派生的精确服务地址（managed-local）；不携带远程 provider Token。
+    所有出站调用经统一安全 transport。
+    """
 
     def parse(self, pdf_data: bytes) -> ParseResult:
         endpoint = self._resolve_endpoint()
@@ -29,21 +31,21 @@ class PaddleOCRLocalServiceParser(BaseParser):
         if "max_new_tokens" in self.options:
             payload["maxNewTokens"] = self._positive_int("max_new_tokens")
 
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
+        transport = get_transport()
+        ml = self._managed_local()
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout()) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")[:1000]
-            raise ValueError(f"PaddleOCR 本地服务 HTTP 错误 ({exc.code}): {body}") from exc
-        except urllib.error.URLError as exc:
-            raise ValueError(f"无法连接 PaddleOCR 本地服务: {exc.reason}") from exc
-        except json.JSONDecodeError as exc:
+            result, _ = transport.request_json(
+                endpoint,
+                method="POST",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                scheme=("https", "http"),
+                allowed_port=ml.get("port"),
+                allow_private_host=True,
+                pinned_ips=tuple(ml.get("pinned_ips") or ()),
+                read_timeout=self._timeout(),
+            )
+        except InvalidJson as exc:
             raise ValueError("PaddleOCR 本地服务返回了无法解析的 JSON") from exc
 
         pages = self._result_pages(result)
@@ -83,19 +85,27 @@ class PaddleOCRLocalServiceParser(BaseParser):
             page_mapping=page_mapping,
         )
 
+    def _security_context(self) -> dict[str, Any]:
+        return self.options.get("_security") or {}
+
+    def _managed_local(self) -> dict[str, Any]:
+        return self._security_context().get("managed_local") or {}
+
     def _resolve_endpoint(self) -> str:
-        base_url = str(self.options.get("base_url", DEFAULT_ENDPOINT)).strip().rstrip("/")
+        """endpoint 由服务端 registry 派生（managed-local 精确地址）。"""
+        security = self._security_context()
+        base_url = str(security.get("base_url", DEFAULT_ENDPOINT)).strip().rstrip("/")
         if not base_url:
-            raise ValueError("PaddleOCR 本地服务解析器需要配置服务地址 (base_url)")
-        parsed = urllib.parse.urlparse(base_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("PaddleOCR 本地服务解析器需要配置服务端服务地址 (base_url)")
+        if not base_url.startswith(("http://", "https://")):
             raise ValueError("PaddleOCR 本地服务地址必须以 http:// 或 https:// 开头")
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(base_url)
         path = parsed.path.rstrip("/")
-        if path in {"", "/"}:
-            return urllib.parse.urlunparse(parsed._replace(path="/layout-parsing", params="", query="", fragment=""))
-        if path != "/layout-parsing":
-            raise ValueError("PaddleOCR 本地服务地址必须是服务根地址或以 /layout-parsing 结尾的端点")
-        return urllib.parse.urlunparse(parsed._replace(params="", query="", fragment=""))
+        if path in {"", "/layout-parsing"}:
+            return f"{parsed.scheme}://{parsed.netloc}/layout-parsing"
+        raise ValueError("PaddleOCR 本地服务地址必须是服务根地址或以 /layout-parsing 结尾的端点")
 
     def _timeout(self) -> float:
         raw = self.options.get("parse_timeout_seconds", self.options.get("timeout_seconds", 1800))

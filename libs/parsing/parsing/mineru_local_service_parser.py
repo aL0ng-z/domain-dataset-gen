@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import json
 import time
-import urllib.error
-import urllib.request
 import uuid
 from typing import Any
 
 from parsing.base import BaseParser, ParseResult
+from parsing.transport import InvalidJson, get_transport
 
 DEFAULT_BASE_URL = "http://127.0.0.1:9010"
 
 
 class MineruLocalServiceParser(BaseParser):
-    """MinerU parser backed by a privately deployed official mineru-api service."""
+    """MinerU parser backed by a privately deployed official mineru-api service.
+
+    使用服务端 registry 派生的精确服务地址（managed-local）；不携带远程 provider Token。
+    所有出站调用经统一安全 transport。
+    """
 
     def parse(self, pdf_data: bytes) -> ParseResult:
         base_url = self._base_url()
@@ -43,12 +46,21 @@ class MineruLocalServiceParser(BaseParser):
         return self._parse_result(result, status_result, task_id, backend)
 
     def _base_url(self) -> str:
-        base_url = str(self.options.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/")
+        """base_url 由服务端 registry 派生（managed-local 精确地址）。"""
+        security = self._security_context()
+        base_url = str(security.get("base_url", DEFAULT_BASE_URL)).strip().rstrip("/")
         if not base_url:
-            raise ValueError("MinerU 本地服务解析器需要配置服务地址 (base_url)")
+            raise ValueError("MinerU 本地服务解析器需要配置服务端服务地址 (base_url)")
         if not base_url.startswith(("http://", "https://")):
             raise ValueError("MinerU 本地服务地址必须以 http:// 或 https:// 开头")
         return base_url
+
+    def _security_context(self) -> dict[str, Any]:
+        return self.options.get("_security") or {}
+
+    def _managed_local(self) -> dict[str, Any]:
+        """managed-local 安全参数：精确 scheme/host/port + 允许的路径。"""
+        return self._security_context().get("managed_local") or {}
 
     def _multipart_request(self, pdf_data: bytes, backend: str) -> tuple[bytes, str]:
         boundary = f"----mineru-local-service-{uuid.uuid4().hex}"
@@ -66,7 +78,9 @@ class MineruLocalServiceParser(BaseParser):
             "return_images": "false",
             "response_format_zip": "false",
         }
-        server_url = str(self.options.get("server_url", "")).strip()
+        # server_url 不再由项目用户提供：managed-local 内部 VLM 地址由 registry 派生。
+        ml = self._managed_local()
+        server_url = ml.get("vlm_http_url") or ""
         if server_url:
             fields["server_url"] = server_url
 
@@ -217,16 +231,21 @@ class MineruLocalServiceParser(BaseParser):
         return ""
 
     def _request_json(self, url: str, data: bytes | None, headers: dict[str, str], timeout: float) -> dict[str, Any]:
-        request = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
+        transport = get_transport()
+        ml = self._managed_local()
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")[:1000]
-            raise ValueError(f"MinerU 本地服务 HTTP 错误 ({exc.code}): {body}") from exc
-        except urllib.error.URLError as exc:
-            raise ValueError(f"无法连接 MinerU 本地服务: {exc.reason}") from exc
-        except json.JSONDecodeError as exc:
+            payload, _ = transport.request_json(
+                url,
+                method="POST" if data is not None else "GET",
+                data=data,
+                headers=headers,
+                scheme=("https", "http"),
+                allowed_port=ml.get("port"),
+                allow_private_host=True,
+                pinned_ips=tuple(ml.get("pinned_ips") or ()),
+                read_timeout=timeout,
+            )
+        except InvalidJson as exc:
             raise ValueError("MinerU 本地服务返回了无法解析的 JSON") from exc
         if not isinstance(payload, dict):
             raise ValueError("MinerU 本地服务返回格式错误")

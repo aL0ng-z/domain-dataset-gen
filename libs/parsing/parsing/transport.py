@@ -26,8 +26,10 @@ from urllib import parse as urllib_parse
 
 from parsing.egress import (
     Origin,
+    RedirectSafetyError,
     SafeRequest,
     SafeTransportConfig,
+    UrlSafetyError,
     normalize_url,
     split_headers,
     validate_all_ips,
@@ -70,13 +72,24 @@ class SecureTransport:
         self,
         url: str,
         *,
-        scheme: str = "https",
+        scheme: str | tuple[str, ...] = "https",
         allowed_port: int | None = None,
         allow_private_host: bool = False,
+        read_timeout: float | None = None,
+        connect_timeout: float | None = None,
+        pinned_ips: tuple[str, ...] = (),
     ) -> SafeRequest:
         normalized, origin = normalize_url(url, scheme=scheme, allowed_port=allowed_port, allow_private_host=allow_private_host)
-        pinned = self._resolve_and_pin(origin)
-        return SafeRequest(url=normalized, origin=origin, headers={}, method="GET", pinned_ips=pinned)
+        pinned = pinned_ips or self._resolve_and_pin(origin)
+        return SafeRequest(
+            url=normalized,
+            origin=origin,
+            headers={},
+            method="GET",
+            pinned_ips=pinned,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+        )
 
     def check_request(
         self,
@@ -85,13 +98,16 @@ class SecureTransport:
         method: str,
         data: bytes | None,
         headers: dict[str, str],
-        scheme: str = "https",
+        scheme: str | tuple[str, ...] = "https",
         allowed_port: int | None = None,
         allow_private_host: bool = False,
         credential_origins: tuple[Origin, ...] = (),
+        read_timeout: float | None = None,
+        connect_timeout: float | None = None,
+        pinned_ips: tuple[str, ...] = (),
     ) -> SafeRequest:
         normalized, origin = normalize_url(url, scheme=scheme, allowed_port=allowed_port, allow_private_host=allow_private_host)
-        pinned = self._resolve_and_pin(origin)
+        pinned = pinned_ips or self._resolve_and_pin(origin)
         non_sensitive, sensitive = split_headers(headers)
         carries = bool(sensitive) and any(
             origin.matches_host(c.host) and origin.port in (None, c.port, c.default_port) for c in credential_origins
@@ -105,10 +121,67 @@ class SecureTransport:
             data=data,
             carries_credentials=carries,
             pinned_ips=pinned,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+            credential_origins=credential_origins,
         )
 
     def request(self, safe: SafeRequest) -> bytes:
-        return self._open(safe.url, safe.method, safe.data, safe.headers, safe.carries_credentials, safe.pinned_ips)
+        """发送请求并手动跟随有界重定向（每跳重新应用 scheme/origin/IP/凭证策略）。
+
+        - 默认 max_redirects=0：凭证请求默认禁止自动重定向；
+        - safe.read_timeout 与 connect_timeout 在整个链中生效。
+        """
+        current = safe
+        for _hop in range((self.config.max_redirects or 0) + 1):
+            try:
+                return self._open(current)
+            except RedirectDetected as redirect:
+                if (self.config.max_redirects or 0) <= 0:
+                    raise RedirectSafetyError(
+                        "redirect_denied", "目标服务尝试重定向但策略禁止自动跟随"
+                    ) from redirect
+                if _hop >= self.config.max_redirects:
+                    raise RedirectSafetyError(
+                        "redirect_limit", "重定向跳数超过策略上限"
+                    ) from redirect
+                # 手动重定向：重新规范化、重新校验、跨 origin 不转发敏感头。
+                next_safe = self._build_redirect_safe(current, redirect.location)
+                if next_safe is None:
+                    raise RedirectSafetyError(
+                        "redirect_denied", "重定向目标不在允许集合内"
+                    ) from redirect
+                current = next_safe
+        raise RedirectSafetyError("redirect_limit", "重定向跳数超过策略上限")
+
+    def _build_redirect_safe(self, current: SafeRequest, location: str) -> SafeRequest | None:
+        """按当前请求的安全上下文重新构建重定向请求；不匹配返回 None。"""
+        try:
+            normalized, origin = normalize_url(location, scheme="https")
+        except UrlSafetyError:
+            return None
+        # 跨 origin 不转发敏感头：仅当新 origin 仍是 credential origin 才保留。
+        non_sensitive, sensitive = split_headers(current.headers)
+        if sensitive:
+            carries = any(origin.matches_host(c.host) and origin.port in (None, c.port, c.default_port) for c in current.credential_origins)
+        else:
+            carries = False
+        try:
+            pinned = self._resolve_and_pin(origin)
+        except Exception:
+            return None
+        merged = {**non_sensitive, **sensitive} if carries else non_sensitive
+        return SafeRequest(
+            url=normalized,
+            origin=origin,
+            headers=merged,
+            method=current.method,
+            data=current.data,
+            carries_credentials=carries,
+            pinned_ips=pinned,
+            connect_timeout=current.connect_timeout,
+            read_timeout=current.read_timeout,
+        )
 
     def request_json(
         self,
@@ -120,6 +193,9 @@ class SecureTransport:
         allowed_port: int | None = None,
         allow_private_host: bool = False,
         credential_origins: tuple[Origin, ...] = (),
+        read_timeout: float | None = None,
+        connect_timeout: float | None = None,
+        pinned_ips: tuple[str, ...] = (),
     ) -> tuple[dict, str]:
         safe = self.check_request(
             url,
@@ -129,6 +205,9 @@ class SecureTransport:
             allowed_port=allowed_port,
             allow_private_host=allow_private_host,
             credential_origins=credential_origins,
+            read_timeout=read_timeout,
+            connect_timeout=connect_timeout,
+            pinned_ips=pinned_ips,
         )
         body = self.request(safe)
         return self._parse_json(body), safe.url
@@ -140,6 +219,9 @@ class SecureTransport:
         headers: dict[str, str] | None = None,
         allowed_port: int | None = None,
         allow_private_host: bool = False,
+        read_timeout: float | None = None,
+        connect_timeout: float | None = None,
+        pinned_ips: tuple[str, ...] = (),
     ) -> tuple[bytes, str]:
         safe = self.check_request(
             url,
@@ -148,8 +230,41 @@ class SecureTransport:
             headers=headers or {},
             allowed_port=allowed_port,
             allow_private_host=allow_private_host,
+            read_timeout=read_timeout,
+            connect_timeout=connect_timeout,
+            pinned_ips=pinned_ips,
         )
         return self.request(safe), safe.url
+
+    def request_raw(
+        self,
+        url: str,
+        *,
+        method: str,
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        allowed_port: int | None = None,
+        allow_private_host: bool = False,
+        credential_origins: tuple[Origin, ...] = (),
+        read_timeout: float | None = None,
+        connect_timeout: float | None = None,
+        pinned_ips: tuple[str, ...] = (),
+    ) -> tuple[bytes, SafeRequest]:
+        """发送一个任意方法的原始请求（返回 (body, safe)；body 不做 JSON 解析）。"""
+        safe = self.check_request(
+            url,
+            method=method,
+            data=data,
+            headers=headers or {},
+            allowed_port=allowed_port,
+            allow_private_host=allow_private_host,
+            credential_origins=credential_origins,
+            read_timeout=read_timeout,
+            connect_timeout=connect_timeout,
+            pinned_ips=pinned_ips,
+        )
+        body = self.request(safe)
+        return body, safe
 
     def _resolve_and_pin(self, origin: Origin) -> tuple[str, ...]:
         addresses = self._resolver.resolve(origin.host)
@@ -164,15 +279,18 @@ class SecureTransport:
             raise IpSafetyError("unsafe_parser_ip", "解析结果不含允许地址")
         return pinned
 
-    def _open(self, url: str, method: str, data: bytes | None, headers: dict[str, str], carries_credentials: bool, pinned_ips: tuple[str, ...]) -> bytes:
-        if not pinned_ips:
-            _, origin = normalize_url(url, scheme="https")
-            pinned_ips = self._resolve_and_pin(origin)
+    def _open(self, safe: SafeRequest) -> bytes:
+        url, method, data, headers, carries = safe.url, safe.method, safe.data, safe.headers, safe.carries_credentials
+        pinned_ips = safe.pinned_ips or self._resolve_and_pin(safe.origin)
+        connect_timeout = safe.connect_timeout or self.config.connect_timeout
+        read_timeout = safe.read_timeout or self.config.read_timeout
         host, port = self._host_port(url)
         last_error: Exception | None = None
         for ip in pinned_ips:
             try:
-                return self._open_single(ip, port, host, url, method, data, headers, carries_credentials)
+                return self._open_single(
+                    ip, port, host, url, method, data, headers, carries, connect_timeout, read_timeout
+                )
             except (TimeoutError, OSError) as exc:
                 last_error = exc
                 continue
@@ -183,14 +301,28 @@ class SecureTransport:
         port = parts.port or (443 if parts.scheme == "https" else 80)
         return parts.hostname or "", port
 
-    def _open_single(self, ip: str, port: int, host: str, url: str, method: str, data: bytes | None, headers: dict[str, str], carries_credentials: bool) -> bytes:
+    def _open_single(
+        self,
+        ip: str,
+        port: int,
+        host: str,
+        url: str,
+        method: str,
+        data: bytes | None,
+        headers: dict[str, str],
+        carries_credentials: bool,
+        connect_timeout: float,
+        read_timeout: float,
+    ) -> bytes:
         context = ssl.create_default_context()
-        raw_sock = socket.create_connection((ip, port), timeout=self.config.connect_timeout)
+        raw_sock = socket.create_connection((ip, port), timeout=connect_timeout)
         try:
             if url.lower().startswith("https:"):
                 with context.wrap_socket(raw_sock, server_hostname=host) as sock:
+                    sock.settimeout(read_timeout)
                     return self._http_exchange(sock, host, url, method, data, headers)
             with raw_sock:
+                raw_sock.settimeout(read_timeout)
                 return self._http_exchange(raw_sock, host, url, method, data, headers)
         finally:
             with suppress(OSError):
@@ -404,6 +536,10 @@ class FakeSecureTransport:
 
     def request(self, safe: SafeRequest) -> bytes:
         return self._dispatch(safe.method, safe.url, safe.headers, safe.data)
+
+    def request_raw(self, url: str, *, method: str, data: bytes | None = None, headers: dict[str, str] | None = None, **kwargs) -> tuple[bytes, SafeRequest]:
+        safe = self.check_request(url, method=method, data=data, headers=headers or {})
+        return self._dispatch(method, url, safe.headers, data), safe
 
     def request_json(self, url: str, *, method: str = "GET", data: bytes | None = None, headers: dict[str, str] | None = None, **kwargs) -> tuple[dict, str]:
         safe = self.check_request(url, method=method, data=data, headers=headers or {})
