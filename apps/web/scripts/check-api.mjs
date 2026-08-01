@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
 /**
  * 前端合同漂移门禁：api:check
  *
@@ -40,3 +39,13 @@ if (committed !== regenerated) {
   process.exit(1);
 }
 console.log("[api:check] generated.ts 与 openapi.json 一致。");
+
+// 静态检查：禁止旧合同模式（手写泛型覆盖、双重类型断言）。
+try {
+  execFileSync(process.execPath, [path.join(__dirname, "check-contract-patterns.mjs")], {
+    stdio: "inherit",
+  });
+} catch {
+  console.error("[api:check] 旧合同模式检查失败。");
+  process.exit(1);
+}
