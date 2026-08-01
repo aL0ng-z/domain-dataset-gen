@@ -92,7 +92,7 @@ class Origin:
 
 def canonicalize_hostname(host: str) -> str:
     """IDNA + 小写 + 去掉尾点；非法 hostname 抛 UrlSafetyError。"""
-    raw = host.strip().rstrip(".")
+    raw = host.strip().rstrip(".").lower()
     if not raw:
         raise UrlSafetyError("unsafe_parser_url", "URL 缺少主机名")
     if re.search(r"[\s/\\@:]", raw):
@@ -126,7 +126,8 @@ def normalize_url(
     except ValueError as exc:
         raise UrlSafetyError("unsafe_parser_url", "URL 无法解析") from exc
 
-    if parts.scheme.lower() not in allowed_schemes:
+    scheme_used = parts.scheme.lower()
+    if scheme_used not in allowed_schemes:
         raise UrlSafetyError("unsafe_parser_url", "不允许的 URL scheme")
     if parts.username is not None or parts.password is not None:
         raise UrlSafetyError("unsafe_parser_url", "URL 禁止包含 userinfo")
@@ -138,12 +139,15 @@ def normalize_url(
         port = parts.port
     except ValueError as exc:
         raise UrlSafetyError("unsafe_parser_url", "URL 端口格式非法") from exc
-    if allowed_port is not None and port not in (None, allowed_port):
+    if allowed_port is not None:
+        if port not in (None, allowed_port):
+            raise UrlSafetyError("unsafe_parser_url", "URL 端口不在允许集合内")
+    elif port is not None and port not in (443 if scheme_used == "https" else 80,):
+        # public-remote 默认只允许默认端口；managed-local 通过 allowed_port 显式放行。
         raise UrlSafetyError("unsafe_parser_url", "URL 端口不在允许集合内")
     if port is not None and not (1 <= port <= 65535):
         raise UrlSafetyError("unsafe_parser_url", "URL 端口超出范围")
 
-    scheme_used = parts.scheme.lower()
     origin = Origin(scheme=scheme_used, host=host, port=port)
     normalized_host = host + (f":{port}" if port not in (None, origin.default_port) else "")
     path = parts.path or "/"
