@@ -4,6 +4,55 @@
 
 ---
 
+## T03 解析器出站与凭证安全（2026-08-01）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `libs/parsing/parsing/egress.py` | URL 规范化、hostname IDNA/尾点规范化、IP 分类（含混淆 IPv4/云元数据/IPv6）、origin 与受控域后缀匹配 | 已完成 |
+| `libs/parsing/parsing/transport.py` | 统一安全 HTTP 传输层：DNS 固定防 rebinding、禁止自动重定向（有界逐跳重验）、敏感头跨 origin 不转发、响应体/解压大小限制、记录型 fake | 已完成 |
+| `libs/parsing/parsing/snapshot.py` | parser_options 字段白名单与禁止字段递归扫描、规范 JSON SHA-256、快照/URL/header 递归脱敏 | 已完成 |
+| `apps/api/app/security/registry.py` | 服务端 ParserEndpointRegistry：启动校验重复 ref/scheme/凭证绑定/网络区域，只读安全投影 | 已完成 |
+| `apps/api/app/models/parse.py` + Alembic | ParseJob 冻结快照字段、不可变触发器、CHECK 约束、legacy_unavailable 迁移回填 | 已完成 |
+| `apps/api/app/services/parse_freeze_service.py` | ParseJob 创建时原子冻结 profile/policy 快照与 SHA-256 | 已完成 |
+| `apps/api/app/workers/parse_worker.py` | 执行前复核快照/hash/秘密扫描，全局 Token 最晚注入，错误消息脱敏 | 已完成 |
+| `apps/api/app/schemas/config.py` + CRUD | ParserProfile 收紧为 endpoint_ref+白名单，递归拒绝网络/秘密字段，端点只读列表 | 已完成 |
+| `libs/parsing/parsing/*_parser.py` | MinerU/PaddleOCR/local parser 全部迁移到统一安全 transport | 已完成 |
+| `scripts/migrate_parser_profiles.py` | 存量 profile 受控迁移：dry-run/check/migrate，未知端点 fail closed | 已完成 |
+| `apps/web` | 设置页移除自由网络字段，改为服务端端点选择 + 前端安全测试 | 已完成 |
+| 文档 | `apps/api/.env.example` registry 配置、`docs/runbooks/parser-egress-security.md`、README 验收命令、本日志 | 已完成 |
+
+### 设计决策
+
+- **endpoint_ref 是不透明稳定 ID**：ParserProfile 只保存 endpoint_ref 与功能参数，
+  真实 URL/Token 由服务端 registry 派生；数据库不保存 registry 的 URL 或 Token。
+- **统一安全传输层位于 libs/parsing**：使所有解析器（remote / managed-local）共享同一
+  安全边界，apps/api 通过 `app.security` 复用同一实现，避免两层各实现一份。
+- **凭证只在请求局部最晚注入**：worker 从冻结快照读功能参数 + registry 安全上下文，
+  全局 Token 仅注入到绑定 credential origin 的请求，signed upload/archive 请求不带
+  Authorization。
+- **ParseJob 原子冻结**：同一事务写入 profile/policy 快照/hash/ref/version/frozen_at；
+  数据库触发器禁止 UPDATE 改写任一快照字段，状态更新不受影响。
+- **DNS rebinding 防护**：连接使用已验证并固定的解析结果（pinned_ips），全部 A/AAAA
+  必须为允许公网地址，任一危险整体拒绝。
+- **存量迁移 fail closed**：仅精确匹配 registry base_url 的旧 URL 映射为 endpoint_ref；
+  未知端点使迁移写入前整体失败，输出 profile ID 与 URL hash。
+
+### 验证状态
+
+- 后端：`python -m pytest -q` 全量通过；T03 专项测试
+  `tests/unit/security/test_parser_egress.py`、`tests/contract/test_parser_profiles.py`、
+  `tests/integration/test_parse_job_config_snapshot.py`、
+  `tests/integration/test_parse_job_snapshot_migration.py` 全部通过。
+- Ruff：`python -m ruff check apps/api libs tests` 通过。
+- 迁移：`migrate_parser_profiles.py` 实测 dry-run/check/migrate；check 返回 0。
+- 迁移 smoke：`run-migration-smoke` upgrade head → downgrade → upgrade head 通过。
+- 前端：`npm exec tsc -- --noEmit`、`npm run lint`、`npm test -- --run`（15 passed）、
+  `npm run build` 全部通过。
+
+---
+
 ## 项目总览
 
 | Release | 名称 | 状态 | 备注 |
