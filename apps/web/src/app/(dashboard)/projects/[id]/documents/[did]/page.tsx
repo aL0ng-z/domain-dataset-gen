@@ -37,7 +37,6 @@ type DocumentDetail = components["schemas"]["DocumentResponse"];
 type ParseJob = components["schemas"]["ParseJobResponse"];
 type ProfileOption = components["schemas"]["ParserProfileResponse"] | components["schemas"]["ChunkProfileResponse"];
 type CleaningJobContext = components["schemas"]["CleaningJobResponse"];
-type CleaningStartResult = components["schemas"]["CleaningStartResponse"];
 
 export default function DocumentDetailPage() {
   const params = useParams<{ id: string; did: string }>();

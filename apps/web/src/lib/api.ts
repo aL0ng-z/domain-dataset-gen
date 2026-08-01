@@ -205,8 +205,12 @@ type RelativePaths = {
 type MethodOf<Path extends keyof RelativePaths, M extends "get" | "post" | "put" | "patch" | "delete"> =
   NonNullable<RelativePaths[Path][M]>;
 
-type BodyParams<Op> = Op extends { requestBody?: { content: { "application/json": infer B } } }
-  ? B
+// 请求体推导。`Op extends unknown` 使条件类型在联合上分配（distributive），
+// 因此 endpoint 为联合时仍能推出每个分支的请求体。
+type BodyParams<Op> = Op extends unknown
+  ? Op extends { requestBody?: { content: { "application/json": infer B } } }
+    ? B
+    : never
   : never;
 
 // 响应类型推导：取所有 responses 的 application/json 内容，再排除错误 envelope。

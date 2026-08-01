@@ -24,17 +24,18 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { PlusIcon, PencilIcon, Loader2Icon, ZapIcon } from "lucide-react";
 
+type ModelConfig = components["schemas"]["ModelConfigResponse"];
+type ParserProfile = components["schemas"]["ParserProfileResponse"];
+type ChunkProfile = components["schemas"]["ChunkProfileResponse"];
+type ExportProfile = components["schemas"]["ExportProfileResponse"];
+type TaskPolicy = components["schemas"]["TaskPolicyResponse"];
+
 /* ========= Shared types ========= */
-interface ConfigItem {
-  id: string;
-  name: string;
-  [key: string]: unknown;
-}
 
 /* ========= ModelConfig tab ========= */
 
@@ -74,15 +75,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   other: "其他",
 };
 
-interface ModelConfig extends ConfigItem {
-  provider: string;
-  model_name: string;
-  base_url: string;
-  api_key_encrypted?: string;
-  max_tokens?: number;
-  temperature?: number;
-}
-
 function ModelConfigTab({ projectId }: { projectId: string }) {
   const [items, setItems] = useState<ModelConfig[]>([]);
   const [loading, setLoading] = useState(true);
@@ -103,9 +95,10 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
   const fetchItems = useCallback(() => {
     setLoading(true);
     api
-      .get<{ items: ModelConfig[] }>(
-        `/projects/${projectId}/model-configs?page=1&page_size=100`
-      )
+      .get("/projects/{pid}/model-configs/", {
+        params: { pid: projectId },
+        query: { page: 1, page_size: 100 },
+      })
       .then((data) => setItems(data.items))
       .catch(() => toast.error("加载模型配置失败"))
       .finally(() => setLoading(false));
@@ -177,32 +170,42 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
       return;
     }
     try {
-      const payload: Record<string, unknown> = {
-        name: form.name,
-        provider: form.provider,
-        model_name: form.model_name,
-        base_url: form.base_url,
-      };
-      if (form.api_key.trim()) {
-        payload.api_key = form.api_key;
-      }
-      if (form.max_tokens !== "" && form.max_tokens !== null) {
-        payload.max_tokens = Number(form.max_tokens);
-      }
-      if (form.temperature !== "" && form.temperature !== null) {
-        payload.temperature = Number(form.temperature);
-      }
       if (editItem) {
+        const payload: components["schemas"]["ModelConfigUpdate"] = {
+          name: form.name,
+          provider: form.provider,
+          model_name: form.model_name,
+          base_url: form.base_url,
+        };
+        if (form.api_key.trim()) {
+          payload.api_key = form.api_key;
+        }
+        if (form.max_tokens !== "" && form.max_tokens !== null) {
+          payload.max_tokens = Number(form.max_tokens);
+        }
+        if (form.temperature !== "" && form.temperature !== null) {
+          payload.temperature = Number(form.temperature);
+        }
         await api.patch(
-          `/projects/${projectId}/model-configs/${editItem.id}`,
-          payload
+          "/projects/{pid}/model-configs/{config_id}",
+          payload,
+          { params: { pid: projectId, config_id: editItem.id } },
         );
         toast.success("保存成功");
         setDialogOpen(false);
       } else {
-        const created = await api.post<ModelConfig>(
-          `/projects/${projectId}/model-configs/`,
-          payload
+        const created = await api.post(
+          "/projects/{pid}/model-configs/",
+          {
+            name: form.name,
+            provider: form.provider,
+            model_name: form.model_name,
+            base_url: form.base_url,
+            api_key: form.api_key,
+            max_tokens: form.max_tokens !== "" ? Number(form.max_tokens) : undefined,
+            temperature: form.temperature !== "" ? Number(form.temperature) : undefined,
+          },
+          { params: { pid: projectId } },
         );
         toast.success("创建成功，可点击「测试连接」验证");
         setEditItem(created); // Switch to edit mode so test button appears
@@ -220,9 +223,10 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
     }
     setTesting(true);
     try {
-      const res = await api.post<{ status: string; response?: string; error?: string }>(
-        `/projects/${projectId}/model-configs/${editItem.id}/test`,
-        {}
+      const res = await api.post(
+        "/projects/{pid}/model-configs/{config_id}/test",
+        undefined,
+        { params: { pid: projectId, config_id: editItem.id } },
       );
       if (res.status === "success") {
         toast.success(`连接成功: ${res.response}`);
@@ -440,13 +444,6 @@ const PARSER_PRESETS: Record<string, { label: string; needsApi: boolean; needsLo
   paddleocr_local_service: { label: "PaddleOCR-VL（本地部署服务 / MLX）", needsApi: true, needsLocalModel: false, defaultUrl: "http://127.0.0.1:9020/layout-parsing", defaultModelPath: "", defaultVlmUrl: "http://127.0.0.1:9021" },
 };
 
-interface ParserProfile extends ConfigItem {
-  parser_name: string;
-  parser_options: Record<string, string | number | boolean> | null;
-  is_default: boolean;
-  version: number;
-}
-
 function ParserProfileTab({ projectId }: { projectId: string }) {
   const [items, setItems] = useState<ParserProfile[]>([]);
   const [loading, setLoading] = useState(true);
@@ -468,9 +465,10 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
   const fetchItems = useCallback(() => {
     setLoading(true);
     api
-      .get<{ items: ParserProfile[] }>(
-        `/projects/${projectId}/parser-profiles?page=1&page_size=100`
-      )
+      .get("/projects/{pid}/parser-profiles/", {
+        params: { pid: projectId },
+        query: { page: 1, page_size: 100 },
+      })
       .then((data) => setItems(data.items))
       .catch(() => toast.error("加载解析器配置失败"))
       .finally(() => setLoading(false));
@@ -569,11 +567,15 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
 
     try {
       if (editItem) {
-        await api.patch(`/projects/${projectId}/parser-profiles/${editItem.id}`, payload);
+        await api.patch("/projects/{pid}/parser-profiles/{config_id}", payload, {
+          params: { pid: projectId, config_id: editItem.id },
+        });
         toast.success("保存成功");
         setDialogOpen(false);
       } else {
-        await api.post(`/projects/${projectId}/parser-profiles/`, payload);
+        await api.post("/projects/{pid}/parser-profiles/", payload, {
+          params: { pid: projectId },
+        });
         toast.success("创建成功");
         setDialogOpen(false);
       }
@@ -584,7 +586,9 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
   const handleDelete = async (item: ParserProfile) => {
     if (!confirm(`确定要删除解析器配置「${item.name}」吗？`)) return;
     try {
-      await api.delete(`/projects/${projectId}/parser-profiles/${item.id}`);
+      await api.delete("/projects/{pid}/parser-profiles/{config_id}", {
+        params: { pid: projectId, config_id: item.id },
+      });
       toast.success("已删除");
       fetchItems();
     } catch { toast.error("删除失败"); }
@@ -785,38 +789,64 @@ function ParserProfileTab({ projectId }: { projectId: string }) {
 }
 
 /* ========= Generic Config Tab ========= */
-interface GenericConfig extends ConfigItem {
-  description?: string;
-  config_json?: string;
+type ConfigRoutes = {
+  "/projects/{pid}/chunk-profiles/": {
+    item: ChunkProfile;
+    itemPath: "/projects/{pid}/chunk-profiles/{config_id}";
+    create: components["schemas"]["ChunkProfileCreate"];
+    update: components["schemas"]["ChunkProfileUpdate"];
+  };
+  "/projects/{pid}/export-profiles/": {
+    item: ExportProfile;
+    itemPath: "/projects/{pid}/export-profiles/{config_id}";
+    create: components["schemas"]["ExportProfileCreate"];
+    update: components["schemas"]["ExportProfileUpdate"];
+  };
+  "/projects/{pid}/task-policies/": {
+    item: TaskPolicy;
+    itemPath: "/projects/{pid}/task-policies/{config_id}";
+    create: components["schemas"]["TaskPolicyCreate"];
+    update: components["schemas"]["TaskPolicyUpdate"];
+  };
+};
+
+type ConfigEndpoint = keyof ConfigRoutes;
+
+interface GenericConfigDescriptor<Endpoint extends ConfigEndpoint> {
+  endpoint: Endpoint;
+  label: string;
+  extraFields: { key: string; label: string; type?: string }[];
+  /** 从表单构建 create/update payload。endpoint 为联合时返回联合类型以匹配推断。 */
+  buildPayload: (form: Record<string, string>) => ConfigRoutes[ConfigEndpoint]["create"];
 }
 
+// 注意：endpoint 使用 ConfigEndpoint 联合（而非泛型参数），使 api.patch/post
+// 能通过 keyof paths 解析出该端点对应的请求体类型。
 function GenericConfigTab({
   projectId,
-  endpoint,
-  label,
-  extraFields,
+  descriptor,
 }: {
   projectId: string;
-  endpoint: string;
-  label: string;
-  extraFields?: { key: string; label: string; type?: string }[];
+  descriptor: GenericConfigDescriptor<ConfigEndpoint>;
 }) {
-  const [items, setItems] = useState<GenericConfig[]>([]);
+  const endpoint = descriptor.endpoint as ConfigEndpoint;
+  const itemPath = (endpoint + "{config_id}") as ConfigRoutes[ConfigEndpoint]["itemPath"];
+  const { label, extraFields, buildPayload } = descriptor;
+  const [items, setItems] = useState<ConfigRoutes[ConfigEndpoint]["item"][]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [editItem, setEditItem] = useState<GenericConfig | null>(null);
+  const [editItem, setEditItem] = useState<ConfigRoutes[ConfigEndpoint]["item"] | null>(null);
   const [form, setForm] = useState<Record<string, string>>({
     name: "",
-    description: "",
-    config_json: "{}",
   });
 
   const fetchItems = useCallback(() => {
     setLoading(true);
     api
-      .get<{ items: GenericConfig[] }>(
-        `/projects/${projectId}/${endpoint}?page=1&page_size=100`
-      )
+      .get(endpoint, {
+        params: { pid: projectId },
+        query: { page: 1, page_size: 100 },
+      })
       .then((data) => setItems(data.items))
       .catch(() => toast.error(`加载${label}失败`))
       .finally(() => setLoading(false));
@@ -831,30 +861,20 @@ function GenericConfigTab({
 
   const openCreate = () => {
     setEditItem(null);
-    const defaults: Record<string, string> = {
-      name: "",
-      description: "",
-      config_json: "{}",
-    };
-    extraFields?.forEach((f) => {
+    const defaults: Record<string, string> = { name: "" };
+    extraFields.forEach((f) => {
       defaults[f.key] = "";
     });
     setForm(defaults);
     setDialogOpen(true);
   };
 
-  const openEdit = (item: GenericConfig) => {
+  const openEdit = (item: ConfigRoutes[ConfigEndpoint]["item"]) => {
     setEditItem(item);
-    const vals: Record<string, string> = {
-      name: item.name,
-      description: item.description || "",
-      config_json:
-        typeof item.config_json === "string"
-          ? item.config_json
-          : JSON.stringify(item.config_json || {}, null, 2),
-    };
-    extraFields?.forEach((f) => {
-      vals[f.key] = String((item as Record<string, unknown>)[f.key] || "");
+    const vals: Record<string, string> = { name: item.name };
+    extraFields.forEach((f) => {
+      const raw = (item as Record<string, unknown>)[f.key];
+      vals[f.key] = raw === undefined || raw === null ? "" : String(raw);
     });
     setForm(vals);
     setDialogOpen(true);
@@ -866,23 +886,13 @@ function GenericConfigTab({
       return;
     }
     try {
-      // Parse config_json to send as object
-      const payload: Record<string, unknown> = { ...form };
-      try {
-        payload.config_json = JSON.parse(form.config_json || "{}");
-      } catch {
-        // keep as string if invalid json
-      }
+      const payload = buildPayload(form);
       if (editItem) {
-        await api.patch(
-          `/projects/${projectId}/${endpoint}/${editItem.id}`,
-          payload
-        );
+        await api.patch(itemPath, payload, {
+          params: { pid: projectId, config_id: editItem.id },
+        });
       } else {
-        await api.post(
-          `/projects/${projectId}/${endpoint}/`,
-          payload
-        );
+        await api.post(endpoint, payload, { params: { pid: projectId } });
       }
       toast.success("保存成功");
       setDialogOpen(false);
@@ -892,7 +902,7 @@ function GenericConfigTab({
     }
   };
 
-  const columns: ColumnDef<GenericConfig>[] = [
+  const columns: ColumnDef<ConfigRoutes[ConfigEndpoint]["item"]>[] = [
     {
       key: "name",
       header: "名称",
@@ -905,16 +915,11 @@ function GenericConfigTab({
         </button>
       ),
     },
-    {
-      key: "description",
-      header: "描述",
-      render: (row) => row.description || "-",
-    },
-    ...(extraFields?.map((f) => ({
+    ...(extraFields.map((f) => ({
       key: f.key,
       header: f.label,
-      render: (row: GenericConfig) =>
-        String((row as Record<string, unknown>)[f.key] || "-"),
+      render: (row: ConfigRoutes[ConfigEndpoint]["item"]) =>
+        String((row as Record<string, unknown>)[f.key] ?? "-"),
     })) || []),
     {
       key: "actions",
@@ -968,16 +973,7 @@ function GenericConfigTab({
                 }
               />
             </div>
-            <div>
-              <label className="text-sm font-medium">描述</label>
-              <Input
-                value={form.description || ""}
-                onChange={(e) =>
-                  setForm({ ...form, description: e.target.value })
-                }
-              />
-            </div>
-            {extraFields?.map((f) => (
+            {extraFields.map((f) => (
               <div key={f.key}>
                 <label className="text-sm font-medium">{f.label}</label>
                 <Input
@@ -989,16 +985,6 @@ function GenericConfigTab({
                 />
               </div>
             ))}
-            <div>
-              <label className="text-sm font-medium">配置 (JSON)</label>
-              <Textarea
-                value={form.config_json || "{}"}
-                onChange={(e) =>
-                  setForm({ ...form, config_json: e.target.value })
-                }
-                className="min-h-24 font-mono text-xs"
-              />
-            </div>
           </div>
           <DialogFooter>
             <Button onClick={handleSave}>保存</Button>
@@ -1062,16 +1048,21 @@ export default function SettingsPage() {
             <CardContent>
               <GenericConfigTab
                 projectId={projectId}
-                endpoint="chunk-profiles"
-                label="切分配置"
-                extraFields={[
-                  {
-                    key: "max_tokens",
-                    label: "最大Token数",
-                    type: "number",
-                  },
-                  { key: "strategy", label: "切分策略" },
-                ]}
+                descriptor={{
+                  endpoint: "/projects/{pid}/chunk-profiles/",
+                  label: "切分配置",
+                  extraFields: [
+                    { key: "strategy", label: "切分策略" },
+                    { key: "max_tokens", label: "最大Token数", type: "number" },
+                    { key: "overlap_tokens", label: "重叠Token数", type: "number" },
+                  ],
+                  buildPayload: (form) => ({
+                    name: form.name,
+                    strategy: form.strategy || "hybrid_heading_recursive",
+                    max_tokens: Number(form.max_tokens) || 512,
+                    overlap_tokens: Number(form.overlap_tokens) || 50,
+                  }),
+                }}
               />
             </CardContent>
           </Card>
@@ -1085,11 +1076,15 @@ export default function SettingsPage() {
             <CardContent>
               <GenericConfigTab
                 projectId={projectId}
-                endpoint="export-profiles"
-                label="导出配置"
-                extraFields={[
-                  { key: "format", label: "导出格式" },
-                ]}
+                descriptor={{
+                  endpoint: "/projects/{pid}/export-profiles/",
+                  label: "导出配置",
+                  extraFields: [{ key: "format", label: "导出格式" }],
+                  buildPayload: (form) => ({
+                    name: form.name,
+                    format: form.format || "sft_jsonl",
+                  }),
+                }}
               />
             </CardContent>
           </Card>
@@ -1103,20 +1098,23 @@ export default function SettingsPage() {
             <CardContent>
               <GenericConfigTab
                 projectId={projectId}
-                endpoint="task-policies"
-                label="任务策略"
-                extraFields={[
-                  {
-                    key: "max_concurrency",
-                    label: "最大并发",
-                    type: "number",
-                  },
-                  {
-                    key: "retry_limit",
-                    label: "重试次数",
-                    type: "number",
-                  },
-                ]}
+                descriptor={{
+                  endpoint: "/projects/{pid}/task-policies/",
+                  label: "任务策略",
+                  extraFields: [
+                    { key: "task_type", label: "任务类型" },
+                    { key: "max_retries", label: "重试次数", type: "number" },
+                    { key: "timeout_seconds", label: "超时秒数", type: "number" },
+                    { key: "concurrency_limit", label: "最大并发", type: "number" },
+                  ],
+                  buildPayload: (form) => ({
+                    name: form.name,
+                    task_type: form.task_type || "generate",
+                    max_retries: Number(form.max_retries) || 3,
+                    timeout_seconds: Number(form.timeout_seconds) || 300,
+                    concurrency_limit: Number(form.concurrency_limit) || 5,
+                  }),
+                }}
               />
             </CardContent>
           </Card>
