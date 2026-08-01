@@ -7,6 +7,7 @@ from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver
 from app.config import settings
 from app.database import get_db
 from app.dependencies import require_project_member
@@ -50,18 +51,34 @@ async def _create_bg_redis():
     return aioredis.from_url(settings.redis_url, decode_responses=True)
 
 
-async def _get_cleaning_job(db: AsyncSession, document_id: uuid.UUID, cleaning_job_id: uuid.UUID) -> CleaningJob:
-    cleaning_job = (
-        await db.execute(
-            select(CleaningJob).where(
-                CleaningJob.id == cleaning_job_id,
-                CleaningJob.document_id == document_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if cleaning_job is None:
+async def _get_cleaning_job(
+    resolver: ProjectResourceResolver,
+    pid: uuid.UUID,
+    document_id: uuid.UUID,
+    cleaning_job_id: uuid.UUID,
+) -> CleaningJob:
+    """按项目归属加载清洗任务；文档或任务不属于 pid -> 404。
+
+    父子 ID 组合不成立也统一 404，不泄露哪一个 ID 存在（任务卡 §5.1）。
+    """
+    if await resolver.document(pid, document_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+    cleaning_job = await resolver.cleaning_job(pid, cleaning_job_id)
+    if cleaning_job is None or cleaning_job.document_id != document_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="清洗任务不存在")
     return cleaning_job
+
+
+async def _get_scoped_document(
+    resolver: ProjectResourceResolver,
+    pid: uuid.UUID,
+    did: uuid.UUID,
+) -> Document:
+    """按项目归属加载文档；不存在或不属于 pid -> 404。"""
+    doc = await resolver.document(pid, did)
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+    return doc
 
 
 @router.post("/upload", response_model=DocumentResponse, status_code=status.HTTP_201_CREATED)
@@ -103,8 +120,8 @@ async def get_document(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = DocumentService(db)
-    doc = await service.get_document(did)
+    resolver = ProjectResourceResolver(db)
+    doc = await resolver.document(pid, did)
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
     return doc
@@ -114,31 +131,17 @@ async def get_document(
 async def get_document_file(
     pid: uuid.UUID,
     did: uuid.UUID,
-    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
-    token: str | None = None,
+    _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    """Serve PDF file. Supports both Authorization header and ?token= query param (for iframe)."""
-    from jose import JWTError
+    """Serve PDF file. Requires Authorization: Bearer access token and project viewer.
 
-    from app.core.jwt import TokenType, resolve_user_id
-
-    # Extract token from Authorization header or query param
-    raw_token = token
-    if not raw_token:
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            raw_token = auth_header[7:]
-
-    if not raw_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败")
-
-    try:
-        resolve_user_id(raw_token, TokenType.ACCESS)
-    except JWTError as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="认证失败") from e
-
-    doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
+    - 仅接受 Authorization 头；query token 一律拒绝（任务卡 §5.2）。
+    - did 必须属于 pid，调用者至少为 viewer；校验完成前不访问 MinIO。
+    - 响应 private, no-store；任何日志不得打印 Authorization 或文件内容。
+    """
+    resolver = ProjectResourceResolver(db)
+    doc = await resolver.document(pid, did)
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
 
@@ -166,7 +169,7 @@ async def get_document_file(
         media_type="application/pdf",
         headers={
             "Content-Disposition": f"inline; filename*=UTF-8''{encoded_filename}",
-            "Cache-Control": "private, max-age=3600",
+            "Cache-Control": "private, no-store",
         },
     )
 
@@ -178,9 +181,12 @@ async def delete_document(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = DocumentService(db)
-    if not await service.delete_document(did):
+    resolver = ProjectResourceResolver(db)
+    doc = await resolver.document(pid, did)
+    if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+    service = DocumentService(db)
+    await service.delete_document(did)
 
 
 @router.post("/{did}/parse", status_code=status.HTTP_202_ACCEPTED)
@@ -193,9 +199,10 @@ async def trigger_parse(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
-    if doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+    resolver = ProjectResourceResolver(db)
+    doc = await _get_scoped_document(resolver, pid, did)
+    # 请求体引用的 parser profile 必须属于同一项目（任务卡 §5.1）。
+    await resolver.ensure_in_project(pid, [(ParserProfile, body.parser_profile_id)])
 
     # Reuse app-level Redis connection for publishing task.created event
     task_service = TaskService(db, request.app.state.redis)
@@ -239,6 +246,8 @@ async def list_parse_jobs(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
+    resolver = ProjectResourceResolver(db)
+    await _get_scoped_document(resolver, pid, did)
     service = DocumentService(db)
     return await service.list_parse_jobs(did)
 
@@ -250,8 +259,8 @@ async def get_parse_job(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = DocumentService(db)
-    job = await service.get_parse_job(jid)
+    resolver = ProjectResourceResolver(db)
+    job = await resolver.parse_job(pid, jid)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="解析任务不存在")
     return job
@@ -265,9 +274,14 @@ async def delete_parse_job(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = DocumentService(db)
-    if not await service.delete_parse_job(jid):
+    resolver = ProjectResourceResolver(db)
+    await _get_scoped_document(resolver, pid, did)
+    # 解析任务必须真实属于该文档（父子组合不成立 -> 404）。
+    job = await resolver.parse_job(pid, jid)
+    if job is None or job.document_id != did:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="解析任务不存在")
+    service = DocumentService(db)
+    await service.delete_parse_job(jid)
 
 
 @router.get("/{did}/cleaning-jobs", response_model=list[CleaningJobResponse])
@@ -277,6 +291,8 @@ async def list_cleaning_jobs(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
+    resolver = ProjectResourceResolver(db)
+    await _get_scoped_document(resolver, pid, did)
     result = await db.execute(
         select(CleaningJob, ParseJob, ParserProfile)
         .join(ParseJob, ParseJob.id == CleaningJob.parse_job_id)
@@ -311,21 +327,19 @@ async def start_cleaning(
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
     body: CleaningStartRequest | None = None,
 ):
-    doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
-    if doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+    resolver = ProjectResourceResolver(db)
+    await _get_scoped_document(resolver, pid, did)
 
     # Use specified parse job or fall back to latest completed
     parse_job_id = body.parse_job_id if body else None
     if parse_job_id:
-        result = await db.execute(
-            select(ParseJob).where(
-                ParseJob.id == parse_job_id, ParseJob.document_id == did, ParseJob.status == "completed"
-            )
-        )
-        parse_job = result.scalars().first()
-        if parse_job is None:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="指定的解析任务不存在或未完成")
+        # 父子组合校验：解析任务必须真实属于该文档（否则 404，不泄露 ID 存在性）。
+        scoped_job = await resolver.parse_job(pid, parse_job_id)
+        if scoped_job is None or scoped_job.document_id != did:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="指定的解析任务不存在")
+        if scoped_job.status != "completed":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="指定的解析任务未完成")
+        parse_job = scoped_job
     else:
         result = await db.execute(
             select(ParseJob)
@@ -411,10 +425,12 @@ async def list_sections(
 ):
     from sqlalchemy import func
 
+    resolver = ProjectResourceResolver(db)
+    await _get_scoped_document(resolver, pid, did)
     offset = (page - 1) * page_size
     base = select(Section).where(Section.document_id == did)
     if cleaning_job_id is not None:
-        await _get_cleaning_job(db, did, cleaning_job_id)
+        await _get_cleaning_job(resolver, pid, did, cleaning_job_id)
         base = base.where(Section.cleaning_job_id == cleaning_job_id)
     if section_status:
         base = base.where(Section.status == section_status)
@@ -435,9 +451,11 @@ async def trigger_chunk(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
-    if doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+    resolver = ProjectResourceResolver(db)
+    doc = await _get_scoped_document(resolver, pid, did)
+    from app.models.config import ChunkProfile
+
+    await resolver.ensure_in_project(pid, [(ChunkProfile, body.chunk_profile_id)])
 
     task_service = TaskService(db, request.app.state.redis)
     task = await task_service.create_task(pid, "chunk", "document", did, current_user.id)
@@ -474,6 +492,8 @@ async def list_chunks(
 ):
     from sqlalchemy import func
 
+    resolver = ProjectResourceResolver(db)
+    await _get_scoped_document(resolver, pid, did)
     offset = (page - 1) * page_size
     base = select(Chunk).where(Chunk.document_id == did)
     if chunk_status:
@@ -495,9 +515,18 @@ async def trigger_generate_batch(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
-    if doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+    resolver = ProjectResourceResolver(db)
+    doc = await _get_scoped_document(resolver, pid, did)
+    from app.models.config import ModelConfig
+    from app.models.prompt_template import PromptTemplate
+
+    await resolver.ensure_in_project(
+        pid,
+        [
+            (PromptTemplate, body.prompt_template_id),
+            (ModelConfig, body.model_config_id),
+        ],
+    )
 
     task_service = TaskService(db, request.app.state.redis)
     task = await task_service.create_task(pid, "generate_batch", "document", did, current_user.id)
@@ -540,10 +569,9 @@ async def bulk_assign_sections(
     current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
     cleaning_job_id: Annotated[uuid.UUID, Query()],
 ):
-    doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one_or_none()
-    if doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
-    await _get_cleaning_job(db, did, cleaning_job_id)
+    resolver = ProjectResourceResolver(db)
+    doc = await _get_scoped_document(resolver, pid, did)
+    await _get_cleaning_job(resolver, pid, did, cleaning_job_id)
 
     service = SectionService(db)
     total_assigned = 0
@@ -576,6 +604,8 @@ async def merge_clean_version(
     current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
     cleaning_job_id: Annotated[uuid.UUID, Query()],
 ):
+    resolver = ProjectResourceResolver(db)
+    await _get_cleaning_job(resolver, pid, did, cleaning_job_id)
     service = CleanVersionService(db)
     try:
         version = await service.create_merged_version(did, cleaning_job_id, current_user.id)
@@ -594,6 +624,13 @@ async def final_review_clean_version(
     current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
     cleaning_job_id: Annotated[uuid.UUID, Query()],
 ):
+    resolver = ProjectResourceResolver(db)
+    await _get_cleaning_job(resolver, pid, did, cleaning_job_id)
+    # 请求体 version_id 必须真实属于该文档与清洗任务（父子组合不成立 -> 404）。
+    version = await resolver.cleaned_version(pid, body.version_id)
+    if version is None or version.document_id != did or version.source_cleaning_job_id != cleaning_job_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="合并版本不存在")
+
     service = CleanVersionService(db)
     try:
         version = await service.final_review(
@@ -619,6 +656,7 @@ async def list_clean_versions(
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
     cleaning_job_id: Annotated[uuid.UUID, Query()],
 ):
+    resolver = ProjectResourceResolver(db)
+    await _get_cleaning_job(resolver, pid, did, cleaning_job_id)
     service = CleanVersionService(db)
-    await _get_cleaning_job(db, did, cleaning_job_id)
     return await service.list_versions(did, cleaning_job_id)

@@ -350,6 +350,12 @@ class ProjectResourceResolver:
             Dataset: self.dataset,
             Benchmark: self.benchmark,
             Task: self.task,
+            Chunk: self.chunk,
+            Section: self.section,
+            CleanedDocumentVersion: self.cleaned_version,
+            ChunkSet: self.chunk_set,
+            GenerationRun: self.generation_run,
+            Candidate: self.candidate,
         }
         for model, resource_id in checks:
             resolver = resolvers.get(model)

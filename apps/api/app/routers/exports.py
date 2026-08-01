@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver
 from app.config import settings
 from app.database import get_db
 from app.dependencies import require_project_member
@@ -38,8 +39,8 @@ async def get_export(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = ExportService(db)
-    export = await service.get_export(eid)
+    resolver = ProjectResourceResolver(db)
+    export = await resolver.export(pid, eid)
     if export is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="导出记录不存在")
     return export
@@ -52,12 +53,12 @@ async def get_manifest(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = ExportService(db)
-    export = await service.get_export(eid)
+    resolver = ProjectResourceResolver(db)
+    export = await resolver.export(pid, eid)
     if export is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="导出记录不存在")
-
-    manifest = await service.get_manifest(export.snapshot_manifest_id)
+    # manifest 只能经 export 归属访问，禁止按裸 manifest ID 暴露（任务卡 §4）。
+    manifest = await resolver.snapshot_manifest(pid, export.snapshot_manifest_id)
     if manifest is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="快照清单不存在")
     return manifest
@@ -70,8 +71,8 @@ async def download_export(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = ExportService(db)
-    export = await service.get_export(eid)
+    resolver = ProjectResourceResolver(db)
+    export = await resolver.export(pid, eid)
     if export is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="导出记录不存在")
 

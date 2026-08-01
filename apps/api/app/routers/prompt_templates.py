@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver
 from app.database import get_db
 from app.dependencies import require_project_member
 from app.models.user import User
@@ -54,9 +55,9 @@ async def get_prompt_template(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = PromptTemplateService(db)
-    template = await service.get(tid)
-    if template is None or template.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    template = await resolver.prompt_template(pid, tid)
+    if template is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模板不存在")
     return template
 
@@ -69,10 +70,10 @@ async def update_prompt_template(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = PromptTemplateService(db)
-    template = await service.get(tid)
-    if template is None or template.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    if await resolver.prompt_template(pid, tid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模板不存在")
+    service = PromptTemplateService(db)
     updated = await service.update(tid, **body.model_dump(exclude_unset=True))
     return updated
 
@@ -84,10 +85,10 @@ async def duplicate_prompt_template(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = PromptTemplateService(db)
-    template = await service.get(tid)
-    if template is None or template.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    if await resolver.prompt_template(pid, tid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模板不存在")
+    service = PromptTemplateService(db)
     new_template = await service.duplicate(tid)
     return new_template
 
@@ -100,10 +101,16 @@ async def test_run_prompt_template(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = PromptTemplateService(db)
-    template = await service.get(tid)
-    if template is None or template.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    if await resolver.prompt_template(pid, tid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模板不存在")
+    # 请求体引用的 chunk 与 model config 必须属于同一项目。
+    from app.models.chunk import Chunk
+    from app.models.config import ModelConfig
+
+    await resolver.ensure_in_project(pid, [(Chunk, body.chunk_id)])
+    await resolver.ensure_in_project(pid, [(ModelConfig, body.model_config_id)])
+    service = PromptTemplateService(db)
     try:
         result = await service.test_run(tid, body.chunk_id, body.model_config_id)
     except ValueError as e:
@@ -118,8 +125,8 @@ async def list_prompt_template_versions(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = PromptTemplateService(db)
-    template = await service.get(tid)
-    if template is None or template.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    if await resolver.prompt_template(pid, tid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模板不存在")
+    service = PromptTemplateService(db)
     return await service.list_versions(tid)

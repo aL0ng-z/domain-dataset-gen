@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver
 from app.database import get_db
 from app.dependencies import require_project_member
 from app.models.config import ChunkProfile, ExportProfile, ModelConfig, ParserProfile, TaskPolicy
@@ -41,6 +42,22 @@ def _make_config_router(
     tag: str,
 ):
     """Factory to create CRUD router for a config profile type."""
+    # 每个配置类型的 resolver 方法名（ProjectResourceResolver 上对应归属链）。
+    _resolver_attr = {
+        ModelConfig: "model_config",
+        ParserProfile: "parser_profile",
+        ChunkProfile: "chunk_profile",
+        ExportProfile: "export_profile",
+        TaskPolicy: "task_policy",
+    }[model_class]
+
+    async def _scoped_get(db, pid, config_id):
+        resolver = ProjectResourceResolver(db)
+        obj = await getattr(resolver, _resolver_attr)(pid, config_id)
+        if obj is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置不存在")
+        return obj
+
     sub_router = APIRouter(prefix=prefix, tags=[tag])
 
     @sub_router.post("/", response_model=response_schema, status_code=status.HTTP_201_CREATED)
@@ -72,11 +89,7 @@ def _make_config_router(
         db: Annotated[AsyncSession, Depends(get_db)],
         _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
     ):
-        service = ConfigService(db, model_class)
-        obj = await service.get(config_id)
-        if obj is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置不存在")
-        return obj
+        return await _scoped_get(db, pid, config_id)
 
     @sub_router.patch("/{config_id}", response_model=response_schema)
     async def update(
@@ -86,6 +99,7 @@ def _make_config_router(
         db: Annotated[AsyncSession, Depends(get_db)],
         _: Annotated[User, Depends(require_project_member(UserRole.editor))],
     ):
+        await _scoped_get(db, pid, config_id)
         service = ConfigService(db, model_class)
         obj = await service.update(config_id, **body.model_dump(exclude_unset=True))
         if obj is None:
@@ -99,6 +113,7 @@ def _make_config_router(
         db: Annotated[AsyncSession, Depends(get_db)],
         _: Annotated[User, Depends(require_project_member(UserRole.editor))],
     ):
+        await _scoped_get(db, pid, config_id)
         service = ConfigService(db, model_class)
         if not await service.delete(config_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置不存在")
@@ -110,6 +125,7 @@ def _make_config_router(
         db: Annotated[AsyncSession, Depends(get_db)],
         _: Annotated[User, Depends(require_project_member(UserRole.editor))],
     ):
+        await _scoped_get(db, pid, config_id)
         service = ConfigService(db, model_class)
         obj = await service.set_default(pid, config_id)
         if obj is None:
@@ -154,8 +170,8 @@ async def test_model_config(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = ConfigService(db, ModelConfig)
-    config = await service.get(config_id)
+    resolver = ProjectResourceResolver(db)
+    config = await resolver.model_config(pid, config_id)
     if config is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置不存在")
 
