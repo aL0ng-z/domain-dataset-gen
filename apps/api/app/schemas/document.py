@@ -29,6 +29,13 @@ class ParseJobResponse(BaseSchema):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+    # T03: 冻结快照审计字段。普通 API 不返回完整 EndpointPolicy 或 credential slot。
+    snapshot_schema_version: int | None
+    parser_profile_sha256: str | None
+    endpoint_policy_ref: str | None
+    endpoint_policy_version: str | None
+    endpoint_policy_sha256: str | None
+    frozen_at: datetime | None
 
 
 class CleaningJobResponse(BaseSchema):

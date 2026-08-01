@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, field_serializer, field_validator
+from pydantic import BaseModel, field_serializer, field_validator, model_validator
 
 from app.security.snapshot import find_forbidden_keys, redact, validate_parser_options
 from domain.schemas import BaseSchema
@@ -75,6 +75,13 @@ class ParserProfileCreate(BaseModel):
             raise ValueError(f"invalid_parser_name: {parser_name}")
         return parser_name
 
+    @model_validator(mode="after")
+    def _validate_options_whitelist(self) -> "ParserProfileCreate":
+        """按 parser_name 白名单拒绝未知字段（422 字段级错误）。"""
+        if self.parser_options is not None:
+            validate_parser_options(self.parser_name, self.parser_options)
+        return self
+
 
 class ParserProfileUpdate(BaseModel):
     name: str | None = None
@@ -101,6 +108,14 @@ class ParserProfileUpdate(BaseModel):
         if parser_name not in AVAILABLE_PARSERS:
             raise ValueError(f"invalid_parser_name: {parser_name}")
         return parser_name
+
+    @model_validator(mode="after")
+    def _validate_options_whitelist(self) -> "ParserProfileUpdate":
+        # Update 场景：parser_name 可能未传；白名单校验在 service.update 读到
+        # 既有 parser_name 后再执行一次（此处仅当显式传 parser_name 时校验）。
+        if self.parser_options is not None and self.parser_name is not None:
+            validate_parser_options(self.parser_name, self.parser_options)
+        return self
 
 
 class ParserProfileResponse(BaseSchema):
