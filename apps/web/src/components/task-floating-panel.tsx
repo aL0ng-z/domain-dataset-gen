@@ -14,21 +14,10 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { StatusBadge } from "@/components/status-badge";
 import { Loader2Icon, ListTodoIcon } from "lucide-react";
 import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { useWs } from "@/hooks/use-ws";
 
-interface TaskItem {
-  id: string;
-  task_type: string;
-  status: string;
-  progress?: number;
-  created_at: string;
-  error_message?: string;
-}
-
-interface TaskListResponse {
-  items: TaskItem[];
-  total: number;
-}
+type TaskItem = components["schemas"]["TaskResponse"];
 
 interface TaskFloatingPanelProps {
   projectId: string;
@@ -48,8 +37,8 @@ export function TaskFloatingPanel({ projectId }: TaskFloatingPanelProps) {
 
   const fetchTasks = useCallback(() => {
     Promise.all([
-      api.get<TaskListResponse>(`/projects/${projectId}/tasks?page=1&page_size=20&status=queued`),
-      api.get<TaskListResponse>(`/projects/${projectId}/tasks?page=1&page_size=20&status=processing`),
+      api.get("/projects/{pid}/tasks/", { params: { pid: projectId }, query: { page: 1, page_size: 20, status: "queued" } }),
+      api.get("/projects/{pid}/tasks/", { params: { pid: projectId }, query: { page: 1, page_size: 20, status: "processing" } }),
     ])
       .then(([queued, processing]) => {
         const activeTasks = [...queued.items, ...processing.items]

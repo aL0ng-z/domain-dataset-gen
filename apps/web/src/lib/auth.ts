@@ -1,3 +1,5 @@
+import type { components } from "./api/generated";
+
 export interface TokenData {
   access_token: string;
   refresh_token: string;
@@ -7,12 +9,7 @@ export interface TokenData {
 export interface AuthData {
   access_token: string;
   refresh_token: string;
-  user: {
-    id: string;
-    username: string;
-    email: string;
-    role: string;
-  };
+  user: components["schemas"]["UserResponse"];
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";

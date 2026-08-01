@@ -13,15 +13,9 @@ import {
   type AuthData,
 } from "@/lib/auth";
 import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 
-export interface User {
-  id: string;
-  username: string;
-  email: string;
-  role: string;
-  is_active?: boolean;
-  created_at?: string;
-}
+export type User = components["schemas"]["UserResponse"];
 
 export interface AuthContextValue {
   user: User | null;
@@ -61,7 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }, 10000);
 
       api
-        .get<User>("/auth/me")
+        .get("/auth/me")
         .then((u) => {
           setUser(u);
         })

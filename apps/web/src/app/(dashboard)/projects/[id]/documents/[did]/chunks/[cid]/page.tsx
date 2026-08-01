@@ -14,33 +14,12 @@ import {
 } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { ArrowLeftIcon, PlayIcon, Loader2Icon } from "lucide-react";
 
-interface ChunkDetail {
-  id: string;
-  chunk_index: number;
-  section_id?: string;
-  section_title?: string;
-  heading_path?: string;
-  token_count: number;
-  status: string;
-  content: string;
-  created_at: string;
-}
-
-interface Template {
-  id: string;
-  name: string;
-  task_type: string;
-}
-
-interface Candidate {
-  id: string;
-  status: string;
-  content?: string;
-  template_name?: string;
-  created_at: string;
-}
+type ChunkDetail = components["schemas"]["ChunkResponse"];
+type Template = components["schemas"]["PromptTemplateResponse"];
+type GenerateTask = components["schemas"]["TaskResponse"];
 
 export default function ChunkDetailPage() {
   const params = useParams<{ id: string; did: string; cid: string }>();
@@ -52,19 +31,18 @@ export default function ChunkDetailPage() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
   const [generating, setGenerating] = useState(false);
-  const [candidate, setCandidate] = useState<Candidate | null>(null);
+  const [generateTask, setGenerateTask] = useState<GenerateTask | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
-      api.get<ChunkDetail>(
-        `/chunks/${chunkId}`
-      ),
+      api.get("/chunks/{cid}", { params: { cid: chunkId } }),
       api
-        .get<{ items: Template[] }>(
-          `/projects/${projectId}/prompt-templates?page=1&page_size=100`
-        )
-        .catch(() => ({ items: [] })),
+        .get("/projects/{pid}/prompt-templates/", {
+          params: { pid: projectId },
+          query: { page: 1, page_size: 100 },
+        })
+        .catch(() => ({ items: [] as Template[] })),
     ])
       .then(([chunkData, templateData]) => {
         setChunk(chunkData);
@@ -83,14 +61,18 @@ export default function ChunkDetailPage() {
       return;
     }
     setGenerating(true);
-    setCandidate(null);
+    setGenerateTask(null);
     try {
-      const result = await api.post<Candidate>(
-        `/chunks/${chunkId}/generate`,
-        { template_id: selectedTemplate }
+      const result = await api.post(
+        "/chunks/{cid}/generate",
+        {
+          prompt_template_id: selectedTemplate,
+          model_config_id: "",
+        },
+        { params: { cid: chunkId } },
       );
-      setCandidate(result);
-      toast.success("生成完成");
+      setGenerateTask(result);
+      toast.success("生成任务已创建");
     } catch {
       toast.error("生成失败");
     } finally {
@@ -129,7 +111,7 @@ export default function ChunkDetailPage() {
           返回分块列表
         </Link>
         <h1 className="text-2xl font-semibold">
-          分块 #{chunk.chunk_index + 1}
+          分块 #{chunk.ordinal + 1}
         </h1>
         <div className="flex items-center gap-2 mt-1">
           <StatusBadge status={chunk.status} />
@@ -148,11 +130,6 @@ export default function ChunkDetailPage() {
       <Card className="mb-6">
         <CardHeader>
           <CardTitle>分块内容</CardTitle>
-          {chunk.section_title && (
-            <CardDescription>
-              所属章节: {chunk.section_title}
-            </CardDescription>
-          )}
         </CardHeader>
         <CardContent>
           <pre className="whitespace-pre-wrap text-sm font-mono bg-muted/50 rounded-lg p-4 max-h-96 overflow-auto">
@@ -198,15 +175,20 @@ export default function ChunkDetailPage() {
             </Button>
           </div>
 
-          {candidate && (
+          {generateTask && (
             <div className="border rounded-lg p-4">
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-sm font-medium">生成结果</span>
-                <StatusBadge status={candidate.status} />
+                <span className="text-sm font-medium">生成任务</span>
+                <StatusBadge status={generateTask.status} />
               </div>
-              <pre className="whitespace-pre-wrap text-sm font-mono bg-muted/50 rounded p-3 max-h-96 overflow-auto">
-                {candidate.content || "无内容"}
-              </pre>
+              <div className="text-xs text-muted-foreground">
+                任务 ID: <span className="font-mono">{generateTask.id}</span>
+              </div>
+              {generateTask.error_message && (
+                <div className="mt-1 text-xs text-destructive">
+                  {generateTask.error_message}
+                </div>
+              )}
             </div>
           )}
         </CardContent>

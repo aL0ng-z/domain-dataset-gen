@@ -16,17 +16,10 @@ import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { api, isAbortError } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { useAuth } from "@/hooks/use-auth";
 
-interface Project {
-  id: string;
-  name: string;
-}
-
-interface ProjectListResponse {
-  items: Project[];
-  total: number;
-}
+type Project = components["schemas"]["ProjectResponse"];
 
 export function Sidebar() {
   const { user, logout } = useAuth();
@@ -37,7 +30,8 @@ export function Sidebar() {
   useEffect(() => {
     const controller = new AbortController();
     api
-      .get<ProjectListResponse>("/projects?page=1&page_size=50", {
+      .get("/projects/", {
+        query: { page: 1, page_size: 50 },
         signal: controller.signal,
       })
       .then((data) => setProjects(data.items))
