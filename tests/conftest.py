@@ -13,6 +13,7 @@ fixture 都会抛出 RuntimeError（见 tests/safety.py）。
   conda run -n DatasetGen python -m pytest -q
 """
 
+import contextlib
 import os
 import sys
 import uuid
@@ -24,6 +25,7 @@ import pytest
 import redis.asyncio as aioredis
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 # 保证在未安装 editable 包时也能导入本地库（CI 全新 checkout 场景）。
@@ -97,18 +99,41 @@ def _test_session_factory(_test_engine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(_test_engine, class_=AsyncSession, expire_on_commit=False)
 
 
-_TRUNCATE_ALL_SQL = """
-DO $$
-DECLARE r RECORD;
-BEGIN
-    FOR r IN
-        SELECT tablename FROM pg_tables
-        WHERE schemaname = 'public' AND tablename <> 'alembic_version'
-    LOOP
-        EXECUTE 'TRUNCATE TABLE ' || quote_ident(r.tablename) || ' CASCADE';
-    END LOOP;
-END $$;
-"""
+# 单条 TRUNCATE 一次性获取全部表锁，避免逐表循环时与测试体遗留的锁竞争
+# （已有复现：逐表 TRUNCATE + 下一个测试的未提交 INSERT 并发形成死锁）。
+_TRUNCATE_RETRIES = 3
+_TRUNCATE_RETRY_BACKOFF_SECONDS = [0.0, 0.5, 1.5]
+
+
+async def _truncate_all(engine: AsyncEngine) -> None:
+    from asyncio import sleep
+
+    last_error: Exception | None = None
+    for delay in _TRUNCATE_RETRY_BACKOFF_SECONDS:
+        if delay:
+            await sleep(delay)
+        try:
+            async with engine.begin() as conn:
+                # 收集 public schema 全部业务表（不含 alembic_version），一次 TRUNCATE。
+                rows = (
+                    await conn.execute(
+                        text(
+                            "SELECT tablename FROM pg_tables "
+                            "WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
+                        )
+                    )
+                ).all()
+                if rows:
+                    tables = ", ".join(f'"{r[0]}"' for r in rows)
+                    await conn.execute(text(f"TRUNCATE TABLE {tables} CASCADE"))
+            return
+        except DBAPIError as e:
+            last_error = e
+            # 仅在真正的死锁时重试；其它错误原样抛出。
+            if "deadlock detected" not in str(e):
+                raise
+    if last_error is not None:
+        raise last_error
 
 
 @pytest.fixture
@@ -119,9 +144,10 @@ async def db_session(_test_session_factory, _test_engine, _prepare_schema) -> As
         try:
             yield session
         finally:
-            await session.rollback()
-            async with _test_engine.begin() as conn:
-                await conn.execute(text(_TRUNCATE_ALL_SQL))
+            # 死锁/连接被对端终止时 rollback 可能抛 InterfaceError，清理阶段吞掉即可。
+            with contextlib.suppress(DBAPIError):
+                await session.rollback()
+            await _truncate_all(_test_engine)
 
 
 @pytest.fixture(scope="session")
