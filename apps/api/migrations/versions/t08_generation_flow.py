@@ -119,8 +119,8 @@ def classify_batch_provenance(
     语义（任务卡 §4）：缺少必要输入 -> legacy_unavailable；发现互相矛盾的
     FK/版本/内容 -> invalid。缺失与矛盾严格区分，绝不猜测。
     """
-    # 缺少输入：无选择集/无配置引用/版本无法物化/模型无法快照/无关联 run。
-    if selected_chunk_ids is None or not isinstance(selected_chunk_ids, list):
+    # 缺少输入：无选择集/空选择集/无配置引用/版本无法物化/模型无法快照/无关联 run。
+    if not selected_chunk_ids or not isinstance(selected_chunk_ids, list):
         return "legacy_unavailable"
     if prompt_template_id is None or model_config_id is None:
         return "legacy_unavailable"
