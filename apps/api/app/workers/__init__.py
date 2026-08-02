@@ -45,7 +45,8 @@ def _register_clean_handlers(r: HandlerRegistry) -> None:
 def _register_chunk_handlers(r: HandlerRegistry) -> None:
     from app.workers.chunk_worker import run_chunk_handler
 
-    r.register("chunk_document", 1)(run_chunk_handler)
+    # v2：T06 版本化切分（payload 携带 chunk_set_id，冻结输入）。
+    r.register("chunk_document", 2)(run_chunk_handler)
 
 
 def _register_generate_handlers(r: HandlerRegistry) -> None:

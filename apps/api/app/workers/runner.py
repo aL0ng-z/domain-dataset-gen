@@ -207,6 +207,9 @@ class TaskRunner:
                         error_code=error_code, error=str(exc),
                     )
 
+                # 捕获 handler 注册的业务终态钩子（ChunkSet failed/cancelled 收敛）。
+                terminal_hook = ctx._terminal_hook
+
                 if outcome.status == "completed":
                     ok = await queue.transition(
                         task_id=task.id, run_token=run_token,
@@ -251,11 +254,15 @@ class TaskRunner:
                 return
 
         # 在全新事务中写入失败/取消状态（业务写入已回滚）。
-        await self._apply_terminal_outcome(task.id, run_token, attempt_no, outcome, task.state_version)
+        await self._apply_terminal_outcome(
+            task.id, run_token, attempt_no, outcome, task.state_version,
+            terminal_hook=terminal_hook,
+        )
 
     async def _apply_terminal_outcome(
         self, task_id: uuid.UUID, run_token: uuid.UUID, attempt_no: int,
         outcome: _Outcome, expected_state_version: int,
+        terminal_hook=None,
     ) -> None:
         """在全新会话中应用失败/取消状态转换。"""
         async with self.session_factory() as session:
@@ -299,6 +306,17 @@ class TaskRunner:
                         queue, current, run_token, attempt_no,
                         outcome.error_code, outcome.error, retriable=outcome.retriable,
                     )
+                # handler 注册的业务终态钩子（如 ChunkSet failed/cancelled 收敛）。
+                # 钩子内部用 CAS 收敛，且不覆盖已完成产物。
+                if terminal_hook is not None:
+                    try:
+                        await terminal_hook(
+                            session,
+                            "cancelled" if outcome.status == "cancelled" else "failed",
+                            outcome.error,
+                        )
+                    except Exception:  # noqa: BLE001 - 业务收敛失败不阻断任务终态落库
+                        logger.exception("task %s 业务终态钩子执行失败", task_id)
                 await session.commit()
             except Exception:  # noqa: BLE001
                 await session.rollback()

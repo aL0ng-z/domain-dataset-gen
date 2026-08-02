@@ -49,6 +49,11 @@ TASK_TYPE_TO_HANDLER: dict[str, str] = {
     "export_benchmark": "export_benchmark",
 }
 
+# T06：chunk handler 升级为 v2（payload 携带 chunk_set_id，冻结输入）。
+TASK_TYPE_TO_PAYLOAD_VERSION: dict[str, int] = {
+    "chunk": 2,
+}
+
 
 class TaskService:
     def __init__(self, db: AsyncSession, redis_client: aioredis.Redis | None = None):
@@ -86,6 +91,7 @@ class TaskService:
         """
         resolved_handler = handler or TASK_TYPE_TO_HANDLER.get(task_subtype or task_type, task_type)
         resolved_payload = payload or {}
+        resolved_payload_version = TASK_TYPE_TO_PAYLOAD_VERSION.get(task_subtype or task_type, 1)
         if idempotency_key:
             existing = await self._find_by_idempotency(project_id, task_type, idempotency_key)
             if existing is not None:
@@ -98,7 +104,7 @@ class TaskService:
             created_by=created_by,
             handler=resolved_handler,
             payload=resolved_payload,
-            payload_version=1,
+            payload_version=resolved_payload_version,
             parent_task_id=parent_task_id,
             idempotency_key=idempotency_key,
             max_attempts=max_attempts or DEFAULT_MAX_ATTEMPTS.get(task_type, 2),

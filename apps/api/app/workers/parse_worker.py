@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 
 from app.config import settings
-from app.models.config import ParserProfile
 from app.models.document import Document
 from app.models.parse import ParseJob
 from app.workers.execution import ExecutionContext

@@ -60,6 +60,21 @@ class ExecutionContext:
     # 父任务聚合：handler 设置后 runner 将任务回队退避轮询（不标 completed）。
     requeue_after: int | None = field(default=None, init=False)
     _cancelled: bool = field(default=False, init=False)
+    # handler 专属终态钩子：runner 在失败/取消回滚后以全新会话调用，用于把业务对象
+    # （如 ChunkSet）收敛到 failed/cancelled（任务卡 T06 §5：Task 与业务状态不得分叉）。
+    _terminal_hook: Callable[[AsyncSession, str, str | None], Awaitable[None]] | None = field(
+        default=None, init=False
+    )
+
+    def set_terminal_hook(
+        self, fn: Callable[[AsyncSession, str, str | None], Awaitable[None]]
+    ) -> None:
+        """注册业务终态钩子：``fn(db, status, error_message)``。
+
+        status 为 'failed'/'cancelled'；runner 在业务写入回滚后以新会话调用，
+        钩子内部必须用 CAS（WHERE status IN ...）收敛业务对象，绝不覆盖已完成产物。
+        """
+        self._terminal_hook = fn
 
     # ------------------------------------------------------------------
     # Checkpoint
