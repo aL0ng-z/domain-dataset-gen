@@ -1,4 +1,13 @@
 from splitters.base import BaseChunker, ChunkConfig, ChunkData  # noqa: F401
+from splitters.canonical import (  # noqa: F401
+    OVERLAP_SEPARATOR,
+    SPLITTER_VERSION,
+    TOKENIZER_NAME,
+    canonical_output_sha256,
+    canonical_source_sha256,
+    splitter_version,
+    tokenizer_version,
+)
 from splitters.hybrid_heading import HybridHeadingRecursiveChunker  # noqa: F401
 
 
