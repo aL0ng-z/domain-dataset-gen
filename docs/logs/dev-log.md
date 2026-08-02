@@ -4,6 +4,43 @@
 
 ---
 
+## T05 清洗编辑并发与租约（2026-08-03）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `apps/api/app/models/section.py` | sections 新增 `content_revision`（CHECK 非负）；SectionLease 部分唯一索引 `(section_id) WHERE released_at IS NULL` + `(section_id, expires_at)` 索引 + `expires_at > acquired_at` CHECK；SectionRevision 新增 `from_revision/to_revision` + 连续约束；Section.lease 只读关系 | 已完成 |
+| `apps/api/app/models/cleaned_document_version.py` | 新增 `source_revision_map/source_revision_sha256/content_sha256/merge_idempotency_key` + `UNIQUE(document_id, version)` 保留、`UNIQUE(document_id, merge_idempotency_key)`、`UNIQUE(artifact_key)` | 已完成 |
+| `apps/api/app/services/section_service.py` | 原子 acquire（Section 行锁 + 过期租约清理 + 同用户幂等 + 唯一索引兜底）；条件 heartbeat/release 绑定 `lease_id`；保存/提交双校验（lease + revision）；Redis 仅缓存且 compare-and-delete | 已完成 |
+| `apps/api/app/services/clean_version_service.py` | 合并两阶段：计算冻结 revision 向量/hash → Document 行锁内幂等复核、稳定序锁 Section 复核、锁内分配版本、UUID 对象 key create-only 上传；终审 Document→Version 固定锁序 + `review_pending` CAS + active 单调门禁 | 已完成 |
+| `apps/api/app/schemas/*` + 路由 | `SectionResponse.content_revision`/`lease` 摘要；保存/提交/心跳/释放请求体含 `lease_id`/`expected_revision`；merge 要求 `Idempotency-Key`；6 个稳定错误码进入 OpenAPI | 已完成 |
+| `apps/api/migrations/versions/` | `merge_t02_t03_heads`（收敛 T02/T03 双 head）+ `t05_clean_edit_concurrency_lease`（重复租约预检清理、索引/约束/列、审计计数）；upgrade→downgrade→upgrade 往返通过 | 已完成 |
+| `apps/web/src/hooks/use-cleaning-workbench.ts` | 请求代次/AbortController、仅当前 section+代次可更新、acquire/心跳/释放绑定 lease_id、保存带 revision+lease、409 保留本地文本、冲突对话框、自动保存防抖、beforeunload、cleanup 只释放自身 lease | 已完成 |
+| `apps/web/src/app/.../clean/page.tsx` | dirty guard 三选项对话框、租约丢失/冲突只读、合并幂等键复用、final-review stale/conflict 刷新赢家状态 | 已完成 |
+| `apps/web/src/lib/api.ts` | 支持 `headers`（Idempotency-Key） | 已完成 |
+| 测试 | `tests/integration/test_clean_edit_concurrency.py`（12 项验收 1-14）+ `use-cleaning-workbench.test.ts`（6 项 A→B 切换/冲突/只读/cleanup）+ 前端 50 项回归 | 已完成 |
+| 审计 | `scripts/clean_version_audit.py` 存量重复版本/artifact key/hash 字段一致性审计 | 已完成 |
+
+### 设计决策
+
+- **数据库为唯一正确性来源**：租约获取在 Section 行锁保护的事务内原子完成，Redis 仅缓存（值携带 `lease_id`），Redis 故障只降级缓存、绝不放宽写入门禁。保存/提交同时校验租约所有权、期限与 `expected_revision`，修订记录与正文同事务，`content_revision` 严格 +1。
+- **合并两阶段 + 幂等**：计算阶段无锁读 Section 生成规范化 revision 向量/hash，预生成 version UUID；发布阶段先锁 Document 行，锁内幂等复核（同 key 命中直接重放、不重复上传），再稳定顺序锁 Section 复核向量，锁内分配下一 version，最后 create-only 上传 UUID 对象 key。对象 key 与显示版本号解耦，杜绝历史对象被覆盖。
+- **终审并发**：固定 Document→Version 锁序避免死锁；`review_pending` CAS + 行锁串行化，并发 accept/reject 恰一个成功；approve 校验目标旧于 active 则 `CLEAN_VERSION_STALE`；reject 绝不清空/回退 active pointer。
+- **identity-map 陈旧读修复**：SQLAlchemy 同一 session 内 `FOR UPDATE` 重新查询会命中 identity map 返回加锁前的旧状态，导致并发 CAS 失效；统一加 `execution_options(populate_existing=True)` 强制刷新。
+- **401 头透传**：全局异常处理器此前丢弃 `HTTPException.headers`，`WWW-Authenticate: Bearer` 丢失；补透传并保留业务 422 的 message。
+- **测试库 schema 漂移**：迁移 smoke 与 pytest 共用 `datasetgen_test`；`create_all` 不更新已存在表。fixture 的 `create_parse_job` 填充 T03 snapshot 字段以满足迁移后 CHECK 约束；测试前保持迁移到 head 的 schema。
+
+### 验证状态
+
+- 后端 T05 专项集成测试 12 项通过（并发 acquire/revision/合并幂等/终审单调）。
+- 前端 hook 测试 6 项 + 全量 50 项通过；`npm run lint`、`npm exec tsc -- --noEmit`、`npm run api:check`、`npm run build` 通过。
+- 迁移往返 `upgrade head → downgrade -1 → upgrade head` 通过；重复租约预检清理审计计数输出。
+- 审计脚本 `scripts/clean_version_audit.py` 无重复版本/artifact key/hash 字段缺失。
+- 全量 pytest 在共享测试库受并行 worktree 干扰时部分测试受 schema 竞争影响；按门禁要求以单会话干净环境为准。
+
+---
+
 ## T03 解析器出站与凭证安全（2026-08-01）
 
 ### 本轮总览
