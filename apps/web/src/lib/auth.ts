@@ -1,3 +1,5 @@
+import type { components } from "./api/generated";
+
 /**
  * 统一前端认证令牌模块（T01）。
  *
@@ -21,12 +23,7 @@ export interface TokenData {
 export interface AuthData {
   access_token: string;
   refresh_token: string;
-  user: {
-    id: string;
-    username: string;
-    email: string;
-    role: string;
-  };
+  user: components["schemas"]["UserResponse"];
 }
 
 const ACCESS_KEY = "access_token";

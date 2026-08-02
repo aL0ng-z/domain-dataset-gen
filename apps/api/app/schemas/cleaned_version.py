@@ -1,9 +1,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
 class CleanedDocumentVersionResponse(BaseSchema):
@@ -25,7 +25,7 @@ class CleanedDocumentVersionDetailResponse(CleanedDocumentVersionResponse):
     merged_markdown: str
 
 
-class CleanedFinalReviewRequest(BaseModel):
+class CleanedFinalReviewRequest(RequestSchema):
     version_id: uuid.UUID
     action: str = Field(description="'accept' or 'reject'")
     reason: str | None = None

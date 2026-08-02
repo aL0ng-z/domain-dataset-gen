@@ -14,7 +14,7 @@ from domain.enums import UserRole
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED, operation_id="auth_register")
 async def register(
     body: RegisterRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -30,7 +30,7 @@ async def register(
     return user
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login", response_model=TokenResponse, operation_id="auth_login")
 async def login(body: LoginRequest, db: Annotated[AsyncSession, Depends(get_db)]):
     service = AuthService(db)
     user = await service.authenticate(body.username, body.password)
@@ -42,7 +42,7 @@ async def login(body: LoginRequest, db: Annotated[AsyncSession, Depends(get_db)]
     )
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post("/refresh", response_model=TokenResponse, operation_id="auth_refresh")
 async def refresh(body: RefreshRequest, db: Annotated[AsyncSession, Depends(get_db)]):
     service = AuthService(db)
     try:
@@ -52,6 +52,6 @@ async def refresh(body: RefreshRequest, db: Annotated[AsyncSession, Depends(get_
     return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
 
-@router.get("/me", response_model=UserResponse)
+@router.get("/me", response_model=UserResponse, operation_id="auth_get_me")
 async def get_me(current_user: Annotated[User, Depends(get_current_user)]):
     return current_user

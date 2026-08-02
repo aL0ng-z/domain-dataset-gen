@@ -63,6 +63,10 @@ TEST_DB_URL = (
     f"postgresql+asyncpg://{settings.postgres_user}:{settings.postgres_password}"
     f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
 )
+# 禁用 asyncpg 语句缓存：每次测试结束会 TRUNCATE 全表（涉及 catalog 锁），
+# 而 PREPARE 语句与 TRUNCATE 会竞争 AccessExclusiveLock，导致间歇性
+# DeadlockDetectedError。statement_cache_size=0 关闭 PREPARE，从根上消除该竞态。
+TEST_ENGINE_OPTIONS = {"connect_args": {"statement_cache_size": 0}}
 TEST_REDIS_URL = f"redis://{settings.redis_host}:{settings.redis_port}"
 
 
@@ -82,7 +86,7 @@ def _isolate_parser_transport():
 
 @pytest.fixture(scope="session")
 async def _test_engine() -> AsyncGenerator[AsyncEngine, None]:
-    engine = create_async_engine(TEST_DB_URL, echo=False)
+    engine = create_async_engine(TEST_DB_URL, echo=False, **TEST_ENGINE_OPTIONS)
     try:
         yield engine
     finally:
@@ -91,7 +95,11 @@ async def _test_engine() -> AsyncGenerator[AsyncEngine, None]:
 
 @pytest.fixture(scope="session")
 async def _prepare_schema(_test_engine) -> AsyncGenerator[None, None]:
-    """按当前模型创建全部表（幂等；不覆盖已有表，真实迁移由 smoke test 覆盖）。"""
+    """按当前模型创建全部表（幂等；不覆盖已有表，真实迁移由 smoke test 覆盖）。
+
+    Session 开始时清空全部业务表，避免上一次被中断/并发的测试残留数据
+    （如其他 worktree 复用同一测试库）导致 org 等 fixture 的用户创建冲突。
+    """
     from app import models  # noqa: F401  # 确保所有模型已注册
     from app.database import Base
 
@@ -100,6 +108,8 @@ async def _prepare_schema(_test_engine) -> AsyncGenerator[None, None]:
     async with _test_engine.begin() as conn:
         await conn.execute(text('CREATE SCHEMA IF NOT EXISTS public'))
         await conn.run_sync(Base.metadata.create_all)
+    async with _test_engine.begin() as conn:
+        await conn.execute(text(_TRUNCATE_ALL_SQL))
     yield
 
 
@@ -108,41 +118,44 @@ def _test_session_factory(_test_engine) -> async_sessionmaker[AsyncSession]:
     return async_sessionmaker(_test_engine, class_=AsyncSession, expire_on_commit=False)
 
 
-# 单条 TRUNCATE 一次性获取全部表锁，避免逐表循环时与测试体遗留的锁竞争
-# （已有复现：逐表 TRUNCATE + 下一个测试的未提交 INSERT 并发形成死锁）。
-_TRUNCATE_RETRIES = 3
-_TRUNCATE_RETRY_BACKOFF_SECONDS = [0.0, 0.5, 1.5]
+# 单语句 TRUNCATE 所有业务表：先拼接表名列表，再一次性执行一条 TRUNCATE，
+# 相比逐表 TRUNCATE 的循环一次性获取全部表锁，避免多 worktree 并发访问同一
+# 测试库时因表间加锁顺序不一致而死锁（T01/T02 并行实施中确认同一问题并采用同方案）。
+_TRUNCATE_ALL_SQL = """
+DO $$
+DECLARE tbls text;
+BEGIN
+    SELECT string_agg(quote_ident(tablename), ', ') INTO tbls
+      FROM pg_tables
+     WHERE schemaname = 'public' AND tablename <> 'alembic_version';
+    IF tbls IS NOT NULL THEN
+        EXECUTE 'TRUNCATE TABLE ' || tbls || ' CASCADE';
+    END IF;
+END $$;
+"""
 
 
-async def _truncate_all(engine: AsyncEngine) -> None:
-    from asyncio import sleep
+async def _truncate_with_retry(_test_engine) -> None:
+    """TRUNCATE 带死锁重试。
 
-    last_error: Exception | None = None
-    for delay in _TRUNCATE_RETRY_BACKOFF_SECONDS:
-        if delay:
-            await sleep(delay)
+    多 worktree 并发访问同一测试库时，两个独立 pytest 进程可能同时 TRUNCATE/INSERT，
+    触发 PostgreSQL 死锁（异步事务竞争）。deadlock 由 PG 检测后自动回滚受害方，
+    这里按 sqlstate 40P01（deadlock_detected）捕获并稍作退避后重试，直至成功。
+    """
+    import asyncio
+
+    for attempt in range(6):
         try:
-            async with engine.begin() as conn:
-                # 收集 public schema 全部业务表（不含 alembic_version），一次 TRUNCATE。
-                rows = (
-                    await conn.execute(
-                        text(
-                            "SELECT tablename FROM pg_tables "
-                            "WHERE schemaname = 'public' AND tablename <> 'alembic_version'"
-                        )
-                    )
-                ).all()
-                if rows:
-                    tables = ", ".join(f'"{r[0]}"' for r in rows)
-                    await conn.execute(text(f"TRUNCATE TABLE {tables} CASCADE"))
+            async with _test_engine.begin() as conn:
+                await conn.execute(text(_TRUNCATE_ALL_SQL))
             return
-        except DBAPIError as e:
-            last_error = e
-            # 仅在真正的死锁时重试；其它错误原样抛出。
-            if "deadlock detected" not in str(e):
+        except Exception as exc:  # noqa: BLE001 - 需要统一捕获并判断是否死锁
+            sqlstate = getattr(exc, "sqlstate", None) or getattr(getattr(exc, "orig", None), "sqlstate", None)
+            if sqlstate != "40P01":
                 raise
-    if last_error is not None:
-        raise last_error
+            if attempt == 5:
+                raise
+            await asyncio.sleep(0.2 * (attempt + 1))
 
 
 @pytest.fixture
@@ -156,7 +169,7 @@ async def db_session(_test_session_factory, _test_engine, _prepare_schema) -> As
             # 死锁/连接被对端终止时 rollback 可能抛 InterfaceError，清理阶段吞掉即可。
             with contextlib.suppress(DBAPIError):
                 await session.rollback()
-            await _truncate_all(_test_engine)
+            await _truncate_with_retry(_test_engine)
 
 
 @pytest.fixture(scope="session")

@@ -14,7 +14,7 @@ from domain.enums import UserRole
 router = APIRouter(prefix="/api/projects/{pid}/monitoring", tags=["monitoring"])
 
 
-@router.get("/summary", response_model=MonitoringSummary)
+@router.get("/summary", response_model=MonitoringSummary, operation_id="monitoring_get_summary")
 async def get_summary(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -23,7 +23,7 @@ async def get_summary(
     return await MonitoringService(db).get_summary(pid)
 
 
-@router.get("/by-model", response_model=list[UsageByGroup])
+@router.get("/by-model", response_model=list[UsageByGroup], operation_id="monitoring_get_by_model")
 async def get_by_model(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -32,7 +32,7 @@ async def get_by_model(
     return await MonitoringService(db).get_by_model(pid)
 
 
-@router.get("/by-task-type", response_model=list[UsageByGroup])
+@router.get("/by-task-type", response_model=list[UsageByGroup], operation_id="monitoring_get_by_task_type")
 async def get_by_task_type(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -41,7 +41,7 @@ async def get_by_task_type(
     return await MonitoringService(db).get_by_task_type(pid)
 
 
-@router.get("/daily-trend", response_model=list[DailyTrend])
+@router.get("/daily-trend", response_model=list[DailyTrend], operation_id="monitoring_get_daily_trend")
 async def get_daily_trend(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -50,7 +50,7 @@ async def get_daily_trend(
     return await MonitoringService(db).get_daily_trend(pid)
 
 
-@router.get("/by-template", response_model=list[UsageByGroup])
+@router.get("/by-template", response_model=list[UsageByGroup], operation_id="monitoring_get_by_template")
 async def get_by_template(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],

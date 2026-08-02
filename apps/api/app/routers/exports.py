@@ -19,7 +19,7 @@ from storage import get_storage_client
 router = APIRouter(prefix="/api/projects/{pid}/exports", tags=["exports"])
 
 
-@router.get("/", response_model=PaginatedResponse[ExportResponse])
+@router.get("/", response_model=PaginatedResponse[ExportResponse], operation_id="export_list")
 async def list_exports(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -32,7 +32,7 @@ async def list_exports(
     return PaginatedResponse(items=exports, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{eid}", response_model=ExportResponse)
+@router.get("/{eid}", response_model=ExportResponse, operation_id="export_get")
 async def get_export(
     pid: uuid.UUID,
     eid: uuid.UUID,
@@ -46,7 +46,7 @@ async def get_export(
     return export
 
 
-@router.get("/{eid}/manifest", response_model=SnapshotManifestResponse)
+@router.get("/{eid}/manifest", response_model=SnapshotManifestResponse, operation_id="export_get_manifest")
 async def get_manifest(
     pid: uuid.UUID,
     eid: uuid.UUID,
@@ -64,7 +64,7 @@ async def get_manifest(
     return manifest
 
 
-@router.get("/{eid}/download")
+@router.get("/{eid}/download", operation_id="export_download")
 async def download_export(
     pid: uuid.UUID,
     eid: uuid.UUID,

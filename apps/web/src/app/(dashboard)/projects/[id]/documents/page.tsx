@@ -16,18 +16,11 @@ import {
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { usePagination } from "@/hooks/use-pagination";
-import { api, type PaginatedResponse } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { UploadIcon, FileTextIcon, Loader2Icon, Trash2Icon } from "lucide-react";
 
-interface Document {
-  id: string;
-  filename: string;
-  status: string;
-  file_size: number;
-  page_count?: number;
-  uploaded_by?: string;
-  created_at: string;
-}
+type Document = components["schemas"]["DocumentResponse"];
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -49,9 +42,10 @@ export default function DocumentsPage() {
   const fetchDocuments = useCallback(() => {
     setLoading(true);
     api
-      .get<PaginatedResponse<Document>>(
-        `/projects/${projectId}/documents?page=${page}&page_size=${pageSize}`
-      )
+      .get("/projects/{pid}/documents/", {
+        params: { pid: projectId },
+        query: { page, page_size: pageSize },
+      })
       .then((data) => {
         setDocuments(data.items);
         setTotal(data.total);
@@ -74,7 +68,9 @@ export default function DocumentsPage() {
         for (const file of fileArray) {
           const formData = new FormData();
           formData.append("file", file);
-          await api.upload(`/projects/${projectId}/documents/upload`, formData);
+          await api.upload("/projects/{pid}/documents/upload", formData, {
+            params: { pid: projectId },
+          });
         }
         toast.success(`成功上传 ${fileArray.length} 个文件`);
         fetchDocuments();
@@ -104,7 +100,9 @@ export default function DocumentsPage() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await api.delete(`/projects/${projectId}/documents/${deleteTarget.id}`);
+      await api.delete("/projects/{pid}/documents/{did}", {
+        params: { pid: projectId, did: deleteTarget.id },
+      });
       toast.success("文档已删除");
       setDeleteTarget(null);
       fetchDocuments();

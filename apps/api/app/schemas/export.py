@@ -1,12 +1,10 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
-
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
-class ExportRequest(BaseModel):
+class ExportRequest(RequestSchema):
     export_profile_id: uuid.UUID
 
 

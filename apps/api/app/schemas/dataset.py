@@ -1,18 +1,16 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
-
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
 # --- Dataset ---
-class DatasetCreate(BaseModel):
+class DatasetCreate(RequestSchema):
     name: str
     description: str | None = None
 
 
-class DatasetUpdate(BaseModel):
+class DatasetUpdate(RequestSchema):
     name: str | None = None
     description: str | None = None
 
@@ -28,7 +26,7 @@ class DatasetResponse(BaseSchema):
     updated_at: datetime
 
 
-class DatasetItemAdd(BaseModel):
+class DatasetItemAdd(RequestSchema):
     curated_item_id: uuid.UUID
 
 
@@ -40,12 +38,12 @@ class DatasetItemResponse(BaseSchema):
 
 
 # --- Benchmark ---
-class BenchmarkCreate(BaseModel):
+class BenchmarkCreate(RequestSchema):
     name: str
     description: str | None = None
 
 
-class BenchmarkUpdate(BaseModel):
+class BenchmarkUpdate(RequestSchema):
     name: str | None = None
     description: str | None = None
 
@@ -61,7 +59,7 @@ class BenchmarkResponse(BaseSchema):
     updated_at: datetime
 
 
-class BenchmarkCaseAdd(BaseModel):
+class BenchmarkCaseAdd(RequestSchema):
     curated_item_id: uuid.UUID
 
 

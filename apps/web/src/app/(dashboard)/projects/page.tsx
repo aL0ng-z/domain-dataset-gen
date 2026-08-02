@@ -20,20 +20,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api, isAbortError } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { FolderOpenIcon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 
-interface Project {
-  id: string;
-  name: string;
-  description?: string;
-  created_at: string;
-}
-
-interface ProjectListResponse {
-  items: Project[];
-  total: number;
-}
+type Project = components["schemas"]["ProjectResponse"];
 
 export default function ProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -48,7 +39,7 @@ export default function ProjectsPage() {
     setLoading(true);
     setError(null);
     api
-      .get<ProjectListResponse>("/projects/?page=1&page_size=50", { signal })
+      .get("/projects/", { query: { page: 1, page_size: 50 }, signal })
       .then((data) => setProjects(data.items))
       .catch((err) => {
         if (isAbortError(err)) return;

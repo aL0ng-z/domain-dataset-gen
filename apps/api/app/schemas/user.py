@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
 class UserResponse(BaseSchema):
@@ -13,7 +13,7 @@ class UserResponse(BaseSchema):
     created_at: datetime
 
 
-class UserUpdate(BaseSchema):
+class UserUpdate(RequestSchema):
     username: str | None = None
     email: str | None = None
     role: str | None = None

@@ -19,7 +19,7 @@ from domain.enums import UserRole
 router = APIRouter(prefix="/api/chunks", tags=["chunks"])
 
 
-@router.get("/{cid}", response_model=ChunkResponse)
+@router.get("/{cid}", response_model=ChunkResponse, operation_id="chunk_get")
 async def get_chunk(
     cid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -35,7 +35,7 @@ async def get_chunk(
     return chunk
 
 
-@router.patch("/{cid}", response_model=ChunkResponse)
+@router.patch("/{cid}", response_model=ChunkResponse, operation_id="chunk_update")
 async def update_chunk(
     cid: uuid.UUID,
     body: ChunkUpdate,
@@ -56,7 +56,7 @@ async def update_chunk(
     return chunk
 
 
-@router.post("/{cid}/generate", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{cid}/generate", response_model=TaskResponse, status_code=status.HTTP_201_CREATED, operation_id="chunk_generate")
 async def generate_from_chunk(
     cid: uuid.UUID,
     body: GenerateRequest,

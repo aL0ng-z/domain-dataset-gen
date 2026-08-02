@@ -15,7 +15,7 @@ from domain.schemas import PaginatedResponse
 router = APIRouter(prefix="/api/users", tags=["users"])
 
 
-@router.get("/", response_model=PaginatedResponse[UserResponse])
+@router.get("/", response_model=PaginatedResponse[UserResponse], operation_id="user_list")
 async def list_users(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_role(UserRole.admin))],
@@ -27,7 +27,7 @@ async def list_users(
     return PaginatedResponse(items=users, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{uid}", response_model=UserResponse)
+@router.get("/{uid}", response_model=UserResponse, operation_id="user_get")
 async def get_user(
     uid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -40,7 +40,7 @@ async def get_user(
     return user
 
 
-@router.patch("/{uid}", response_model=UserResponse)
+@router.patch("/{uid}", response_model=UserResponse, operation_id="user_update")
 async def update_user(
     uid: uuid.UUID,
     body: UserUpdate,
@@ -54,7 +54,7 @@ async def update_user(
     return user
 
 
-@router.delete("/{uid}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{uid}", status_code=status.HTTP_204_NO_CONTENT, operation_id="user_delete")
 async def delete_user(
     uid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],

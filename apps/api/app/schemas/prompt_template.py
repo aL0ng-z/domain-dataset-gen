@@ -3,10 +3,10 @@ from datetime import datetime
 
 from pydantic import BaseModel
 
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
-class PromptTemplateCreate(BaseModel):
+class PromptTemplateCreate(RequestSchema):
     task_type: str
     name: str
     system_prompt: str
@@ -15,7 +15,7 @@ class PromptTemplateCreate(BaseModel):
     output_schema: dict | None = None
 
 
-class PromptTemplateUpdate(BaseModel):
+class PromptTemplateUpdate(RequestSchema):
     name: str | None = None
     system_prompt: str | None = None
     user_prompt_template: str | None = None
@@ -49,7 +49,7 @@ class PromptTemplateVersionResponse(BaseSchema):
     created_at: datetime
 
 
-class TestRunRequest(BaseModel):
+class TestRunRequest(RequestSchema):
     chunk_id: uuid.UUID
     model_config_id: uuid.UUID
 

@@ -1,12 +1,14 @@
 from pydantic import BaseModel, Field
 
+from domain.schemas import RequestSchema
 
-class LoginRequest(BaseModel):
+
+class LoginRequest(RequestSchema):
     username: str
     password: str
 
 
-class RegisterRequest(BaseModel):
+class RegisterRequest(RequestSchema):
     username: str
     email: str
     password: str
@@ -21,5 +23,5 @@ class TokenResponse(BaseModel):
     token_type: str = Field(default="bearer", description="令牌类型，恒为 bearer")
 
 
-class RefreshRequest(BaseModel):
+class RefreshRequest(RequestSchema):
     refresh_token: str = Field(description="有效的 refresh token（type=refresh）")

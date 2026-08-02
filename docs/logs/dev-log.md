@@ -112,6 +112,8 @@
 
 ## T01 JWT 令牌语义与前端认证状态（2026-08-01）
 
+## T04 API/前端合同单一事实源（2026-08-01）
+
 ### 本轮总览
 
 | 模块 | 内容 | 状态 |
@@ -226,6 +228,39 @@
 - 前端：`npm test -- --run` 38 passed（新增 PDF Blob 授权 + WS 4401/4403）；
   `npm run lint` 0 problems；`npm exec tsc -- --noEmit` 通过；
   `npm run build` 通过。
+
+---
+
+| `libs/domain/domain/schemas.py` | 统一错误 envelope（ErrorResponse/ValidationErrorResponse）、`RequestSchema(extra=forbid)`、参数化 `PaginatedResponse[T]` | 已完成 |
+| `apps/api/app/errors.py` | 全局异常映射：业务错误→ErrorResponse（稳定 code），422→ValidationErrorResponse（loc/msg/type），500 不泄漏堆栈 | 已完成 |
+| `apps/api/app/openapi.py` | 定制 OpenAPI：错误模型注入 components、每个操作注入 401/403/404/409/422/500 响应 | 已完成 |
+| `apps/api/app/routers/*` | 全部前端调用路由补齐稳定 `operation_id`；Dataset items / Benchmark cases 由裸数组改为 `PaginatedResponse[T]`；202 异步响应声明模型；请求模型 `extra=forbid` | 已完成 |
+| `apps/api/app/schemas/*` | Candidate/CuratedItem `content`、`review_evidence_spans`、`source_pages` 声明为 JSON object（非字符串） | 已完成 |
+| `scripts/export_openapi.py` | 确定性 OpenAPI 导出（不连数据库/Redis/MinIO）+ `--check` 漂移门禁，提交规范化快照 `apps/api/openapi.json` | 已完成 |
+| `apps/web` | `openapi-typescript` 生成 `src/lib/api/generated.ts`；类型化 client（`api.get/post/patch/delete` 按路由模板推导 path/query/body/response）；ApiError 判别联合；`formatJsonPreview`/`parseJsonObject` helper | 已完成 |
+| `apps/web/src/app/.../projects/` | 全部页面迁移到生成类型，删除手写镜像接口与 `api.get<T>()` 覆盖；JSON 字段按 object 展示 | 已完成 |
+| `apps/web/scripts/generate-api.mjs` / `check-api.mjs` | `npm run api:generate` / `api:check`（漂移 + 旧合同模式静态检查） | 已完成 |
+| `tests/contract/test_openapi.py` | operationId 唯一/稳定、分页参数化、错误 envelope 注入、JSON 字段类型、生成确定性 | 已完成 |
+| `tests/contract/test_core_response_shapes.py` | 运行时响应形状：Dataset/Benchmark 分页空集/单页/越界页、content object、旧字段 422、401/403/404 envelope | 已完成 |
+| `apps/web/src/lib/api-contract.test.ts` | 前端 mock 合同测试：四键分页、JSON 渲染、422 validation、业务 code 判别、204 void | 已完成 |
+| `.github/workflows/ci.yml` | 增加 OpenAPI 导出漂移检查、合同测试、前端 `api:check` 门禁 | 已完成 |
+
+### 设计决策
+
+- **OpenAPI 为唯一事实源**：前端类型与类型化 client 全部由 `apps/api/openapi.json` 生成；任何后端 schema/路由变更后开发者漏跑 `npm run api:generate`，`api:check` 会在 CI 可靠失败。
+- **分页合同**：所有可增长集合统一 `{"items":[],"total":0,"page":1,"page_size":20}`；Dataset items / Benchmark cases 由裸数组切换为参数化分页，`total` 为过滤后总数，空页/越界页仍返回四键。
+- **JSON 字段**：Candidate/CuratedItem `content`、`review_evidence_spans`、`source_pages` 在 schema 中声明为 object；页面用 `formatJsonPreview` 只读展示，编辑用 `JSON.stringify` 初始化并在发送前 `JSON.parse` 校验。
+- **错误 envelope**：业务错误统一 `{"code","message","context","request_id"}`，前端按稳定 `code` 判别，不匹配中文 message/detail；422 保留 `ValidationErrorResponse`（loc/msg/type）供字段定位。响应不泄漏堆栈/SQL/Token。
+- **请求严格性**：请求模型统一 `extra=forbid`，旧请求字段（如字符串 `content`、`template_id`）返回 422 而非静默忽略。
+- **类型化 client**：保留 access-token、refresh、AbortSignal、超时与 FormData 上传行为；成功响应从 operations 推导（排除错误 envelope），页面禁止 `api.get<T>()` 手写覆盖。
+- **静态检查**：`check-contract-patterns.mjs` 禁止 `api.<T>()`、`as unknown as`、`as never` 绕过。
+
+### 验证状态
+
+- 后端：`python -m ruff check apps/api libs tests scripts` 通过；`python -m pytest -q tests/contract/test_openapi.py tests/contract/test_core_response_shapes.py` 27 项通过；全量 `python -m pytest -q` 72 项通过。
+- 前端：`npm run lint` 0 problems；`npm exec tsc -- --noEmit` 通过；`npm test -- --run` 19 项通过（含 api-contract 6 项）；`npm run build` 通过。
+- 合同门禁：`python scripts/export_openapi.py --check` 通过（连续两次生成字节一致）；`npm run api:check` 通过（generated.ts 与 openapi.json 一致 + 无旧合同模式）。
+- 测试基础设施修复：conftest 的逐表 TRUNCATE DO 循环改为单语句 TRUNCATE，测试引擎关闭 asyncpg 语句缓存（`statement_cache_size=0`），session 开始时清空业务表，并对 teardown TRUNCATE 按 sqlstate 40P01（deadlock_detected）退避重试，消除多 worktree 并发访问同一测试库时的间歇性死锁与残留数据冲突。
 
 ---
 

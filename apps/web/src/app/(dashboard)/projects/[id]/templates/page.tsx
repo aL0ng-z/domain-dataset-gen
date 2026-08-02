@@ -7,7 +7,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { DataTable, type ColumnDef } from "@/components/data-table";
-import { api, type PaginatedResponse } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { usePagination } from "@/hooks/use-pagination";
 import { PlusIcon, FileEditIcon } from "lucide-react";
 import {
@@ -21,15 +22,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
-interface Template {
-  id: string;
-  name: string;
-  task_type: string;
-  system_prompt?: string;
-  user_prompt_template?: string;
-  description?: string;
-  created_at: string;
-}
+type Template = components["schemas"]["PromptTemplateResponse"];
 
 const TASK_TYPES = [
   { key: "all", label: "全部" },
@@ -50,19 +43,21 @@ export default function TemplatesPage() {
   const [formData, setFormData] = useState({
     name: "",
     task_type: "knowledge_extraction",
-    description: "",
     system_prompt: "",
     user_prompt_template: "",
   });
 
   const fetchTemplates = useCallback(() => {
     setLoading(true);
-    const typeParam =
-      activeTab !== "all" ? `&task_type=${activeTab}` : "";
     api
-      .get<PaginatedResponse<Template>>(
-        `/projects/${projectId}/prompt-templates?page=${page}&page_size=${pageSize}${typeParam}`
-      )
+      .get("/projects/{pid}/prompt-templates/", {
+        params: { pid: projectId },
+        query: {
+          page,
+          page_size: pageSize,
+          task_type: activeTab !== "all" ? activeTab : undefined,
+        },
+      })
       .then((data) => {
         setTemplates(data.items);
         setTotal(data.total);
@@ -94,13 +89,14 @@ export default function TemplatesPage() {
       return;
     }
     try {
-      await api.post(`/projects/${projectId}/prompt-templates`, formData);
+      await api.post("/projects/{pid}/prompt-templates/", formData, {
+        params: { pid: projectId },
+      });
       toast.success("模板创建成功");
       setDialogOpen(false);
       setFormData({
         name: "",
         task_type: "knowledge_extraction",
-        description: "",
         system_prompt: "",
         user_prompt_template: "",
       });
@@ -130,11 +126,6 @@ export default function TemplatesPage() {
         const label = TASK_TYPES.find((t) => t.key === row.task_type)?.label;
         return label || row.task_type;
       },
-    },
-    {
-      key: "description",
-      header: "描述",
-      render: (row) => row.description || "-",
     },
     {
       key: "created_at",
@@ -198,16 +189,6 @@ export default function TemplatesPage() {
                   <option value="qa_generation">问答生成</option>
                   <option value="eval_case">评测用例</option>
                 </select>
-              </div>
-              <div>
-                <label className="text-sm font-medium">描述</label>
-                <Textarea
-                  value={formData.description}
-                  onChange={(e) =>
-                    setFormData({ ...formData, description: e.target.value })
-                  }
-                  placeholder="模板描述"
-                />
               </div>
               <div>
                 <label className="text-sm font-medium">系统提示</label>

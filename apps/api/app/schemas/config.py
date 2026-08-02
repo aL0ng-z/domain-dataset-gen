@@ -4,11 +4,11 @@ from datetime import datetime
 from pydantic import BaseModel, field_serializer, field_validator, model_validator
 
 from app.security.snapshot import find_forbidden_keys, redact, validate_parser_options
-from domain.schemas import BaseSchema
+from domain.schemas import BaseSchema, RequestSchema
 
 
 # --- ModelConfig ---
-class ModelConfigCreate(BaseModel):
+class ModelConfigCreate(RequestSchema):
     name: str
     provider: str
     base_url: str
@@ -19,7 +19,7 @@ class ModelConfigCreate(BaseModel):
     extra_params: dict | None = None
 
 
-class ModelConfigUpdate(BaseModel):
+class ModelConfigUpdate(RequestSchema):
     name: str | None = None
     provider: str | None = None
     base_url: str | None = None
@@ -50,7 +50,13 @@ class ModelConfigResponse(BaseSchema):
 PARSER_SECRET_KEYS = {"api_key", "access_token", "token"}
 
 
-class ParserProfileCreate(BaseModel):
+def _validate_parser_options(options: dict | None) -> dict | None:
+    if options and PARSER_SECRET_KEYS.intersection(options):
+        raise ValueError("解析器 API 密钥必须配置在后端环境变量中，不能保存到 ParserProfile")
+    return options
+
+
+class ParserProfileCreate(RequestSchema):
     name: str
     parser_name: str = "mock"
     parser_options: dict | None = None
@@ -83,7 +89,7 @@ class ParserProfileCreate(BaseModel):
         return self
 
 
-class ParserProfileUpdate(BaseModel):
+class ParserProfileUpdate(RequestSchema):
     name: str | None = None
     parser_name: str | None = None
     parser_options: dict | None = None
@@ -156,7 +162,7 @@ def finalize_parser_options(parser_name: str, options: dict | None) -> dict | No
 
 
 # --- ChunkProfile ---
-class ChunkProfileCreate(BaseModel):
+class ChunkProfileCreate(RequestSchema):
     name: str
     strategy: str = "hybrid_heading_recursive"
     max_tokens: int = 512
@@ -164,7 +170,7 @@ class ChunkProfileCreate(BaseModel):
     options: dict | None = None
 
 
-class ChunkProfileUpdate(BaseModel):
+class ChunkProfileUpdate(RequestSchema):
     name: str | None = None
     strategy: str | None = None
     max_tokens: int | None = None
@@ -187,13 +193,13 @@ class ChunkProfileResponse(BaseSchema):
 
 
 # --- ExportProfile ---
-class ExportProfileCreate(BaseModel):
+class ExportProfileCreate(RequestSchema):
     name: str
     format: str = "sft_jsonl"
     template_options: dict | None = None
 
 
-class ExportProfileUpdate(BaseModel):
+class ExportProfileUpdate(RequestSchema):
     name: str | None = None
     format: str | None = None
     template_options: dict | None = None
@@ -212,7 +218,7 @@ class ExportProfileResponse(BaseSchema):
 
 
 # --- TaskPolicy ---
-class TaskPolicyCreate(BaseModel):
+class TaskPolicyCreate(RequestSchema):
     name: str
     task_type: str
     max_retries: int = 3
@@ -220,7 +226,7 @@ class TaskPolicyCreate(BaseModel):
     concurrency_limit: int = 5
 
 
-class TaskPolicyUpdate(BaseModel):
+class TaskPolicyUpdate(RequestSchema):
     name: str | None = None
     task_type: str | None = None
     max_retries: int | None = None

@@ -10,47 +10,20 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { Button } from "@/components/ui/button";
 import { RefreshCwIcon } from "lucide-react";
 
-interface MonitoringSummary {
-  total_tokens: number;
-  total_requests: number;
-  total_errors: number;
-  avg_latency_ms: number;
-}
-
-interface DailyTrend {
-  date: string;
-  tokens: number;
-  requests: number;
-  errors: number;
-}
-
-interface ModelUsage {
-  model: string;
-  tokens: number;
-  requests: number;
-}
-
-interface TemplateUsage {
-  template_name: string;
-  tokens: number;
-  requests: number;
-}
-
-interface TaskTypeUsage {
-  task_type: string;
-  tokens: number;
-  requests: number;
-}
+type MonitoringSummary = components["schemas"]["MonitoringSummary"];
+type DailyTrend = components["schemas"]["DailyTrend"];
+type UsageByGroup = components["schemas"]["UsageByGroup"];
 
 interface MonitoringData {
   summary: MonitoringSummary;
   daily_trend: DailyTrend[];
-  by_model: ModelUsage[];
-  by_template: TemplateUsage[];
-  by_task_type: TaskTypeUsage[];
+  by_model: UsageByGroup[];
+  by_template: UsageByGroup[];
+  by_task_type: UsageByGroup[];
 }
 
 function formatNumber(n: number): string {
@@ -60,31 +33,27 @@ function formatNumber(n: number): string {
 }
 
 /** Simple horizontal bar chart using colored divs */
-function SimpleBarChart({
+function UsageBarChart({
   data,
-  labelKey,
-  valueKey,
   color = "bg-primary",
 }: {
-  data: Record<string, unknown>[];
-  labelKey: string;
-  valueKey: string;
+  data: UsageByGroup[];
   color?: string;
 }) {
   const maxVal = Math.max(
-    ...data.map((d) => Number(d[valueKey]) || 0),
-    1
+    ...data.map((d) => d.input_tokens + d.output_tokens),
+    1,
   );
 
   return (
     <div className="space-y-2">
       {data.map((d, i) => {
-        const val = Number(d[valueKey]) || 0;
+        const val = d.input_tokens + d.output_tokens;
         const pct = (val / maxVal) * 100;
         return (
           <div key={i} className="flex items-center gap-2 text-sm">
             <span className="w-28 truncate text-muted-foreground text-xs">
-              {String(d[labelKey])}
+              {d.group}
             </span>
             <div className="flex-1 h-5 bg-muted rounded overflow-hidden">
               <div
@@ -109,12 +78,13 @@ function SimpleBarChart({
 
 /** Simple daily trend using vertical bars */
 function DailyTrendChart({ data }: { data: DailyTrend[] }) {
-  const maxTokens = Math.max(...data.map((d) => d.tokens), 1);
+  const maxTokens = Math.max(...data.map((d) => d.input_tokens + d.output_tokens), 1);
 
   return (
     <div className="flex items-end gap-1 h-40">
       {data.map((d, i) => {
-        const pct = (d.tokens / maxTokens) * 100;
+        const tokens = d.input_tokens + d.output_tokens;
+        const pct = (tokens / maxTokens) * 100;
         return (
           <div
             key={i}
@@ -123,7 +93,7 @@ function DailyTrendChart({ data }: { data: DailyTrend[] }) {
             <div className="w-full flex justify-center">
               <div
                 className="w-full max-w-6 bg-primary rounded-t transition-all"
-                style={{ height: `${pct}%`, minHeight: d.tokens > 0 ? "2px" : "0" }}
+                style={{ height: `${pct}%`, minHeight: tokens > 0 ? "2px" : "0" }}
               />
             </div>
             <span className="text-[9px] text-muted-foreground -rotate-45 origin-center whitespace-nowrap">
@@ -149,11 +119,17 @@ export default function MonitoringPage() {
 
   const fetchData = useCallback(() => {
     setLoading(true);
-    api
-      .get<MonitoringData>(
-        `/projects/${projectId}/monitoring/summary`
-      )
-      .then(setData)
+    const base = { pid: projectId };
+    Promise.all([
+      api.get("/projects/{pid}/monitoring/summary", { params: base }),
+      api.get("/projects/{pid}/monitoring/daily-trend", { params: base }),
+      api.get("/projects/{pid}/monitoring/by-model", { params: base }),
+      api.get("/projects/{pid}/monitoring/by-template", { params: base }),
+      api.get("/projects/{pid}/monitoring/by-task-type", { params: base }),
+    ])
+      .then(([summary, daily_trend, by_model, by_template, by_task_type]) => {
+        setData({ summary, daily_trend, by_model, by_template, by_task_type });
+      })
       .catch(() => toast.error("加载监控数据失败"))
       .finally(() => setLoading(false));
   }, [projectId]);
@@ -183,7 +159,8 @@ export default function MonitoringPage() {
   }
 
   const summary = data?.summary || {
-    total_tokens: 0,
+    total_input_tokens: 0,
+    total_output_tokens: 0,
     total_requests: 0,
     total_errors: 0,
     avg_latency_ms: 0,
@@ -214,7 +191,7 @@ export default function MonitoringPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {formatNumber(summary.total_tokens)}
+              {formatNumber(summary.total_input_tokens + summary.total_output_tokens)}
             </div>
           </CardContent>
         </Card>
@@ -273,12 +250,7 @@ export default function MonitoringPage() {
             <CardTitle>按模型</CardTitle>
           </CardHeader>
           <CardContent>
-            <SimpleBarChart
-              data={(data?.by_model || []) as unknown as Record<string, unknown>[]}
-              labelKey="model"
-              valueKey="tokens"
-              color="bg-blue-500"
-            />
+            <UsageBarChart data={data?.by_model || []} color="bg-blue-500" />
           </CardContent>
         </Card>
         <Card>
@@ -286,12 +258,7 @@ export default function MonitoringPage() {
             <CardTitle>按模板</CardTitle>
           </CardHeader>
           <CardContent>
-            <SimpleBarChart
-              data={(data?.by_template || []) as unknown as Record<string, unknown>[]}
-              labelKey="template_name"
-              valueKey="tokens"
-              color="bg-violet-500"
-            />
+            <UsageBarChart data={data?.by_template || []} color="bg-violet-500" />
           </CardContent>
         </Card>
         <Card>
@@ -299,12 +266,7 @@ export default function MonitoringPage() {
             <CardTitle>按任务类型</CardTitle>
           </CardHeader>
           <CardContent>
-            <SimpleBarChart
-              data={(data?.by_task_type || []) as unknown as Record<string, unknown>[]}
-              labelKey="task_type"
-              valueKey="tokens"
-              color="bg-emerald-500"
-            />
+            <UsageBarChart data={data?.by_task_type || []} color="bg-emerald-500" />
           </CardContent>
         </Card>
       </div>

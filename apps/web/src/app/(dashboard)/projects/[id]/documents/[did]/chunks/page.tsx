@@ -8,25 +8,12 @@ import { Button } from "@/components/ui/button";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { usePagination } from "@/hooks/use-pagination";
-import { api, type PaginatedResponse } from "@/lib/api";
+import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { ArrowLeftIcon } from "lucide-react";
 
-interface Chunk {
-  id: string;
-  ordinal: number;
-  section_id?: string;
-  heading_path?: string;
-  content: string;
-  token_count: number;
-  status: string;
-  created_at: string;
-}
-
-interface Section {
-  id: string;
-  ordinal: number;
-  heading_path: string;
-}
+type Chunk = components["schemas"]["ChunkResponse"];
+type Section = components["schemas"]["SectionResponse"];
 
 export default function ChunksPage() {
   const params = useParams<{ id: string; did: string }>();
@@ -41,21 +28,25 @@ export default function ChunksPage() {
 
   useEffect(() => {
     api
-      .get<{ items: Section[] }>(
-        `/projects/${projectId}/documents/${docId}/sections?page=1&page_size=100`
-      )
+      .get("/projects/{pid}/documents/{did}/sections", {
+        params: { pid: projectId, did: docId },
+        query: { page: 1, page_size: 100 },
+      })
       .then((data) => setSections(data.items))
       .catch(() => {});
   }, [projectId, docId]);
 
   const fetchChunks = useCallback(() => {
     setLoading(true);
-    const sectionParam =
-      sectionFilter !== "all" ? `&section_id=${sectionFilter}` : "";
     api
-      .get<PaginatedResponse<Chunk>>(
-        `/projects/${projectId}/documents/${docId}/chunks?page=${page}&page_size=${pageSize}${sectionParam}`
-      )
+      .get("/projects/{pid}/documents/{did}/chunks", {
+        params: { pid: projectId, did: docId },
+        query: {
+          page,
+          page_size: pageSize,
+          section_id: sectionFilter !== "all" ? sectionFilter : undefined,
+        },
+      })
       .then((data) => {
         setChunks(data.items);
         setTotal(data.total);

@@ -16,7 +16,7 @@ from domain.schemas import PaginatedResponse
 router = APIRouter(prefix="/api/projects/{pid}/tasks", tags=["tasks"])
 
 
-@router.get("/", response_model=PaginatedResponse[TaskResponse])
+@router.get("/", response_model=PaginatedResponse[TaskResponse], operation_id="task_list")
 async def list_tasks(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -31,7 +31,7 @@ async def list_tasks(
     return PaginatedResponse(items=tasks, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{tid}", response_model=TaskResponse)
+@router.get("/{tid}", response_model=TaskResponse, operation_id="task_get")
 async def get_task(
     pid: uuid.UUID,
     tid: uuid.UUID,
@@ -45,7 +45,7 @@ async def get_task(
     return task
 
 
-@router.post("/{tid}/cancel", response_model=TaskResponse)
+@router.post("/{tid}/cancel", response_model=TaskResponse, operation_id="task_cancel")
 async def cancel_task(
     pid: uuid.UUID,
     tid: uuid.UUID,
@@ -62,7 +62,7 @@ async def cancel_task(
     return task
 
 
-@router.post("/{tid}/retry", response_model=TaskResponse)
+@router.post("/{tid}/retry", response_model=TaskResponse, operation_id="task_retry")
 async def retry_task(
     pid: uuid.UUID,
     tid: uuid.UUID,
