@@ -4,6 +4,42 @@
 
 ---
 
+## T06 版本化切分与 Token 预算（2026-08-03）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `libs/splitters/` | `canonical.py`（splitter/tokenizer 版本标识 + source/output hash）；`token_util.py`（tiktoken 字节对齐切分防 U+FFFD）；`hybrid_heading.py` 修复超长段落/overlap 后超预算（正文预算 = max_tokens - overlap - separator - joiner，单 piece 超限继续递归/hard split） | 已完成 |
+| `apps/api/app/models/chunk_set.py` | 新增 version/is_legacy/idempotency_key/source/output hash/splitter_version/error_message/completed_at/task_id + 唯一/部分唯一/CHECK 约束 | 已完成 |
+| `apps/api/app/models/chunk.py` | chunk_set_id 收紧 NOT NULL + 唯一(chunk_set_id,ordinal) + token_count>0/ordinal>=0 CHECK + 索引 | 已完成 |
+| `apps/api/app/models/config.py` | ChunkProfile DB CHECK（max_tokens>0、overlap>=0、overlap<max_tokens） | 已完成 |
+| `apps/api/migrations/versions/t06_versioned_chunking.py` | chunk_set_status 枚举重建含 failed/cancelled；ChunkSet 版本化字段；legacy 回填（无法绑定 T07 持久 Task 或缺必填字段的旧 set 置 legacy_unverified；孤儿 Chunk 按 Document 建隔离 legacy set 稳定重排 ordinal）；非法 active pointer 清空不猜测；downgrade 预检 failed/cancelled 停止 | 已完成 |
+| `apps/api/app/services/chunk_set_service.py` | Document 行锁内分配 version；幂等复核；冻结 config_json；事务内创建 ChunkSet + T07 queued Task | 已完成 |
+| `apps/api/app/workers/chunk_worker.py` | chunk_document:v2：只消费 accepted+active 清洗版本，冻结 config/tokenizer，worker 复算 token_count 超限即集合 failed，发布前重锁 Document 复核来源；成功路径原子发布，失败/取消经 terminal hook 收敛 ChunkSet | 已完成 |
+| `apps/api/app/workers/execution.py` / `runner.py` | ExecutionContext 增加 set_terminal_hook；runner 失败/取消回滚后调用业务终态钩子 | 已完成 |
+| `apps/api/app/routers/*.py` | POST chunk（Idempotency-Key 必填/cleaned_version 校验/幂等复用/409 并发）；GET chunk-sets 历史；GET chunks 默认 active set；PATCH completed set 409 不可变 | 已完成 |
+| `apps/web` | 发起切分幂等 key 复用；活跃切分禁用按钮；Chunk 列表页 active set + 版本历史只读切换 + 失败展示；详情页版本展示与不可变说明 | 已完成 |
+| 测试 | `tests/unit/test_chunk_splitter.py`（16 项）+ 前端 `chunk-versioning.test.tsx`（4 项） | 已完成 |
+
+### 设计决策
+
+- **版本号在 Document 行锁内分配**：不允许无锁 `MAX(version)+1`，避免并发完成时最后写入者获胜；幂等复核也在锁内，同 key 命中直接重放。
+- **overlap 纳入总预算**：正文预算 = max_tokens - overlap - separator(overlap 标记) - joiner(空行)，任何最终 Chunk 超过 max_tokens 都使整个集合 failed，绝不截断静默发布。
+- **tiktoken 字节对齐切分**：cl100k_base 对 CJK 用字节碎片 token，直接按 token 边界 decode 会产生 U+FFFD；`token_util.hard_split`/`clean_suffix` 用 `decode_single_token_bytes` 做字节级对齐，只在完整 UTF-8 字符边界切分/取 overlap。
+- **ChunkSet 与 Task 同事务创建**：ChunkSet 绑定首次派发 Task（task_id 唯一约束），retry 通过 `retry_of_task_id` 链追溯而不覆盖它；切分只经 T07 dispatcher 执行，移除请求内 BackgroundTasks。
+- **发布原子性与终态收敛**：成功路径业务写入（staging Chunk + completed set + active pointer）由 runner 完成事务原子提交；失败/取消 runner 回滚 staging 后，terminal hook 用 CAS 把 ChunkSet 收敛为 failed/cancelled，绝不覆盖已完成产物。
+- **CLEAN_VERSION_STALE 语义**：发布前重锁 Document 复核 `active_clean_version_id` 仍等于来源；T05 终审推进时本次切分失败，不覆盖新 active 链路。
+- **legacy 回填诚实性**：无法明确绑定 T07 持久 Task 或缺失必填字段的迁移前 set 一律 `is_legacy=true` + `summary_json.provenance=legacy_unverified`，不伪造 task_id/溯源；孤儿 Chunk 按 Document 建隔离 legacy set 稳定重排 ordinal，Chunk id 不变。
+
+### 验证状态
+
+- 后端 splitter 单元测试 16 项通过（预算/overlap/边界/确定性/hash/Unicode 安全）。
+- 迁移往返 `upgrade head → downgrade 58918ea257fd → upgrade head` 通过；专用库验证 legacy/orphan/active-pointer 回填语义正确。
+- 前端 60 项测试通过（新增 4 项切分版本合同）；lint/tsc/api:check/build 通过。
+
+---
+
 ## T05 清洗编辑并发与租约（2026-08-03）
 
 ## T07 任务生命周期、派发、重试与取消（2026-08-03）
