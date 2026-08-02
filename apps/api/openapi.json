@@ -2977,6 +2977,39 @@
             "title": "Document Id",
             "type": "string"
           },
+          "endpoint_policy_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Policy Ref"
+          },
+          "endpoint_policy_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Policy Sha256"
+          },
+          "endpoint_policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Policy Version"
+          },
           "error_message": {
             "anyOf": [
               {
@@ -2988,6 +3021,18 @@
             ],
             "title": "Error Message"
           },
+          "frozen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frozen At"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -2997,6 +3042,28 @@
             "format": "uuid",
             "title": "Parser Profile Id",
             "type": "string"
+          },
+          "parser_profile_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parser Profile Sha256"
+          },
+          "snapshot_schema_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Schema Version"
           },
           "started_at": {
             "anyOf": [
@@ -3023,7 +3090,13 @@
           "error_message",
           "started_at",
           "completed_at",
-          "created_at"
+          "created_at",
+          "snapshot_schema_version",
+          "parser_profile_sha256",
+          "endpoint_policy_ref",
+          "endpoint_policy_version",
+          "endpoint_policy_sha256",
+          "frozen_at"
         ],
         "title": "ParseJobResponse",
         "type": "object"
@@ -3041,6 +3114,51 @@
           "parser_profile_id"
         ],
         "title": "ParseRequest",
+        "type": "object"
+      },
+      "ParserEndpointListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ParserEndpointOption"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ParserEndpointListResponse",
+        "type": "object"
+      },
+      "ParserEndpointOption": {
+        "description": "项目用户可选的端点只读信息；不返回主机/IP/端口/allowlist 或网络区域内部细节。",
+        "properties": {
+          "credential_configured": {
+            "title": "Credential Configured",
+            "type": "boolean"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "endpoint_ref": {
+            "title": "Endpoint Ref",
+            "type": "string"
+          },
+          "parser_name": {
+            "title": "Parser Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint_ref",
+          "display_name",
+          "parser_name",
+          "credential_configured"
+        ],
+        "title": "ParserEndpointOption",
         "type": "object"
       },
       "ParserProfileCreate": {
@@ -3610,6 +3728,7 @@
         "additionalProperties": false,
         "properties": {
           "refresh_token": {
+            "description": "有效的 refresh token（type=refresh）",
             "title": "Refresh Token",
             "type": "string"
           }
@@ -4069,6 +4188,146 @@
         "title": "SnapshotManifestResponse",
         "type": "object"
       },
+      "TaskAttemptResponse": {
+        "properties": {
+          "attempt_no": {
+            "title": "Attempt No",
+            "type": "integer"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "metrics": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics"
+          },
+          "retriable": {
+            "title": "Retriable",
+            "type": "boolean"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "worker_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Worker Id"
+          }
+        },
+        "required": [
+          "id",
+          "task_id",
+          "attempt_no",
+          "worker_id",
+          "status",
+          "started_at",
+          "finished_at",
+          "error_code",
+          "error_message",
+          "retriable"
+        ],
+        "title": "TaskAttemptResponse",
+        "type": "object"
+      },
+      "TaskCancelResponse": {
+        "description": "取消任务响应：返回当前任务状态。",
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "state_version",
+          "completed_at"
+        ],
+        "title": "TaskCancelResponse",
+        "type": "object"
+      },
       "TaskPolicyCreate": {
         "additionalProperties": false,
         "properties": {
@@ -4234,6 +4493,30 @@
       },
       "TaskResponse": {
         "properties": {
+          "attempt_count": {
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "can_cancel": {
+            "title": "Can Cancel",
+            "type": "boolean"
+          },
+          "can_retry": {
+            "title": "Can Retry",
+            "type": "boolean"
+          },
+          "cancel_requested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Requested At"
+          },
           "completed_at": {
             "anyOf": [
               {
@@ -4265,6 +4548,17 @@
             "title": "Entity Type",
             "type": "string"
           },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
           "error_message": {
             "anyOf": [
               {
@@ -4279,6 +4573,15 @@
           "id": {
             "format": "uuid",
             "title": "Id",
+            "type": "string"
+          },
+          "max_attempts": {
+            "title": "Max Attempts",
+            "type": "integer"
+          },
+          "next_run_at": {
+            "format": "date-time",
+            "title": "Next Run At",
             "type": "string"
           },
           "parent_task_id": {
@@ -4302,6 +4605,30 @@
             "title": "Project Id",
             "type": "string"
           },
+          "result_json": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Json"
+          },
+          "retry_of_task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retry Of Task Id"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -4313,6 +4640,10 @@
               }
             ],
             "title": "Started At"
+          },
+          "state_version": {
+            "title": "State Version",
+            "type": "integer"
           },
           "status": {
             "title": "Status",
@@ -4336,7 +4667,16 @@
           "created_by",
           "created_at",
           "started_at",
-          "completed_at"
+          "completed_at",
+          "state_version",
+          "attempt_count",
+          "max_attempts",
+          "next_run_at",
+          "cancel_requested_at",
+          "retry_of_task_id",
+          "can_cancel",
+          "can_retry",
+          "error_code"
         ],
         "title": "TaskResponse",
         "type": "object"
@@ -4396,17 +4736,21 @@
         "type": "object"
       },
       "TokenResponse": {
+        "description": "登录/刷新响应。access_token 仅用于受保护入口；refresh_token 仅用于刷新接口。",
         "properties": {
           "access_token": {
+            "description": "access token（type=access），用于受保护 HTTP/PDF/WebSocket 入口",
             "title": "Access Token",
             "type": "string"
           },
           "refresh_token": {
+            "description": "refresh token（type=refresh），仅用于 POST /api/auth/refresh",
             "title": "Refresh Token",
             "type": "string"
           },
           "token_type": {
             "default": "bearer",
+            "description": "令牌类型，恒为 bearer",
             "title": "Token Type",
             "type": "string"
           }
@@ -7159,6 +7503,22 @@
               "title": "Bid",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -9099,6 +9459,22 @@
               "title": "Did",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -10005,6 +10381,22 @@
               "title": "Did",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -10656,6 +11048,22 @@
               "title": "Did",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -10852,7 +11260,7 @@
     },
     "/api/projects/{pid}/documents/{did}/file": {
       "get": {
-        "description": "Serve PDF file. Supports both Authorization header and ?token= query param (for iframe).",
+        "description": "Serve PDF file. Requires Authorization: Bearer access token and project viewer.\n\n- 仅接受 Authorization 头；query token 一律拒绝（任务卡 §5.2）。\n- did 必须属于 pid，调用者至少为 viewer；校验完成前不访问 MinIO。\n- 响应 private, no-store；任何日志不得打印 Authorization 或文件内容。",
         "operationId": "document_get_file",
         "parameters": [
           {
@@ -10874,22 +11282,6 @@
               "title": "Did",
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Token"
-            }
           }
         ],
         "responses": {
@@ -10900,6 +11292,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
           },
           "404": {
             "content": {
@@ -10932,6 +11344,11 @@
             "description": "服务器内部错误"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Document File",
         "tags": [
           "documents"
@@ -10960,6 +11377,22 @@
               "format": "uuid",
               "title": "Did",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -11058,6 +11491,22 @@
               "format": "uuid",
               "title": "Did",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -13715,7 +14164,7 @@
     },
     "/api/projects/{pid}/parser-profiles/": {
       "get": {
-        "operationId": "parser-profiles_list",
+        "operationId": "list_all_api_projects__pid__parser_profiles__get",
         "parameters": [
           {
             "in": "path",
@@ -13814,7 +14263,7 @@
         ]
       },
       "post": {
-        "operationId": "parser-profiles_create",
+        "operationId": "create_api_projects__pid__parser_profiles__post",
         "parameters": [
           {
             "in": "path",
@@ -13900,9 +14349,87 @@
         ]
       }
     },
+    "/api/projects/{pid}/parser-profiles/endpoints": {
+      "get": {
+        "operationId": "list_endpoints_api_projects__pid__parser_profiles_endpoints_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParserEndpointListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Endpoints",
+        "tags": [
+          "parser-profiles"
+        ]
+      }
+    },
     "/api/projects/{pid}/parser-profiles/{config_id}": {
       "delete": {
-        "operationId": "parser-profiles_delete",
+        "operationId": "delete_api_projects__pid__parser_profiles__config_id__delete",
         "parameters": [
           {
             "in": "path",
@@ -13981,7 +14508,7 @@
         ]
       },
       "get": {
-        "operationId": "parser-profiles_get",
+        "operationId": "get_api_projects__pid__parser_profiles__config_id__get",
         "parameters": [
           {
             "in": "path",
@@ -14067,7 +14594,7 @@
         ]
       },
       "patch": {
-        "operationId": "parser-profiles_update",
+        "operationId": "update_api_projects__pid__parser_profiles__config_id__patch",
         "parameters": [
           {
             "in": "path",
@@ -14165,7 +14692,7 @@
     },
     "/api/projects/{pid}/parser-profiles/{config_id}/set-default": {
       "post": {
-        "operationId": "parser-profiles_set_default",
+        "operationId": "set_default_api_projects__pid__parser_profiles__config_id__set_default_post",
         "parameters": [
           {
             "in": "path",
@@ -15715,6 +16242,109 @@
         ]
       }
     },
+    "/api/projects/{pid}/tasks/{tid}/attempts": {
+      "get": {
+        "description": "返回按 attempt_no 排序的审计列表；不返回 payload 中可能敏感的内部字段。",
+        "operationId": "task_attempts",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "tid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TaskAttemptResponse"
+                  },
+                  "title": "Response Task Attempts",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "资源不存在"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Task Attempts",
+        "tags": [
+          "tasks"
+        ]
+      }
+    },
     "/api/projects/{pid}/tasks/{tid}/cancel": {
       "post": {
         "operationId": "task_cancel",
@@ -15745,7 +16375,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TaskResponse"
+                  "$ref": "#/components/schemas/TaskCancelResponse"
                 }
               }
             },
@@ -15826,10 +16456,26 @@
               "title": "Tid",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "responses": {
-          "200": {
+          "201": {
             "content": {
               "application/json": {
                 "schema": {
