@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 import redis.asyncio as aioredis
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
@@ -456,17 +456,54 @@ class ResourceFactory:
     async def create_chunk(self, section_id: uuid.UUID, document_id: uuid.UUID, ordinal: int = 0):
         from app.models.chunk import Chunk
 
+        # T06：chunks.chunk_set_id NOT NULL。为文档惰性创建 legacy 隔离集合，
+        # 保证既有测试/下游 FK 结构不变（Chunk id 不变）。
+        chunk_set_id = await self._ensure_legacy_chunk_set(document_id)
         chunk = Chunk(
             section_id=section_id,
             document_id=document_id,
+            chunk_set_id=chunk_set_id,
             ordinal=ordinal,
             heading_path="1.1",
             content="测试内容",
+            token_count=1,
         )
         self.session.add(chunk)
         await self.session.flush()
         await self.session.refresh(chunk)
         return chunk
+
+    async def _ensure_legacy_chunk_set(self, document_id: uuid.UUID) -> uuid.UUID:
+        """为文档创建/复用 is_legacy=true 隔离集合（确定性 UUID）。"""
+        from app.models.chunk_set import ChunkSet
+        from app.models.document import Document
+
+        result = await self.session.execute(
+            select(ChunkSet).where(
+                ChunkSet.document_id == document_id,
+                ChunkSet.is_legacy.is_(True),
+            ).limit(1)
+        )
+        existing = result.scalars().first()
+        if existing is not None:
+            return existing.id
+
+        doc = (
+            await self.session.execute(select(Document).where(Document.id == document_id))
+        ).scalar_one_or_none()
+        if doc is None:
+            raise RuntimeError("document not found")
+        cs = ChunkSet(
+            document_id=document_id,
+            status="completed",
+            version=1,
+            is_legacy=True,
+            summary_json={"provenance": "test_fixture"},
+            created_by=doc.uploaded_by,
+        )
+        self.session.add(cs)
+        await self.session.flush()
+        return cs.id
 
     async def create_generation_run(
         self,
