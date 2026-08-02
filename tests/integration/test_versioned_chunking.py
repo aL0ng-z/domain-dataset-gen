@@ -517,6 +517,12 @@ async def test_worker_failure_midway_keeps_old_active(
 
     orig_get = splitters.get_chunker
     splitters.get_chunker = lambda strategy: _BoomChunker()
+    # chunk_worker 通过 `from splitters import get_chunker` 在模块级绑定符号，
+    # 必须 patch chunk_worker 内的引用才能生效。
+    import app.workers.chunk_worker as chunk_worker_mod
+
+    orig_worker_get = chunk_worker_mod.get_chunker
+    chunk_worker_mod.get_chunker = lambda strategy: _BoomChunker()
     # rollback 会 expire 全部对象；先捕获后续断言需要的 id（避免 rollback 后
     # lazy-load 触发 MissingGreenlet）。
     new_set_id = new_set.id
@@ -531,6 +537,7 @@ async def test_worker_failure_midway_keeps_old_active(
         await db_session.rollback()
     finally:
         splitters.get_chunker = orig_get
+        chunk_worker_mod.get_chunker = orig_worker_get
 
     # 业务写入已回滚：无新 Chunk、旧 active pointer 不变。
     new_chunks = (

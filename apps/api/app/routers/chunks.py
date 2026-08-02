@@ -10,6 +10,7 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.chunk_set import ChunkSet
 from app.models.user import User
+from app.schemas.candidate import CandidateResponse
 from app.schemas.chunk import ChunkResponse, ChunkUpdate
 from app.schemas.generation import (
     GenerateAcceptedResponse,
@@ -177,7 +178,7 @@ async def generate_from_chunk(
     )
 
 
-@router.get("/{cid}/candidates", response_model=PaginatedResponse, operation_id="chunk_candidates")
+@router.get("/{cid}/candidates", response_model=PaginatedResponse[CandidateResponse], operation_id="chunk_candidates")
 async def list_chunk_candidates(
     cid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -189,7 +190,6 @@ async def list_chunk_candidates(
     from sqlalchemy import func
 
     from app.models.generation import Candidate
-    from app.schemas.candidate import CandidateResponse
 
     resolver = ProjectResourceResolver(db)
     pid = await authorize_flat_resource(
