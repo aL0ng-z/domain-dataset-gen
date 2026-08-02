@@ -35,13 +35,22 @@ def _clean_duplicate_leases(conn) -> tuple[int, int]:
 
     规则（任务卡 §4.3）：
     1. 已过期且未释放 -> released_at = expires_at；
-    2. 同一 Section 仍有多条有效记录时，仅保留 expires_at 最新（再按 acquired_at/id
+    2. expires_at <= acquired_at 的异常行（无法满足 CHECK）标记为已释放；
+    3. 同一 Section 仍有多条有效记录时，仅保留 expires_at 最新（再按 acquired_at/id
        排序）的第一条，其余标记释放并输出审计计数。
     """
     expired = conn.execute(
         sa.text(
             "UPDATE section_leases SET released_at = expires_at "
             "WHERE released_at IS NULL AND expires_at <= now()"
+        )
+    ).rowcount
+
+    # expires_at <= acquired_at 的异常行无法满足新增 CHECK，标记为已释放。
+    invalid = conn.execute(
+        sa.text(
+            "UPDATE section_leases SET released_at = acquired_at "
+            "WHERE released_at IS NULL AND expires_at <= acquired_at"
         )
     ).rowcount
 
@@ -65,7 +74,7 @@ def _clean_duplicate_leases(conn) -> tuple[int, int]:
             """
         )
     ).rowcount
-    return int(expired), int(dups)
+    return int(expired + invalid), int(dups)
 
 
 def upgrade() -> None:
