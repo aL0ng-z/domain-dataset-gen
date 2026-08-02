@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createApiMockServer } from "@/lib/__mocks__/api-server";
 import { useCleaningWorkbench, isBusinessError } from "@/hooks/use-cleaning-workbench";
