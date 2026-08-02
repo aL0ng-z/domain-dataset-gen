@@ -139,6 +139,51 @@ async function fetchApi<T>(
   return res.json();
 }
 
+/**
+ * 携带 Authorization 的 Blob 下载（任务卡 §5.2、§6）。
+ *
+ * PDF 等二进制资源只允许经 Authorization 头获取；禁止回退为带 token 的 query
+ * URL。401 走统一刷新重试；任何失败抛错，由调用方负责清理已创建的 object URL。
+ */
+async function fetchBlob(
+  path: string,
+  options?: RequestInit,
+  timeout?: number,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  let headers = buildHeaders(options);
+  let res = await fetchWithTimeout(
+    `${API_BASE}${path}`,
+    { ...options, headers },
+    timeout,
+    signal,
+  );
+
+  if (res.status === 401 && !isNoRetryPath(path)) {
+    const refreshed = await refreshToken();
+    if (refreshed) {
+      headers = buildHeaders(options);
+      res = await fetchWithTimeout(
+        `${API_BASE}${path}`,
+        { ...options, headers },
+        timeout,
+        signal,
+      );
+    }
+  }
+
+  if (res.status === 401) {
+    handleAuthFailure();
+  }
+
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(error.detail || "下载失败");
+  }
+
+  return res.blob();
+}
+
 export interface PaginatedResponse<T> {
   items: T[];
   total: number;
@@ -172,4 +217,11 @@ export const api = {
   delete: (path: string) => fetchApi<void>(path, { method: "DELETE" }, LONG_TIMEOUT),
   upload: <T>(path: string, formData: FormData) =>
     fetchApi<T>(path, { method: "POST", body: formData }),  // no timeout for file uploads
+  getBlob: (path: string, requestOptions?: ApiRequestOptions) =>
+    fetchBlob(
+      path,
+      undefined,
+      requestOptions?.timeout ?? DEFAULT_TIMEOUT,
+      requestOptions?.signal,
+    ),
 };

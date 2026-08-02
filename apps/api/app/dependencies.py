@@ -9,7 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.jwt import TokenType, resolve_user_id
 from app.database import get_db
-from app.models.project import ProjectMember
 from app.models.user import User
 from domain.enums import ROLE_HIERARCHY, UserRole
 
@@ -57,29 +56,18 @@ def require_role(min_role: UserRole):
 
 
 def require_project_member(min_role: UserRole):
+    """返回一个依赖：校验当前用户是 URL 中 pid 的成员且角色不低于 min_role。
+
+    委托集中式 :func:`app.authz.check_project_member`，保持既有 403 语义。
+    """
+    from app.authz import check_project_member
+
     async def dependency(
         pid: uuid.UUID,
         current_user: Annotated[User, Depends(get_current_user)],
         db: Annotated[AsyncSession, Depends(get_db)],
     ) -> User:
-        # Global admin bypasses project membership check
-        if UserRole(current_user.role) == UserRole.admin:
-            return current_user
-
-        result = await db.execute(
-            select(ProjectMember).where(
-                ProjectMember.project_id == pid,
-                ProjectMember.user_id == current_user.id,
-            )
-        )
-        member = result.scalar_one_or_none()
-        if member is None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="非项目成员")
-
-        member_level = ROLE_HIERARCHY.get(UserRole(member.role), -1)
-        required_level = ROLE_HIERARCHY.get(min_role, 999)
-        if member_level < required_level:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="项目权限不足")
+        await check_project_member(db, pid, current_user, min_role)
         return current_user
 
     return dependency

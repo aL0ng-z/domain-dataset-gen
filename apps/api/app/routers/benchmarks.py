@@ -4,8 +4,11 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver
 from app.database import get_db
 from app.dependencies import require_project_member
+from app.models.config import ExportProfile
+from app.models.curated import CuratedItem
 from app.models.user import User
 from app.schemas.dataset import (
     BenchmarkCaseAdd,
@@ -54,8 +57,8 @@ async def get_benchmark(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = BenchmarkService(db)
-    benchmark = await service.get_benchmark(bid)
+    resolver = ProjectResourceResolver(db)
+    benchmark = await resolver.benchmark(pid, bid)
     if benchmark is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
     return benchmark
@@ -69,6 +72,9 @@ async def update_benchmark(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.benchmark(pid, bid) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
     service = BenchmarkService(db)
     benchmark = await service.update_benchmark(bid, **body.model_dump(exclude_unset=True))
     if benchmark is None:
@@ -83,9 +89,11 @@ async def delete_benchmark(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = BenchmarkService(db)
-    if not await service.delete_benchmark(bid):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.benchmark(pid, bid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
+    service = BenchmarkService(db)
+    await service.delete_benchmark(bid)
 
 
 @router.get("/{bid}/cases", response_model=list[BenchmarkCaseResponse])
@@ -95,6 +103,9 @@ async def list_cases(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.benchmark(pid, bid) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
     service = BenchmarkService(db)
     return await service.list_cases(bid)
 
@@ -107,6 +118,11 @@ async def add_case(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.benchmark(pid, bid) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
+    # 请求体引用的 curated item 必须属于同一项目。
+    await resolver.ensure_in_project(pid, [(CuratedItem, body.curated_item_id)])
     service = BenchmarkService(db)
     try:
         return await service.add_case(bid, body.curated_item_id)
@@ -122,6 +138,9 @@ async def remove_case(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.benchmark(pid, bid) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
     service = BenchmarkService(db)
     if not await service.remove_case(bid, case_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准案例不存在")
@@ -139,11 +158,11 @@ async def export_benchmark(
 ):
     from app.workers.export_worker import run_export_benchmark
 
-    # Verify benchmark exists
-    service = BenchmarkService(db)
-    benchmark = await service.get_benchmark(bid)
-    if benchmark is None:
+    # Verify benchmark exists and export profile belongs to the same project
+    resolver = ProjectResourceResolver(db)
+    if await resolver.benchmark(pid, bid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
+    await resolver.ensure_in_project(pid, [(ExportProfile, body.export_profile_id)])
 
     # Create task for tracking
     redis = getattr(request.app.state, "redis", None)

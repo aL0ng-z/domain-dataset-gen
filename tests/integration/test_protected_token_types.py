@@ -119,37 +119,54 @@ async def test_pdf_accepts_access_rejects_refresh(client: AsyncClient, org, make
 
 
 @pytest.mark.integration
-async def test_ws_matrix(app, make_user):
+async def test_ws_matrix(app, make_user, make_project, db_session):
     from starlette.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
     from app.ws.task_ws import manager
 
     user = await make_user.create("ws_matrix", "viewer")
+    project = await make_project.create("WS 矩阵", user.id)
+    await make_project.add_member(project.id, user.id, "viewer")
+    await db_session.commit()  # WS 授权用独立会话，必须先提交成员关系
     access = create_access_token(user.id)
     refresh = create_refresh_token(user.id)
+    pid = str(project.id)
 
     with TestClient(app) as tc:
-        # access -> 连接成功，创建订阅
-        with tc.websocket_connect(f"/ws/projects/ws-a/tasks?token={access}"):
-            assert "ws-a" in manager._subscriptions
+        # access + 项目成员 -> 连接成功，创建订阅
+        with tc.websocket_connect(f"/ws/projects/{pid}/tasks?token={access}"):
+            assert pid in manager._subscriptions
 
         # refresh -> 4401，不创建订阅
         with pytest.raises(WebSocketDisconnect) as exc, tc.websocket_connect(
-            f"/ws/projects/ws-b/tasks?token={refresh}"
+            f"/ws/projects/{pid}/tasks?token={refresh}"
         ):
             pass
         assert exc.value.code == 4401
-        assert "ws-b" not in manager._subscriptions
+        assert pid not in manager._subscriptions
 
         # 无 token -> 4401
-        with pytest.raises(WebSocketDisconnect) as exc2, tc.websocket_connect("/ws/projects/ws-c/tasks"):
+        with pytest.raises(WebSocketDisconnect) as exc2, tc.websocket_connect(
+            f"/ws/projects/{pid}/tasks"
+        ):
             pass
         assert exc2.value.code == 4401
-        assert "ws-c" not in manager._subscriptions
+        assert pid not in manager._subscriptions
+
+        # 非项目成员 access token -> 4403
+        outsider = await make_user.create("ws_outsider", "viewer")
+        await db_session.commit()  # WS 授权用独立会话，必须先提交用户
+        outsider_access = create_access_token(outsider.id)
+        with pytest.raises(WebSocketDisconnect) as exc3, tc.websocket_connect(
+            f"/ws/projects/{pid}/tasks?token={outsider_access}"
+        ):
+            pass
+        assert exc3.value.code == 4403
+        assert pid not in manager._subscriptions
 
     # 全部清理
-    assert "ws-a" not in manager._subscriptions
+    assert pid not in manager._subscriptions
 
 
 # ---------------------------------------------------------------------------

@@ -15,7 +15,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { StatusBadge } from "@/components/status-badge";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { TokenStore } from "@/lib/auth";
 import { useWs } from "@/hooks/use-ws";
 import {
   ArrowLeftIcon,
@@ -28,8 +27,6 @@ import {
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
 } from "lucide-react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
 
 // Dynamically import CodeMirror to avoid SSR issues
 const CodeMirrorEditor = dynamic(
@@ -214,11 +211,36 @@ export default function CleaningWorkbenchPage() {
     fetchCleaningJobs();
   }, [fetchCleaningJobs]);
 
-  // PDF URL: direct backend URL with auth token
-  const pdfUrl = useMemo(() => {
-    const token = TokenStore.getAccessToken();
-    if (!token) return "";
-    return `${API_BASE}/projects/${projectId}/documents/${docId}/file?token=${encodeURIComponent(token)}`;
+  // PDF Blob 下载：经 apiFetch 携带 Authorization（任务卡 §5.2、§6）。
+  // 不使用带 token 的 query URL；失败时展示错误且不回退为 query URL。
+  const [pdfUrl, setPdfUrl] = useState("");
+  const [pdfError, setPdfError] = useState(false);
+
+  useEffect(() => {
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    setPdfError(false);
+    setPdfUrl("");
+
+    api
+      .getBlob(`/projects/${projectId}/documents/${docId}/file`)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPdfUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setPdfError(true);
+      });
+
+    // 切换文档/卸载时 revoke，避免内存泄漏（任务卡 §9 风险表）。
+    return () => {
+      cancelled = true;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+        objectUrl = null;
+      }
+    };
   }, [projectId, docId]);
 
   // Fetch sections list (no selectedSectionId dep to avoid refetch loop)
@@ -811,9 +833,13 @@ export default function CleaningWorkbenchPage() {
             <div className="flex-1 min-h-0">
               {pdfUrl ? (
                 <iframe src={pdfUrl} className="w-full h-full border-0" title="PDF预览" />
+              ) : pdfError ? (
+                <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+                  PDF 加载失败（资源不存在或无权访问）
+                </div>
               ) : (
                 <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
-                  无PDF文件
+                  PDF 加载中...
                 </div>
               )}
             </div>

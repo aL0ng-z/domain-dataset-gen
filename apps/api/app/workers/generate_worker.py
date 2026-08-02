@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import Chunk
 from app.models.config import ModelConfig
+from app.models.document import Document
 from app.models.generation import Candidate, GenerationRun
 from app.models.prompt_template import PromptTemplate
 from app.models.task import LlmUsageLog
@@ -29,6 +30,21 @@ async def run_generate_single(
         chunk = (await db.execute(select(Chunk).where(Chunk.id == chunk_id))).scalar_one()
         template = (await db.execute(select(PromptTemplate).where(PromptTemplate.id == prompt_template_id))).scalar_one()
         model_config = (await db.execute(select(ModelConfig).where(ModelConfig.id == model_config_id))).scalar_one()
+
+        # 项目链复核：chunk/prompt template/model config 必须属于 project_id
+        # （执行外部 LLM IO/写数据前，任务卡 §2.9）。
+        from app.authz import verify_project_chain
+
+        await verify_project_chain(
+            db,
+            project_id,
+            [
+                (Chunk, chunk_id),
+                (PromptTemplate, prompt_template_id),
+                (ModelConfig, model_config_id),
+            ],
+            detail="生成任务项目链不一致",
+        )
 
         # Build prompt
         user_prompt = template.user_prompt_template.replace("{{content}}", chunk.content)
@@ -136,6 +152,20 @@ async def run_generate_batch(
     await task_service.update_status(task_id, "processing", progress=5)
 
     try:
+        # 项目链复核：doc/prompt template/model config 属于 project_id。
+        from app.authz import verify_project_chain
+
+        await verify_project_chain(
+            db,
+            project_id,
+            [
+                (Document, document_id),
+                (PromptTemplate, prompt_template_id),
+                (ModelConfig, model_config_id),
+            ],
+            detail="批量生成任务项目链不一致",
+        )
+
         result = await db.execute(
             select(Chunk).where(Chunk.document_id == document_id, Chunk.status == "ready").order_by(Chunk.ordinal)
         )

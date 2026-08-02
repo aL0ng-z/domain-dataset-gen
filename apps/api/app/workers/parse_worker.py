@@ -36,6 +36,24 @@ async def run_parse(
 
     try:
         doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one()
+        profile = (await db.execute(select(ParserProfile).where(ParserProfile.id == parser_profile_id))).scalar_one()
+
+        # 项目链复核：以 API 授权的 task.project_id 为锚点，doc 与 parser profile
+        # 必须属于同一项目（执行外部 IO/写数据前，任务卡 §2.9）。
+        from app.authz import ProjectChainError, verify_project_chain
+        from app.models.task import Task
+
+        task_row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
+        if task_row is None:
+            raise ProjectChainError("task 不存在")
+        await verify_project_chain(
+            db,
+            task_row.project_id,
+            [(Document, document_id), (ParserProfile, parser_profile_id)],
+            detail="解析任务项目链不一致",
+        )
+
+        # Use existing ParseJob if provided, otherwise create new one
         if parse_job_id:
             parse_job = (await db.execute(select(ParseJob).where(ParseJob.id == parse_job_id))).scalar_one()
         else:

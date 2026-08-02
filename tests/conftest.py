@@ -319,6 +319,215 @@ class ResourceFactory:
         await self.session.refresh(profile)
         return profile
 
+    async def create_model_config(self, project_id: uuid.UUID, name: str = "GPT-4o-mini"):
+        from app.models.config import ModelConfig
+
+        cfg = ModelConfig(
+            project_id=project_id,
+            name=name,
+            provider="openai",
+            base_url="http://localhost:9999/v1",
+            api_key_encrypted="test-key",
+            model_name="gpt-4o-mini",
+        )
+        self.session.add(cfg)
+        await self.session.flush()
+        await self.session.refresh(cfg)
+        return cfg
+
+    async def create_prompt_template(self, project_id: uuid.UUID, task_type: str = "qa_generation"):
+        from app.models.prompt_template import PromptTemplate
+
+        tpl = PromptTemplate(
+            project_id=project_id,
+            task_type=task_type,
+            name="QA 模板",
+            system_prompt="你是专家",
+            user_prompt_template="请回答：{{content}}",
+        )
+        self.session.add(tpl)
+        await self.session.flush()
+        await self.session.refresh(tpl)
+        return tpl
+
+    async def create_chunk_profile(self, project_id: uuid.UUID):
+        from app.models.config import ChunkProfile
+
+        profile = ChunkProfile(project_id=project_id, name="默认切分")
+        self.session.add(profile)
+        await self.session.flush()
+        await self.session.refresh(profile)
+        return profile
+
+    async def create_export_profile(self, project_id: uuid.UUID):
+        from app.models.config import ExportProfile
+
+        profile = ExportProfile(project_id=project_id, name="SFT")
+        self.session.add(profile)
+        await self.session.flush()
+        await self.session.refresh(profile)
+        return profile
+
+    async def create_parse_job(self, document_id: uuid.UUID, parser_profile_id: uuid.UUID, status: str = "queued"):
+        from app.models.parse import ParseJob
+
+        job = ParseJob(document_id=document_id, parser_profile_id=parser_profile_id, status=status)
+        self.session.add(job)
+        await self.session.flush()
+        await self.session.refresh(job)
+        return job
+
+    async def create_cleaning_job(self, document_id: uuid.UUID, parse_job_id: uuid.UUID, started_by: uuid.UUID):
+        from app.models.section import CleaningJob
+
+        job = CleaningJob(
+            document_id=document_id,
+            parse_job_id=parse_job_id,
+            started_by=started_by,
+            status="completed",
+        )
+        self.session.add(job)
+        await self.session.flush()
+        await self.session.refresh(job)
+        return job
+
+    async def create_section(self, cleaning_job_id: uuid.UUID, document_id: uuid.UUID, ordinal: int = 0):
+        from app.models.section import Section
+
+        section = Section(
+            cleaning_job_id=cleaning_job_id,
+            document_id=document_id,
+            ordinal=ordinal,
+            heading_path="1.1",
+            raw_markdown="# 测试",
+            cleaned_markdown="# 清洗后",
+        )
+        self.session.add(section)
+        await self.session.flush()
+        await self.session.refresh(section)
+        return section
+
+    async def create_chunk(self, section_id: uuid.UUID, document_id: uuid.UUID, ordinal: int = 0):
+        from app.models.chunk import Chunk
+
+        chunk = Chunk(
+            section_id=section_id,
+            document_id=document_id,
+            ordinal=ordinal,
+            heading_path="1.1",
+            content="测试内容",
+        )
+        self.session.add(chunk)
+        await self.session.flush()
+        await self.session.refresh(chunk)
+        return chunk
+
+    async def create_generation_run(
+        self,
+        chunk_id: uuid.UUID,
+        prompt_template_id: uuid.UUID,
+        model_config_id: uuid.UUID,
+    ):
+        from app.models.generation import GenerationRun
+
+        run = GenerationRun(
+            chunk_id=chunk_id,
+            prompt_template_id=prompt_template_id,
+            model_config_id=model_config_id,
+            context_mode="single_chunk",
+            status="completed",
+        )
+        self.session.add(run)
+        await self.session.flush()
+        await self.session.refresh(run)
+        return run
+
+    async def create_candidate(
+        self, generation_run_id: uuid.UUID, chunk_id: uuid.UUID, status: str = "ai_generated"
+    ):
+        from app.models.generation import Candidate
+
+        candidate = Candidate(
+            generation_run_id=generation_run_id,
+            chunk_id=chunk_id,
+            content={"question": "q", "answer": "a"},
+            candidate_type="qa_generation",
+            status=status,
+        )
+        self.session.add(candidate)
+        await self.session.flush()
+        await self.session.refresh(candidate)
+        return candidate
+
+    async def create_curated_item(
+        self, project_id: uuid.UUID, candidate_id: uuid.UUID, promoted_by: uuid.UUID, status: str = "approved"
+    ):
+        from app.models.curated import CuratedItem
+
+        item = CuratedItem(
+            project_id=project_id,
+            candidate_id=candidate_id,
+            content={"question": "q", "answer": "a"},
+            item_type="qa_generation",
+            status=status,
+            promoted_by=promoted_by,
+        )
+        self.session.add(item)
+        await self.session.flush()
+        await self.session.refresh(item)
+        return item
+
+    async def create_dataset(self, project_id: uuid.UUID, created_by: uuid.UUID):
+        from app.models.dataset import Dataset
+
+        ds = Dataset(project_id=project_id, name="数据集", created_by=created_by)
+        self.session.add(ds)
+        await self.session.flush()
+        await self.session.refresh(ds)
+        return ds
+
+    async def create_benchmark(self, project_id: uuid.UUID, created_by: uuid.UUID):
+        from app.models.dataset import Benchmark
+
+        bm = Benchmark(project_id=project_id, name="基准集", created_by=created_by)
+        self.session.add(bm)
+        await self.session.flush()
+        await self.session.refresh(bm)
+        return bm
+
+    async def create_cleaned_version(
+        self, document_id: uuid.UUID, cleaning_job_id: uuid.UUID, created_by: uuid.UUID, version: int = 1
+    ):
+        from app.models.cleaned_document_version import CleanedDocumentVersion
+
+        v = CleanedDocumentVersion(
+            document_id=document_id,
+            source_cleaning_job_id=cleaning_job_id,
+            version=version,
+            merged_markdown="# 合并",
+            created_by=created_by,
+        )
+        self.session.add(v)
+        await self.session.flush()
+        await self.session.refresh(v)
+        return v
+
+    async def create_task(self, project_id: uuid.UUID, task_type: str, entity_type: str, entity_id: uuid.UUID, created_by: uuid.UUID):
+        from app.models.task import Task
+
+        task = Task(
+            project_id=project_id,
+            task_type=task_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            status="queued",
+            created_by=created_by,
+        )
+        self.session.add(task)
+        await self.session.flush()
+        await self.session.refresh(task)
+        return task
+
 
 @pytest.fixture
 def make_user(db_session):
@@ -365,3 +574,72 @@ async def org(db_session):
         "projects": {"a": project_a, "b": project_b},
         "db": db_session,
     }
+
+
+@pytest.fixture
+async def full_resources(db_session, org, make_resource):
+    """为两个项目各构建一套真实完整的资源链（T02 负向矩阵的数据基础）。
+
+    两个项目都含完整资源链，而非随机不存在的 UUID；项目 B 也预置四角色成员，
+    以便验证“同角色下跨项目资源一律 404”（非成员语义另有 org 覆盖）。
+
+    返回：
+      projects: {"a": {...资源}, "b": {...资源}}
+      每项目含 document/parse_job/cleaning_job/section/chunk/generation_run/
+      candidate/curated_item/dataset/benchmark/cleaned_version/task 及各类 profile。
+    """
+    users = org["users"]
+    pids = {"a": org["projects"]["a"].id, "b": org["projects"]["b"].id}
+
+    # 项目 B 保持 org 预置的仅 admin 成员关系：跨项目负向矩阵依赖
+    # “A 成员 + B 对象 -> 404/403”，若补齐 B 成员会破坏隔离语义。
+
+    res = {}
+    for key in ("a", "b"):
+        pid = pids[key]
+        admin = users["admin"].id
+        editor = users["editor"].id
+        reviewer = users["reviewer"].id
+
+        doc = await make_resource.create_document(pid, admin)
+        parser = await make_resource.create_parser_profile(pid)
+        model = await make_resource.create_model_config(pid)
+        tpl = await make_resource.create_prompt_template(pid)
+        chunk_prof = await make_resource.create_chunk_profile(pid)
+        export_prof = await make_resource.create_export_profile(pid)
+        parse_job = await make_resource.create_parse_job(doc.id, parser.id)
+        cleaning_job = await make_resource.create_cleaning_job(doc.id, parse_job.id, admin)
+        section = await make_resource.create_section(cleaning_job.id, doc.id)
+        chunk = await make_resource.create_chunk(section.id, doc.id)
+        gen_run = await make_resource.create_generation_run(chunk.id, tpl.id, model.id)
+        candidate = await make_resource.create_candidate(gen_run.id, chunk.id, status="approved")
+        curated = await make_resource.create_curated_item(pid, candidate.id, reviewer)
+        dataset = await make_resource.create_dataset(pid, editor)
+        benchmark = await make_resource.create_benchmark(pid, editor)
+        cleaned_version = await make_resource.create_cleaned_version(doc.id, cleaning_job.id, reviewer)
+        task = await make_resource.create_task(pid, "parse", "document", doc.id, admin)
+
+        res[key] = {
+            "pid": pid,
+            "document": doc,
+            "parser_profile": parser,
+            "model_config": model,
+            "prompt_template": tpl,
+            "chunk_profile": chunk_prof,
+            "export_profile": export_prof,
+            "parse_job": parse_job,
+            "cleaning_job": cleaning_job,
+            "section": section,
+            "chunk": chunk,
+            "generation_run": gen_run,
+            "candidate": candidate,
+            "curated_item": curated,
+            "dataset": dataset,
+            "benchmark": benchmark,
+            "cleaned_version": cleaned_version,
+            "task": task,
+        }
+
+    await db_session.commit()  # WS/独立会话可见
+    return {"projects": res, "users": users, "db": db_session}
+

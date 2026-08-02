@@ -13,10 +13,11 @@ class FakeWebSocket {
   url: string;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number; reason?: string }) => void) | null = null;
   onerror: (() => void) | null = null;
   sent: string[] = [];
   closed = false;
+  closeCode = 1000;
 
   constructor(url: string) {
     this.url = url;
@@ -27,10 +28,11 @@ class FakeWebSocket {
     this.sent.push(data);
   }
 
-  close() {
+  close(code?: number) {
     this.closed = true;
     this.readyState = 0;
-    if (this.onclose) this.onclose();
+    this.closeCode = code ?? 1000;
+    if (this.onclose) this.onclose({ code: this.closeCode });
   }
 
   /** 测试辅助：模拟服务端推消息。 */
@@ -147,6 +149,78 @@ describe("ws client", () => {
       const countAfter = FakeWebSocket.instances.length;
       vi.advanceTimersByTime(5000);
       expect(FakeWebSocket.instances.length).toBe(countAfter);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("4401 认证失败：触发统一认证恢复且不自动重连", () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    localStorage.setItem("access_token", "token-abc");
+
+    const client: WsClient = createWsClient("ws://test/ws");
+    client.connect();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    // 服务端以 4401 关闭 -> 应触发认证恢复（handleAuthFailure 清除令牌）
+    ws.close(4401);
+    expect(localStorage.getItem("access_token")).toBeNull();
+    // 不自动重连
+    expect(FakeWebSocket.instances.length).toBe(1);
+
+    client.disconnect();
+  });
+
+  it("4403 无项目权限：停止重连并广播 ws_forbidden 事件", () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      localStorage.setItem("access_token", "token-abc");
+
+      const client: WsClient = createWsClient("ws://test/ws");
+      const handler = vi.fn();
+      client.subscribe("*", handler);
+      client.connect();
+      const ws = FakeWebSocket.instances[0];
+      ws.open();
+
+      // 服务端以 4403 关闭 -> 停止重连，广播 ws_forbidden
+      ws.close(4403);
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({ event: "ws_forbidden" }));
+      expect(FakeWebSocket.instances.length).toBe(1);
+
+      // 即使推进时间也不重连
+      vi.advanceTimersByTime(5000);
+      expect(FakeWebSocket.instances.length).toBe(1);
+
+      client.disconnect();
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("4403 后获得新令牌：重置权限拒绝并重新连接", () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("WebSocket", FakeWebSocket);
+      TokenStore.setTokens("old-access", "refresh-1");
+
+      const client: WsClient = createWsClient("ws://test/ws");
+      client.connect();
+      const first = FakeWebSocket.instances[0];
+      first.open();
+      first.close(4403); // 权限拒绝 -> 停止重连
+
+      expect(FakeWebSocket.instances.length).toBe(1);
+
+      // 新令牌出现 -> 重置拒绝标记并重连
+      TokenStore.setTokens("new-access", "refresh-2");
+      expect(FakeWebSocket.instances.length).toBe(2);
+      const second = FakeWebSocket.instances[1];
+      expect(second.url).toContain("token=new-access");
     } finally {
       vi.useRealTimers();
       vi.unstubAllGlobals();

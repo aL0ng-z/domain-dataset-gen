@@ -4,8 +4,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver, authorize_flat_resource
 from app.database import get_db
-from app.dependencies import get_current_user, require_role
+from app.dependencies import get_current_user
 from app.models.user import User
 from app.schemas.section import (
     SectionAssignRequest,
@@ -32,10 +33,13 @@ def _get_redis(request: Request):
 async def get_section(
     sid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
-    service = SectionService(db)
-    section = await service.get_section(sid)
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.viewer
+    )
+    section = await resolver.section(pid, sid)
     if section is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     return section
@@ -48,6 +52,13 @@ async def update_section(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.editor
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
     section = await service.update_section(sid, body.cleaned_markdown, current_user.id)
     if section is None:
@@ -59,8 +70,15 @@ async def update_section(
 async def submit_section(
     sid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.editor
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
     section = await service.submit_for_review(sid)
     if section is None:
@@ -73,8 +91,15 @@ async def review_section(
     sid: uuid.UUID,
     body: SectionReview,
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(require_role(UserRole.reviewer))],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.reviewer
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
     try:
         section = await service.review_section(sid, body.action, current_user.id)
@@ -92,6 +117,13 @@ async def acquire_lease(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.editor
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db, _get_redis(request))
     try:
         return await service.acquire_lease(sid, current_user.id)
@@ -106,6 +138,13 @@ async def heartbeat_lease(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.editor
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db, _get_redis(request))
     lease = await service.heartbeat_lease(sid, current_user.id)
     if lease is None:
@@ -120,6 +159,13 @@ async def release_lease(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.editor
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db, _get_redis(request))
     if not await service.release_lease(sid, current_user.id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="租约不存在")
@@ -132,6 +178,13 @@ async def add_comment(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.editor
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
     return await service.add_comment(sid, current_user.id, body.comment_type, body.content)
 
@@ -140,8 +193,15 @@ async def add_comment(
 async def list_comments(
     sid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.viewer
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
     return await service.list_comments(sid)
 
@@ -150,8 +210,15 @@ async def list_comments(
 async def list_revisions(
     sid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.viewer
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
     return await service.list_revisions(sid)
 
@@ -161,8 +228,15 @@ async def assign_section_endpoint(
     sid: uuid.UUID,
     body: SectionAssignRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(require_role(UserRole.reviewer))],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.reviewer
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
     section = await service.assign_section(sid, body.assignee_id, current_user.id)
     if section is None:
@@ -176,6 +250,13 @@ async def complete_section_endpoint(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.editor
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
     is_admin = current_user.role in ("admin", "reviewer")
     try:
@@ -192,8 +273,15 @@ async def return_section_endpoint(
     sid: uuid.UUID,
     body: SectionReturnRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
-    current_user: Annotated[User, Depends(require_role(UserRole.reviewer))],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.section_project_id(sid), UserRole.reviewer
+    )
+    section = await resolver.section(pid, sid)
+    if section is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
     section = await service.return_section(sid, body.reason)
     if section is None:

@@ -4,8 +4,11 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver
 from app.database import get_db
 from app.dependencies import require_project_member
+from app.models.config import ExportProfile
+from app.models.curated import CuratedItem
 from app.models.user import User
 from app.schemas.dataset import (
     DatasetCreate,
@@ -54,8 +57,8 @@ async def get_dataset(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = DatasetService(db)
-    dataset = await service.get_dataset(did)
+    resolver = ProjectResourceResolver(db)
+    dataset = await resolver.dataset(pid, did)
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
     return dataset
@@ -69,6 +72,9 @@ async def update_dataset(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.dataset(pid, did) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
     service = DatasetService(db)
     dataset = await service.update_dataset(did, **body.model_dump(exclude_unset=True))
     if dataset is None:
@@ -83,9 +89,11 @@ async def delete_dataset(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = DatasetService(db)
-    if not await service.delete_dataset(did):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.dataset(pid, did) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
+    service = DatasetService(db)
+    await service.delete_dataset(did)
 
 
 @router.get("/{did}/items", response_model=list[DatasetItemResponse])
@@ -95,6 +103,9 @@ async def list_items(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.dataset(pid, did) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
     service = DatasetService(db)
     return await service.list_items(did)
 
@@ -107,6 +118,11 @@ async def add_item(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.dataset(pid, did) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
+    # 请求体引用的 curated item 必须属于同一项目。
+    await resolver.ensure_in_project(pid, [(CuratedItem, body.curated_item_id)])
     service = DatasetService(db)
     try:
         return await service.add_item(did, body.curated_item_id)
@@ -122,6 +138,9 @@ async def remove_item(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.dataset(pid, did) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
     service = DatasetService(db)
     if not await service.remove_item(did, item_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集条目不存在")
@@ -139,11 +158,11 @@ async def export_dataset(
 ):
     from app.workers.export_worker import run_export_dataset
 
-    # Verify dataset exists
-    service = DatasetService(db)
-    dataset = await service.get_dataset(did)
-    if dataset is None:
+    # Verify dataset exists and export profile belongs to the same project
+    resolver = ProjectResourceResolver(db)
+    if await resolver.dataset(pid, did) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
+    await resolver.ensure_in_project(pid, [(ExportProfile, body.export_profile_id)])
 
     # Create task for tracking
     redis = getattr(request.app.state, "redis", None)

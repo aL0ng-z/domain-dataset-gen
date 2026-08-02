@@ -4,8 +4,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver
 from app.database import get_db
 from app.dependencies import require_project_member
+from app.models.dataset import Benchmark, Dataset
 from app.models.user import User
 from app.schemas.curated import (
     AddToBenchmarkRequest,
@@ -45,9 +47,9 @@ async def get_curated_item(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = CuratedItemService(db)
-    item = await service.get(iid)
-    if item is None or item.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    item = await resolver.curated_item(pid, iid)
+    if item is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识条目不存在")
     return item
 
@@ -60,10 +62,10 @@ async def update_curated_item(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = CuratedItemService(db)
-    item = await service.get(iid)
-    if item is None or item.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    if await resolver.curated_item(pid, iid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识条目不存在")
+    service = CuratedItemService(db)
     updated = await service.update(
         item_id=iid,
         revised_by=current_user.id,
@@ -79,10 +81,10 @@ async def list_revisions(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = CuratedItemService(db)
-    item = await service.get(iid)
-    if item is None or item.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    if await resolver.curated_item(pid, iid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识条目不存在")
+    service = CuratedItemService(db)
     return await service.list_revisions(iid)
 
 
@@ -93,10 +95,10 @@ async def list_evidence_links(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = CuratedItemService(db)
-    item = await service.get(iid)
-    if item is None or item.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    if await resolver.curated_item(pid, iid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识条目不存在")
+    service = CuratedItemService(db)
     return await service.list_evidence_links(iid)
 
 
@@ -108,10 +110,12 @@ async def add_to_dataset(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = CuratedItemService(db)
-    item = await service.get(iid)
-    if item is None or item.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    if await resolver.curated_item(pid, iid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识条目不存在")
+    # 请求体引用的 dataset 必须属于同一项目（跨项目引用 -> 404）。
+    await resolver.ensure_in_project(pid, [(Dataset, body.dataset_id)])
+    service = CuratedItemService(db)
     try:
         return await service.add_to_dataset(iid, body.dataset_id)
     except ValueError as e:
@@ -126,10 +130,12 @@ async def add_to_benchmark(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = CuratedItemService(db)
-    item = await service.get(iid)
-    if item is None or item.project_id != pid:
+    resolver = ProjectResourceResolver(db)
+    if await resolver.curated_item(pid, iid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识条目不存在")
+    # 请求体引用的 benchmark 必须属于同一项目。
+    await resolver.ensure_in_project(pid, [(Benchmark, body.benchmark_id)])
+    service = CuratedItemService(db)
     try:
         return await service.add_to_benchmark(iid, body.benchmark_id)
     except ValueError as e:

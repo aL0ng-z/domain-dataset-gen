@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import ProjectResourceResolver
 from app.database import get_db
 from app.dependencies import require_project_member
 from app.models.user import User
@@ -37,8 +38,8 @@ async def get_task(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
 ):
-    service = TaskService(db)
-    task = await service.get_task(tid)
+    resolver = ProjectResourceResolver(db)
+    task = await resolver.task(pid, tid)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     return task
@@ -51,6 +52,9 @@ async def cancel_task(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.task(pid, tid) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     service = TaskService(db)
     task = await service.cancel_task(tid)
     if task is None:
@@ -65,11 +69,12 @@ async def retry_task(
     db: Annotated[AsyncSession, Depends(get_db)],
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    service = TaskService(db)
-    task = await service.get_task(tid)
+    resolver = ProjectResourceResolver(db)
+    task = await resolver.task(pid, tid)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
     if task.status != "failed":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="仅失败任务可重试")
+    service = TaskService(db)
     updated = await service.update_status(tid, "queued", progress=0)
     return updated

@@ -128,17 +128,39 @@ async def test_refresh_token_ws_rejected_without_subscription(app, make_user):
 
 
 @pytest.mark.integration
-async def test_access_token_ws_connects(app, make_user):
-    """access token 连接 WebSocket 成功，关闭后清理订阅。"""
+async def test_access_token_ws_connects(app, make_user, make_project, db_session):
+    """access token + 项目成员连接 WebSocket 成功，关闭后清理订阅。"""
     user = await make_user.create("ws_pos", "viewer")
+    project = await make_project.create("WS 正例", user.id)
+    await make_project.add_member(project.id, user.id, "viewer")
+    await db_session.commit()  # WS 授权用独立会话，必须先提交成员关系
     access = create_access_token(user.id)
+    pid = str(project.id)
 
     with TestClient(app) as tc, tc.websocket_connect(
-        f"/ws/projects/proj-pos/tasks?token={access}"
+        f"/ws/projects/{pid}/tasks?token={access}"
     ) as ws:
-        assert "proj-pos" in manager._subscriptions
+        assert pid in manager._subscriptions
         ws.send_text("ping")
-    assert "proj-pos" not in manager._subscriptions
+    assert pid not in manager._subscriptions
+
+
+@pytest.mark.integration
+async def test_access_token_ws_rejected_when_not_member(app, make_user, make_project, db_session):
+    """合法 access token 但非项目成员 -> 4403，且不创建 Redis 订阅。"""
+    user = await make_user.create("ws_nonmember", "viewer")
+    project = await make_project.create("WS 非成员", user.id)
+    await db_session.commit()  # WS 授权用独立会话，必须先提交用户/项目
+    access = create_access_token(user.id)
+    pid = str(project.id)
+
+    with TestClient(app) as tc:
+        with pytest.raises(WebSocketDisconnect) as exc, tc.websocket_connect(
+            f"/ws/projects/{pid}/tasks?token={access}"
+        ):
+            pass
+        assert exc.value.code == 4403
+    assert pid not in manager._subscriptions
 
 # ---------------------------------------------------------------------------
 # 3. 刷新接口负向矩阵
