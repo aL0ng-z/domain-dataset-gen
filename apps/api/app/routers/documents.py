@@ -32,9 +32,12 @@ from app.schemas.document import (
     CleaningStartRequest,
     CleaningStartResponse,
     DocumentResponse,
-    GenerateBatchRequest,
     ParseJobResponse,
     ParseRequest,
+)
+from app.schemas.generation import (
+    GenerateAcceptedResponse,
+    GenerateBatchRequest,
 )
 from app.schemas.section import BulkAssignRequest, SectionResponse
 from app.services.chunk_set_service import (
@@ -46,14 +49,28 @@ from app.services.chunk_set_service import (
 )
 from app.services.clean_version_service import CleanVersionService
 from app.services.document_service import DocumentService
+from app.services.generation_service import (
+    GenerationConfigUnavailableError,
+    GenerationInProgressError,
+    GenerationOrchestrationService,
+    GenerationSourceNotReadyError,
+    PromptTemplateVersionMaterializeError,
+)
 from app.services.idempotency import idempotent_create_task
 from app.services.section_service import SectionService
 from app.services.task_service import TaskService
 from domain.enums import UserRole
-from domain.schemas import PaginatedResponse
+from domain.schemas import ErrorResponse, PaginatedResponse
 from storage import get_storage_client
 
 router = APIRouter(prefix="/api/projects/{pid}/documents", tags=["documents"])
+
+
+def _gen_http_error(status_code: int, code: str, message: str, context: dict | None = None) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail=ErrorResponse(code=code, message=message, context=context).model_dump(),
+    )
 
 
 def _chunk_response_with_version(chunk, version_map: dict) -> ChunkResponse:
@@ -670,7 +687,7 @@ async def list_chunks(
     return PaginatedResponse(items=resp_items, total=total, page=page, page_size=page_size)
 
 
-@router.post("/{did}/generate-batch", response_model=AsyncTaskAcceptedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="document_trigger_generate_batch")
+@router.post("/{did}/generate-batch", response_model=GenerateAcceptedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="document_trigger_generate_batch")
 async def trigger_generate_batch(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -678,51 +695,64 @@ async def trigger_generate_batch(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
-    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
+    """批量生成（T08 §5.1）：202 接收；selected_chunk_ids 省略 = active set 全部 ready。"""
     resolver = ProjectResourceResolver(db)
-    doc = await _get_scoped_document(resolver, pid, did)
-    from app.models.config import ModelConfig
-    from app.models.prompt_template import PromptTemplate
+    doc = await resolver.document(pid, did)
+    if doc is None:
+        raise _gen_http_error(404, "GENERATION_SOURCE_NOT_FOUND", "文档不存在", {"source_type": "Document"})
 
-    await resolver.ensure_in_project(
-        pid,
-        [
-            (PromptTemplate, body.prompt_template_id),
-            (ModelConfig, body.model_config_id),
-        ],
-    )
+    template = await resolver.prompt_template(pid, body.prompt_template_id)
+    if template is None:
+        raise _gen_http_error(
+            404, "GENERATION_CONFIG_NOT_FOUND", "PromptTemplate 不存在", {"config_type": "prompt_template"}
+        )
+    model_config = await resolver.model_config(pid, body.model_config_id)
+    if model_config is None:
+        raise _gen_http_error(
+            404, "GENERATION_CONFIG_NOT_FOUND", "ModelConfig 不存在", {"config_type": "model_config"}
+        )
 
     task_service = TaskService(db, request.app.state.redis)
-    batch_payload = {
-        "document_id": str(did),
-        "prompt_template_id": str(body.prompt_template_id),
-        "model_config_id": str(body.model_config_id),
-        "created_by": str(current_user.id),
-    }
-    if idempotency_key:
-        task = await idempotent_create_task(
-            db,
-            task_service=task_service,
-            client_key=idempotency_key,
+    service = GenerationOrchestrationService(db, task_service)
+    try:
+        batch, parent_task, _runs = await service.create_batch(
             project_id=pid,
-            task_type="generate_batch",
-            payload_for_digest=batch_payload,
-            create=lambda key: task_service.create_task(
-                pid, "generate_batch", "document", did, current_user.id,
-                payload=batch_payload, handler="generate_batch", idempotency_key=key,
-            ),
+            document_id=did,
+            prompt_template_id=body.prompt_template_id,
+            model_config_id=body.model_config_id,
+            selected_chunk_ids=body.selected_chunk_ids,
+            created_by=current_user.id,
         )
-    else:
-        task = await task_service.create_task(
-            pid, "generate_batch", "document", did, current_user.id,
-            payload=batch_payload, handler="generate_batch",
-        )
+    except GenerationSourceNotReadyError as e:
+        raise _gen_http_error(
+            409, "GENERATION_SOURCE_NOT_READY", str(e),
+            {"document_id": str(did)},
+        ) from e
+    except GenerationConfigUnavailableError as e:
+        raise _gen_http_error(
+            409, "GENERATION_CONFIG_UNAVAILABLE", str(e),
+            {"config_type": "model_config", "config_id": str(body.model_config_id)},
+        ) from e
+    except (PromptTemplateVersionMaterializeError, ValueError) as e:
+        raise _gen_http_error(
+            409, "GENERATION_CONFIG_UNAVAILABLE", str(e), {"config_type": "prompt_template"}
+        ) from e
+    except GenerationInProgressError as e:
+        raise _gen_http_error(
+            409, "GENERATION_IN_PROGRESS", str(e),
+            {"generation_batch_id": str(e.existing_batch_id) if e.existing_batch_id else None},
+        ) from e
+
+    # 业务 Batch + Task 同一事务提交后由独立 runner 领取。
     doc.status = "generating"
-    # 业务 job + Task 同一事务提交后由独立 runner 领取。
     await db.commit()
 
-    return AsyncTaskAcceptedResponse(task_id=task.id, message="批量生成任务已创建")
+    return GenerateAcceptedResponse(
+        task_id=parent_task.id,
+        generation_batch_id=batch.id,
+        status="queued",
+    )
 
 
 @router.post("/{did}/cleaning/assign", response_model=BulkAssignResponse, status_code=status.HTTP_200_OK, operation_id="document_bulk_assign_sections")

@@ -23,8 +23,3 @@ class ChunkResponse(BaseSchema):
 
 class ChunkUpdate(RequestSchema):
     content: str | None = None
-
-
-class GenerateRequest(RequestSchema):
-    prompt_template_id: uuid.UUID
-    model_config_id: uuid.UUID

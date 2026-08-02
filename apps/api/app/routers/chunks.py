@@ -8,17 +8,35 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.authz import ProjectResourceResolver, authorize_flat_resource
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models.chunk import Chunk
 from app.models.chunk_set import ChunkSet
-from app.models.config import ModelConfig
-from app.models.prompt_template import PromptTemplate
 from app.models.user import User
-from app.schemas.chunk import ChunkResponse, ChunkUpdate, GenerateRequest
-from app.schemas.task import TaskResponse
+from app.schemas.chunk import ChunkResponse, ChunkUpdate
+from app.schemas.generation import (
+    GenerateAcceptedResponse,
+    GenerateRequest,
+)
 from app.services.chunk_service import ChunkService
+from app.services.generation_service import (
+    GenerationConfigUnavailableError,
+    GenerationInProgressError,
+    GenerationOrchestrationService,
+    GenerationSourceNotReadyError,
+    PromptTemplateVersionMaterializeError,
+)
+from app.services.task_service import TaskService
 from domain.enums import UserRole
+from domain.schemas import ErrorResponse
 
 router = APIRouter(prefix="/api/chunks", tags=["chunks"])
+
+
+def _generation_http_error(
+    status_code: int, code: str, message: str, context: dict | None = None
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail=ErrorResponse(code=code, message=message, context=context).model_dump(),
+    )
 
 
 def _chunk_response(chunk) -> ChunkResponse:
@@ -87,38 +105,73 @@ async def update_chunk(
     return resp
 
 
-@router.post("/{cid}/generate", response_model=TaskResponse, status_code=status.HTTP_201_CREATED, operation_id="chunk_generate")
+@router.post("/{cid}/generate", response_model=GenerateAcceptedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="chunk_generate")
 async def generate_from_chunk(
     cid: uuid.UUID,
     body: GenerateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
+    """单 Chunk 生成（T08 §5.1）：202 接收，服务端固定选择 [cid]。"""
     resolver = ProjectResourceResolver(db)
     pid = await authorize_flat_resource(
         db, current_user, await resolver.chunk_project_id(cid), UserRole.editor
     )
-    # 请求体引用的 prompt template 与 model config 必须属于同一项目（任务卡 §5.1）。
-    await resolver.ensure_in_project(
-        pid,
-        [
-            (Chunk, cid),
-            (PromptTemplate, body.prompt_template_id),
-            (ModelConfig, body.model_config_id),
-        ],
-    )
+    chunk = await resolver.chunk(pid, cid)
+    if chunk is None:
+        raise _generation_http_error(
+            404, "GENERATION_SOURCE_NOT_FOUND", "Chunk 不存在", {"source_type": "Chunk"}
+        )
 
-    service = ChunkService(db)
+    # scoped 加载请求体引用的模板/模型；不存在或不可见 -> 404。
+    template = await resolver.prompt_template(pid, body.prompt_template_id)
+    if template is None:
+        raise _generation_http_error(
+            404, "GENERATION_CONFIG_NOT_FOUND", "PromptTemplate 不存在", {"config_type": "prompt_template"}
+        )
+    model_config = await resolver.model_config(pid, body.model_config_id)
+    if model_config is None:
+        raise _generation_http_error(
+            404, "GENERATION_CONFIG_NOT_FOUND", "ModelConfig 不存在", {"config_type": "model_config"}
+        )
+
+    task_service = TaskService(db)
+    service = GenerationOrchestrationService(db, task_service)
+    batch = None
+    parent_task = None
     try:
-        task, gen_run = await service.create_generate_task(
+        batch, parent_task, _runs = await service.create_single(
+            project_id=pid,
             chunk_id=cid,
+            document_id=chunk.document_id,
             prompt_template_id=body.prompt_template_id,
             model_config_id=body.model_config_id,
             created_by=current_user.id,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+    except GenerationSourceNotReadyError as e:
+        raise _generation_http_error(
+            409, "GENERATION_SOURCE_NOT_READY", str(e),
+            {"document_id": str(chunk.document_id)},
+        ) from e
+    except GenerationConfigUnavailableError as e:
+        raise _generation_http_error(
+            409, "GENERATION_CONFIG_UNAVAILABLE", str(e),
+            {"config_type": "model_config", "config_id": str(body.model_config_id)},
+        ) from e
+    except (PromptTemplateVersionMaterializeError, ValueError) as e:
+        raise _generation_http_error(
+            409, "GENERATION_CONFIG_UNAVAILABLE", str(e), {"config_type": "prompt_template"}
+        ) from e
+    except GenerationInProgressError as e:
+        raise _generation_http_error(
+            409, "GENERATION_IN_PROGRESS", str(e),
+            {"generation_batch_id": str(e.existing_batch_id) if e.existing_batch_id else None},
+        ) from e
 
-    # 业务 job + Task 同一事务提交后由独立 runner 领取（不再调用 background_tasks）。
+    # 业务 Batch + Task 同一事务提交后由独立 runner 领取。
     await db.commit()
-    return task
+    return GenerateAcceptedResponse(
+        task_id=parent_task.id,
+        generation_batch_id=batch.id,
+        status="queued",
+    )

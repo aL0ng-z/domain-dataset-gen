@@ -71,11 +71,6 @@ class ChunkRequest(RequestSchema):
     cleaned_version_id: uuid.UUID | None = None
 
 
-class GenerateBatchRequest(RequestSchema):
-    prompt_template_id: uuid.UUID
-    model_config_id: uuid.UUID
-
-
 class AsyncTaskAcceptedResponse(BaseSchema):
     """202 异步任务已接受的统一响应（无 body 以外的业务负载）。"""
 
