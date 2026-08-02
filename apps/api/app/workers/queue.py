@@ -266,8 +266,13 @@ class TaskQueue:
         if to_status == "processing":
             values["started_at"] = now
             values["next_run_at"] = next_run_at or (now + timedelta(seconds=300))
-        if to_status == "queued" and next_run_at is not None:
-            values["next_run_at"] = next_run_at
+        if to_status == "queued":
+            # 回队：清除 lease/run_token，满足 ck_tasks_lease_required。
+            values["run_token"] = None
+            values["lease_owner"] = None
+            values["lease_expires_at"] = None
+            if next_run_at is not None:
+                values["next_run_at"] = next_run_at
 
         stmt = update(Task).where(
             Task.id == task_id,
