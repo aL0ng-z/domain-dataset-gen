@@ -146,6 +146,19 @@ def upgrade() -> None:
         "cleaned_document_versions",
         sa.Column("merge_idempotency_key", sa.String(length=128), nullable=True),
     )
+    # 预检：历史行重复 artifact_key 会使唯一约束失败；命中即停止（任务卡 §4.4）。
+    dup_artifacts = conn.execute(
+        sa.text(
+            "SELECT artifact_key, count(*) FROM cleaned_document_versions "
+            "WHERE artifact_key IS NOT NULL GROUP BY artifact_key HAVING count(*) > 1"
+        )
+    ).fetchall()
+    if dup_artifacts:
+        details = "; ".join(f"{r[0]}x{r[1]}" for r in dup_artifacts[:10])
+        raise RuntimeError(
+            f"[T05] 存量 cleaned_document_versions 存在重复 artifact_key：{details}；"
+            "命中任务卡 §12 停止条件，请先形成数据保留决策，不得静默覆盖历史对象。"
+        )
     op.create_unique_constraint(
         "uq_cleaned_doc_ver_doc_idem",
         "cleaned_document_versions",
