@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -29,6 +29,10 @@ class PromptTemplate(Base):
 
 class PromptTemplateVersion(Base):
     __tablename__ = "prompt_template_versions"
+    __table_args__ = (
+        # T08：同一模板下版本唯一，避免多份版本内容不一致导致无法唯一物化。
+        UniqueConstraint("template_id", "version", name="uq_prompt_template_versions_tpl_version"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     template_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("prompt_templates.id", ondelete="CASCADE"))
