@@ -61,6 +61,10 @@ ERROR_CODES = (
     "CLEAN_SOURCE_CHANGED",
     "CLEAN_VERSION_REVIEW_CONFLICT",
     "CLEAN_VERSION_STALE",
+    # T06：版本化切分 API 合同错误。
+    "IDEMPOTENCY_KEY_REUSED",
+    "CHUNK_RUN_IN_PROGRESS",
+    "CHUNK_SET_IMMUTABLE",
 )
 
 ErrorCode = Literal[
@@ -78,6 +82,9 @@ ErrorCode = Literal[
     "CLEAN_SOURCE_CHANGED",
     "CLEAN_VERSION_REVIEW_CONFLICT",
     "CLEAN_VERSION_STALE",
+    "IDEMPOTENCY_KEY_REUSED",
+    "CHUNK_RUN_IN_PROGRESS",
+    "CHUNK_SET_IMMUTABLE",
 ]
 
 # HTTP 状态码 -> 稳定错误 code 映射（唯一事实源，供全局异常处理器使用）。

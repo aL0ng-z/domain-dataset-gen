@@ -68,6 +68,7 @@ class CleaningStartResponse(BaseSchema):
 
 class ChunkRequest(RequestSchema):
     chunk_profile_id: uuid.UUID
+    cleaned_version_id: uuid.UUID | None = None
 
 
 class GenerateBatchRequest(RequestSchema):

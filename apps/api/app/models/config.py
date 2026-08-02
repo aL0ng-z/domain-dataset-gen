@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,6 +43,14 @@ class ParserProfile(Base):
 
 class ChunkProfile(Base):
     __tablename__ = "chunk_profiles"
+    __table_args__ = (
+        # T06 §4.2：max_tokens>0、overlap>=0、overlap<max_tokens（DB 与 Pydantic 同一规则）。
+        CheckConstraint("max_tokens > 0", name="ck_chunk_profiles_max_tokens_positive"),
+        CheckConstraint(
+            "overlap_tokens >= 0 AND overlap_tokens < max_tokens",
+            name="ck_chunk_profiles_overlap_range",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"))

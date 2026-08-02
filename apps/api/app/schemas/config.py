@@ -169,6 +169,17 @@ class ChunkProfileCreate(RequestSchema):
     overlap_tokens: int = 50
     options: dict | None = None
 
+    # T06 §4.2：Pydantic 与 DB CHECK 同一规则。
+    @model_validator(mode="after")
+    def _validate_token_budget(self) -> "ChunkProfileCreate":
+        if self.max_tokens <= 0:
+            raise ValueError("max_tokens 必须大于 0")
+        if self.overlap_tokens < 0:
+            raise ValueError("overlap_tokens 必须 >= 0")
+        if self.overlap_tokens >= self.max_tokens:
+            raise ValueError("overlap_tokens 必须小于 max_tokens")
+        return self
+
 
 class ChunkProfileUpdate(RequestSchema):
     name: str | None = None
@@ -176,6 +187,21 @@ class ChunkProfileUpdate(RequestSchema):
     max_tokens: int | None = None
     overlap_tokens: int | None = None
     options: dict | None = None
+
+    # T06 §4.2：仅当两个字段都提供时校验组合约束（部分更新）。
+    @model_validator(mode="after")
+    def _validate_token_budget(self) -> "ChunkProfileUpdate":
+        if self.max_tokens is not None and self.max_tokens <= 0:
+            raise ValueError("max_tokens 必须大于 0")
+        if self.overlap_tokens is not None and self.overlap_tokens < 0:
+            raise ValueError("overlap_tokens 必须 >= 0")
+        if (
+            self.max_tokens is not None
+            and self.overlap_tokens is not None
+            and self.overlap_tokens >= self.max_tokens
+        ):
+            raise ValueError("overlap_tokens 必须小于 max_tokens")
+        return self
 
 
 class ChunkProfileResponse(BaseSchema):

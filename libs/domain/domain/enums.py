@@ -34,6 +34,19 @@ class ChunkStatus(StrEnum):
     generated = "generated"
 
 
+class ChunkSetStatus(StrEnum):
+    """切分集合状态（T06 §4.1）。completed/rejected 不可变；failed 可由有效 retry
+    run token 转回 pending；cancelled 需以新请求/key 创建新 set。"""
+
+    pending = "pending"
+    processing = "processing"
+    review_pending = "review_pending"
+    completed = "completed"
+    rejected = "rejected"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
 class CandidateStatus(StrEnum):
     ai_generated = "ai_generated"
     human_edited = "human_edited"

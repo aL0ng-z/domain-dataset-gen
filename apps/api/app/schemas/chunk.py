@@ -14,6 +14,9 @@ class ChunkResponse(BaseSchema):
     source_pages: dict | None
     token_count: int
     status: str
+    # T06：响应项新增 chunk_set_id 与 chunk_set_version（历史集合不混入默认列表）。
+    chunk_set_id: uuid.UUID
+    chunk_set_version: int | None = None
     created_at: datetime
     updated_at: datetime
 
