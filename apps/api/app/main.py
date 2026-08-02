@@ -18,6 +18,7 @@ from app.routers import (
     datasets,
     documents,
     exports,
+    generation_batches,
     monitoring,
     projects,
     prompt_templates,
@@ -75,6 +76,7 @@ app.include_router(tasks.router)
 app.include_router(monitoring.router)
 app.include_router(chunks.router)
 app.include_router(chunk_sets.router)
+app.include_router(generation_batches.router)
 app.include_router(prompt_templates.router)
 app.include_router(candidates.router)
 app.include_router(curated_items.router)

@@ -33,6 +33,7 @@ from app.models.dataset import Benchmark, BenchmarkCase, Dataset, DatasetItem
 from app.models.document import Document
 from app.models.export import Export, SnapshotManifest
 from app.models.generation import Candidate, CandidateComment, GenerationRun
+from app.models.generation_batch import GenerationBatch
 from app.models.parse import ParseJob
 from app.models.project import ProjectMember
 from app.models.prompt_template import PromptTemplate, PromptTemplateVersion
@@ -361,6 +362,14 @@ class ProjectResourceResolver:
             .join(Chunk, Chunk.id == GenerationRun.chunk_id)
             .join(Document, Document.id == Chunk.document_id)
             .where(GenerationRun.id == gid, Document.project_id == pid)
+        )
+
+    async def generation_batch(self, pid: uuid.UUID, gbid: uuid.UUID) -> GenerationBatch | None:
+        """按 Batch.document_id -> Document.project_id 校验归属。"""
+        return await self._one(
+            select(GenerationBatch)
+            .join(Document, Document.id == GenerationBatch.document_id)
+            .where(GenerationBatch.id == gbid, Document.project_id == pid)
         )
 
     async def candidate(self, pid: uuid.UUID, cid: uuid.UUID) -> Candidate | None:

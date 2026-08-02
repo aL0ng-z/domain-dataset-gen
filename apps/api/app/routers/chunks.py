@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +25,7 @@ from app.services.generation_service import (
 )
 from app.services.task_service import TaskService
 from domain.enums import UserRole
-from domain.schemas import ErrorResponse
+from domain.schemas import ErrorResponse, PaginatedResponse
 
 router = APIRouter(prefix="/api/chunks", tags=["chunks"])
 
@@ -175,3 +175,42 @@ async def generate_from_chunk(
         generation_batch_id=batch.id,
         status="queued",
     )
+
+
+@router.get("/{cid}/candidates", response_model=PaginatedResponse, operation_id="chunk_candidates")
+async def list_chunk_candidates(
+    cid: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    """按 created_at DESC, id DESC 稳定排序返回 Chunk 的 Candidate 列表（T08 §5.3）。"""
+    from sqlalchemy import func
+
+    from app.models.generation import Candidate
+    from app.schemas.candidate import CandidateResponse
+
+    resolver = ProjectResourceResolver(db)
+    pid = await authorize_flat_resource(
+        db, current_user, await resolver.chunk_project_id(cid), UserRole.viewer
+    )
+    chunk = await resolver.chunk(pid, cid)
+    if chunk is None:
+        raise _generation_http_error(
+            404, "GENERATION_SOURCE_NOT_FOUND", "Chunk 不存在", {"source_type": "Chunk"}
+        )
+    offset = (page - 1) * page_size
+    count_result = await db.execute(
+        select(func.count()).select_from(Candidate).where(Candidate.chunk_id == cid)
+    )
+    total = count_result.scalar() or 0
+    result = await db.execute(
+        select(Candidate)
+        .where(Candidate.chunk_id == cid)
+        .order_by(Candidate.created_at.desc(), Candidate.id.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    items = [CandidateResponse.model_validate(c) for c in result.scalars().all()]
+    return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
