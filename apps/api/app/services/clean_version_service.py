@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import uuid
 from datetime import UTC, datetime
@@ -191,7 +192,14 @@ class CleanVersionService:
 
         doc.clean_status = "review_pending"
 
-        await self.db.flush()
+        try:
+            await self.db.flush()
+        except Exception:
+            # 数据库提交前失败：同步删除刚上传的唯一 key 对象，避免留下孤儿对象。
+            # （提交后失败由部署期孤儿扫描 + 审计脚本兜底，历史对象绝不覆盖复用。）
+            with contextlib.suppress(Exception):  # noqa: BLE001 - 清理失败不影响主错误上报
+                await asyncio.to_thread(self._storage.delete_file, settings.minio_bucket_outputs, artifact_key)
+            raise
         await self.db.refresh(row)
         return row
 
