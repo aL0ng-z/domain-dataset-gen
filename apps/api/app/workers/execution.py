@@ -57,6 +57,8 @@ class ExecutionContext:
     db: AsyncSession
     queue: TaskQueue
     deadline: datetime = field(default_factory=lambda: datetime.now(UTC) + timedelta(seconds=300))
+    # 父任务聚合：handler 设置后 runner 将任务回队退避轮询（不标 completed）。
+    requeue_after: int | None = field(default=None, init=False)
     _cancelled: bool = field(default=False, init=False)
 
     # ------------------------------------------------------------------
