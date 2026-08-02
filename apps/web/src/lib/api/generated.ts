@@ -177,6 +177,26 @@ export interface paths {
         patch: operations["chunk_update"];
         trace?: never;
     };
+    "/api/chunks/{cid}/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Chunk Candidates
+         * @description 按 created_at DESC, id DESC 稳定排序返回 Chunk 的 Candidate 列表（T08 §5.3）。
+         */
+        get: operations["chunk_candidates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/chunks/{cid}/generate": {
         parameters: {
             query?: never;
@@ -186,7 +206,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Generate From Chunk */
+        /**
+         * Generate From Chunk
+         * @description 单 Chunk 生成（T08 §5.1）：202 接收，服务端固定选择 [cid]。
+         */
         post: operations["chunk_generate"];
         delete?: never;
         options?: never;
@@ -909,7 +932,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Trigger Generate Batch */
+        /**
+         * Trigger Generate Batch
+         * @description 批量生成（T08 §5.1）：202 接收；selected_chunk_ids 省略 = active set 全部 ready。
+         */
         post: operations["document_trigger_generate_batch"];
         delete?: never;
         options?: never;
@@ -1099,6 +1125,60 @@ export interface paths {
         };
         /** Get Manifest */
         get: operations["export_get_manifest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/generation-batches/{gbid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Generation Batch */
+        get: operations["generation_batch_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/generation-batches/{gbid}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Generation Batch
+         * @description 对 failed/cancelled Batch 人工 retry：派生新 Task/Batch/Run，旧终态不变。
+         */
+        post: operations["generation_batch_retry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/generation-batches/{gbid}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Generation Runs */
+        get: operations["generation_batch_list_runs"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2743,7 +2823,7 @@ export interface components {
              * @description 稳定大写 snake case 业务错误码，前端按 code 分支
              * @enum {string}
              */
-            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE" | "IDEMPOTENCY_KEY_REUSED" | "CHUNK_RUN_IN_PROGRESS" | "CHUNK_SET_IMMUTABLE";
+            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_NOT_READY" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE" | "IDEMPOTENCY_KEY_REUSED" | "CHUNK_RUN_IN_PROGRESS" | "CHUNK_SET_IMMUTABLE" | "GENERATION_CONFIG_NOT_FOUND" | "GENERATION_SOURCE_NOT_FOUND" | "GENERATION_CONFIG_UNAVAILABLE" | "GENERATION_SNAPSHOT_UNSAFE" | "GENERATION_RENDERER_UNAVAILABLE" | "GENERATION_SOURCE_NOT_READY" | "GENERATION_IN_PROGRESS" | "GENERATION_NOT_RETRYABLE" | "GENERATION_RETRY_EXISTS" | "GENERATION_PROVENANCE_INVALID";
             /**
              * Context
              * @description 仅含经 schema 声明的非敏感结构；允许为 null
@@ -2900,7 +2980,34 @@ export interface components {
              */
             snapshot_manifest_id: string;
         };
-        /** GenerateBatchRequest */
+        /**
+         * GenerateAcceptedResponse
+         * @description 202 接收响应：不假装同步返回 Candidate。
+         */
+        GenerateAcceptedResponse: {
+            /**
+             * Generation Batch Id
+             * Format: uuid
+             */
+            generation_batch_id: string;
+            /**
+             * Status
+             * @default queued
+             */
+            status: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+        };
+        /**
+         * GenerateBatchRequest
+         * @description 批量生成请求；selected_chunk_ids 可省略（省略 = active ChunkSet 全部 ready）。
+         *
+         *     显式传入时若非空数组且非 None，允许任意子集；空数组属于 Pydantic 结构
+         *     校验错误（422 ValidationErrorResponse），业务冲突不借用 422。
+         */
         GenerateBatchRequest: {
             /**
              * Model Config Id
@@ -2912,8 +3019,13 @@ export interface components {
              * Format: uuid
              */
             prompt_template_id: string;
+            /** Selected Chunk Ids */
+            selected_chunk_ids?: string[] | null;
         };
-        /** GenerateRequest */
+        /**
+         * GenerateRequest
+         * @description 单 Chunk 生成请求（服务端固定选择 [cid]，只发送前两个字段）。
+         */
         GenerateRequest: {
             /**
              * Model Config Id
@@ -2925,6 +3037,125 @@ export interface components {
              * Format: uuid
              */
             prompt_template_id: string;
+        };
+        /**
+         * GenerationBatchResponse
+         * @description 批次详情（不返回 credential；快照仅摘要）。
+         */
+        GenerationBatchResponse: {
+            /**
+             * Chunk Set Id
+             * Format: uuid
+             */
+            chunk_set_id: string;
+            /** Completed At */
+            completed_at: string | null;
+            /** Completed Chunks */
+            completed_chunks: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Created By
+             * Format: uuid
+             */
+            created_by: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Legacy */
+            is_legacy: boolean;
+            /**
+             * Model Config Id
+             * Format: uuid
+             */
+            model_config_id: string;
+            /** Model Config Sha256 Prefix */
+            model_config_sha256_prefix: string | null;
+            /**
+             * Prompt Template Id
+             * Format: uuid
+             */
+            prompt_template_id: string;
+            /** Prompt Template Sha256 Prefix */
+            prompt_template_sha256_prefix: string | null;
+            /** Prompt Template Version Id */
+            prompt_template_version_id: string | null;
+            /** Provenance Error Code */
+            provenance_error_code: string | null;
+            /** Provenance Status */
+            provenance_status: string;
+            /** Renderer Version */
+            renderer_version: string | null;
+            /** Retry Of Generation Batch Id */
+            retry_of_generation_batch_id: string | null;
+            /** Selected Chunk Ids */
+            selected_chunk_ids: string[];
+            /** Status */
+            status: string;
+            /** Summary Json */
+            summary_json: {
+                [key: string]: unknown;
+            } | null;
+            /** Total Chunks */
+            total_chunks: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * GenerationRunResponse
+         * @description Run 详情（是否返回完整 input_prompt 受权限与敏感数据策略控制）。
+         */
+        GenerationRunResponse: {
+            /**
+             * Chunk Id
+             * Format: uuid
+             */
+            chunk_id: string;
+            /** Completed At */
+            completed_at: string | null;
+            /** Context Mode */
+            context_mode: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error Message */
+            error_message: string | null;
+            /** Generation Batch Id */
+            generation_batch_id: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Input Prompt */
+            input_prompt: string | null;
+            /** Is Legacy */
+            is_legacy: boolean;
+            /** Provenance Error Code */
+            provenance_error_code: string | null;
+            /** Provenance Status */
+            provenance_status: string;
+            /** Raw Output */
+            raw_output: string | null;
+            /** Rendered Prompt Sha256 */
+            rendered_prompt_sha256: string | null;
+            /** Status */
+            status: string;
         };
         /** LeaseHeartbeatRequest */
         LeaseHeartbeatRequest: {
@@ -3172,6 +3403,17 @@ export interface components {
         PaginatedResponse_ExportResponse_: {
             /** Items */
             items: components["schemas"]["ExportResponse"][];
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Total */
+            total: number;
+        };
+        /** PaginatedResponse[GenerationRunResponse] */
+        PaginatedResponse_GenerationRunResponse_: {
+            /** Items */
+            items: components["schemas"]["GenerationRunResponse"][];
             /** Page */
             page: number;
             /** Page Size */
@@ -4965,6 +5207,76 @@ export interface operations {
             };
         };
     };
+    chunk_candidates: {
+        parameters: {
+            query?: {
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path: {
+                cid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedResponse_CandidateResponse_"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     chunk_generate: {
         parameters: {
             query?: never;
@@ -4981,12 +5293,12 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            201: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TaskResponse"];
+                    "application/json": components["schemas"]["GenerateAcceptedResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -8582,9 +8894,7 @@ export interface operations {
     document_trigger_generate_batch: {
         parameters: {
             query?: never;
-            header?: {
-                "Idempotency-Key"?: string | null;
-            };
+            header?: never;
             path: {
                 pid: string;
                 did: string;
@@ -8603,7 +8913,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AsyncTaskAcceptedResponse"];
+                    "application/json": components["schemas"]["GenerateAcceptedResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -9516,6 +9826,188 @@ export interface operations {
             };
             /** @description 资源不存在 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    generation_batch_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                gbid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerationBatchResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    generation_batch_retry: {
+        parameters: {
+            query?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
+            path: {
+                pid: string;
+                gbid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerateAcceptedResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    generation_batch_list_runs: {
+        parameters: {
+            query?: {
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path: {
+                pid: string;
+                gbid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedResponse_GenerationRunResponse_"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

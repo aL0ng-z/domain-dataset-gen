@@ -13,6 +13,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
+import { BatchGenerateDialog } from "@/components/batch-generate-dialog";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { api, ApiErrorException } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
@@ -52,6 +53,7 @@ export default function DocumentDetailPage() {
   const [deleteJobId, setDeleteJobId] = useState<string | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [showCleanPicker, setShowCleanPicker] = useState(false);
+  const [showBatchGenerate, setShowBatchGenerate] = useState(false);
   const [selectedCleanJobId, setSelectedCleanJobId] = useState<string>("");
   const initialLoadDone = useRef(false);
   // T06 §6：切分 idempotency key 由一次用户操作生成并复用，网络重试不换 key。
@@ -489,7 +491,7 @@ export default function DocumentDetailPage() {
             </Button>
             <Button
               variant="outline"
-              onClick={() => {}} // TODO: batch generate needs template + model selection
+              onClick={() => setShowBatchGenerate(true)}
               disabled={actionLoading !== null || doc.status !== "chunked"}
             >
               {actionLoading === "generate" && (
@@ -619,6 +621,15 @@ export default function DocumentDetailPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 批量生成对话框 */}
+      <BatchGenerateDialog
+        projectId={projectId}
+        docId={docId}
+        open={showBatchGenerate}
+        onOpenChange={setShowBatchGenerate}
+        onGenerated={() => fetchData(true)}
+      />
     </div>
   );
 }
