@@ -18,7 +18,7 @@ import os
 import sys
 import uuid
 from collections.abc import AsyncGenerator, Generator
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -535,6 +535,13 @@ class ResourceFactory:
             entity_id=entity_id,
             status="queued",
             created_by=created_by,
+            # T07：持久队列必需字段（handler/payload/next_run_at）。
+            handler=f"{task_type}:v1",
+            payload={},
+            payload_version=1,
+            max_attempts=1,
+            timeout_seconds=300,
+            next_run_at=datetime.now(UTC),
         )
         self.session.add(task)
         await self.session.flush()
