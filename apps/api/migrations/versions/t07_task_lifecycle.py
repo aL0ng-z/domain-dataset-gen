@@ -84,6 +84,12 @@ def upgrade() -> None:
     op.create_unique_constraint(
         "uq_tasks_project_type_idempotency", "tasks", ["project_id", "task_type", "idempotency_key"]
     )
+    # 同一源任务最多一个非终态人工重试后继（部分唯一索引）。
+    op.create_index(
+        "uq_tasks_single_active_retry", "tasks", ["retry_of_task_id"],
+        unique=True,
+        postgresql_where=sa.text("status IN ('queued', 'processing', 'cancelling')"),
+    )
 
     # ------------------------------------------------------------------
     # 3. 存量非终态任务处置：缺少可重建 payload 的 queued/processing 旧任务
@@ -211,6 +217,7 @@ def downgrade() -> None:
 
     op.drop_index("ix_tasks_project_created", table_name="tasks")
     op.drop_index("ix_tasks_claim", table_name="tasks")
+    op.drop_index("uq_tasks_single_active_retry", table_name="tasks")
 
     op.drop_constraint("ck_tasks_terminal_has_completed_at", "tasks", type_="check")
     op.drop_constraint("ck_tasks_lease_required", "tasks", type_="check")

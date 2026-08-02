@@ -24,6 +24,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -125,6 +126,13 @@ class Task(Base):
         CheckConstraint(
             "(status IN ('completed', 'failed', 'cancelled')) = (completed_at IS NOT NULL)",
             name="ck_tasks_terminal_has_completed_at",
+        ),
+        # 同一源任务最多一个非终态人工重试后继（部分唯一索引，见迁移）。
+        Index(
+            "uq_tasks_single_active_retry",
+            "retry_of_task_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'processing', 'cancelling')"),
         ),
     )
 
