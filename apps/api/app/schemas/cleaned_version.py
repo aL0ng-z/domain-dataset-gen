@@ -13,6 +13,8 @@ class CleanedDocumentVersionResponse(BaseSchema):
     version: int
     section_count: int
     artifact_key: str | None
+    source_revision_sha256: str | None
+    content_sha256: str | None
     status: str
     created_by: uuid.UUID
     reviewed_by: uuid.UUID | None
@@ -23,6 +25,7 @@ class CleanedDocumentVersionResponse(BaseSchema):
 
 class CleanedDocumentVersionDetailResponse(CleanedDocumentVersionResponse):
     merged_markdown: str
+    source_revision_map: dict | None
 
 
 class CleanedFinalReviewRequest(RequestSchema):

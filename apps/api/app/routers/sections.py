@@ -9,6 +9,8 @@ from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.user import User
 from app.schemas.section import (
+    LeaseHeartbeatRequest,
+    LeaseReleaseRequest,
     SectionAssignRequest,
     SectionCommentCreate,
     SectionCommentResponse,
@@ -17,9 +19,15 @@ from app.schemas.section import (
     SectionReturnRequest,
     SectionReview,
     SectionRevisionResponse,
+    SectionSubmitRequest,
     SectionUpdate,
 )
-from app.services.section_service import SectionService
+from app.services.section_service import (
+    SectionLeaseHeldError,
+    SectionLeaseLostError,
+    SectionService,
+    SectionVersionConflictError,
+)
 from domain.enums import UserRole
 
 router = APIRouter(prefix="/api/sections", tags=["sections"])
@@ -27,6 +35,18 @@ router = APIRouter(prefix="/api/sections", tags=["sections"])
 
 def _get_redis(request: Request):
     return getattr(request.app.state, "redis", None)
+
+
+def _error(
+    status_code: int,
+    code: str,
+    message: str,
+    context: dict | None = None,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message, "context": context},
+    )
 
 
 @router.get("/{sid}", response_model=SectionResponse, operation_id="section_get")
@@ -60,7 +80,19 @@ async def update_section(
     if section is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
-    section = await service.update_section(sid, body.cleaned_markdown, current_user.id)
+    try:
+        section = await service.update_section(
+            sid, body.cleaned_markdown, current_user.id, body.expected_revision, body.lease_id
+        )
+    except SectionLeaseLostError as e:
+        raise _error(status.HTTP_409_CONFLICT, "SECTION_LEASE_LOST", str(e)) from e
+    except SectionVersionConflictError as e:
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "SECTION_VERSION_CONFLICT",
+            "内容版本已变化",
+            {"current_revision": e.current_revision},
+        ) from e
     if section is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     return section
@@ -69,6 +101,7 @@ async def update_section(
 @router.post("/{sid}/submit", response_model=SectionResponse, operation_id="section_submit")
 async def submit_section(
     sid: uuid.UUID,
+    body: SectionSubmitRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
@@ -80,7 +113,19 @@ async def submit_section(
     if section is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db)
-    section = await service.submit_for_review(sid)
+    try:
+        section = await service.submit_for_review(
+            sid, current_user.id, body.expected_revision, body.lease_id
+        )
+    except SectionLeaseLostError as e:
+        raise _error(status.HTTP_409_CONFLICT, "SECTION_LEASE_LOST", str(e)) from e
+    except SectionVersionConflictError as e:
+        raise _error(
+            status.HTTP_409_CONFLICT,
+            "SECTION_VERSION_CONFLICT",
+            "内容版本已变化",
+            {"current_revision": e.current_revision},
+        ) from e
     if section is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     return section
@@ -127,14 +172,15 @@ async def acquire_lease(
     service = SectionService(db, _get_redis(request))
     try:
         return await service.acquire_lease(sid, current_user.id)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e)) from e
+    except SectionLeaseHeldError as e:
+        raise _error(status.HTTP_409_CONFLICT, "SECTION_LEASE_HELD", str(e)) from e
 
 
 @router.post("/{sid}/lease/heartbeat", response_model=SectionLeaseResponse, operation_id="section_lease_heartbeat")
 async def heartbeat_lease(
     sid: uuid.UUID,
     request: Request,
+    body: LeaseHeartbeatRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
@@ -146,9 +192,9 @@ async def heartbeat_lease(
     if section is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db, _get_redis(request))
-    lease = await service.heartbeat_lease(sid, current_user.id)
+    lease = await service.heartbeat_lease(sid, current_user.id, body.lease_id)
     if lease is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="租约不存在")
+        raise _error(status.HTTP_409_CONFLICT, "SECTION_LEASE_LOST", "租约已过期、已释放或不属于当前用户")
     return lease
 
 
@@ -156,6 +202,7 @@ async def heartbeat_lease(
 async def release_lease(
     sid: uuid.UUID,
     request: Request,
+    body: LeaseReleaseRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
@@ -167,8 +214,8 @@ async def release_lease(
     if section is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section 不存在")
     service = SectionService(db, _get_redis(request))
-    if not await service.release_lease(sid, current_user.id):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="租约不存在")
+    # 首次与重复释放均为 204；不处理别人的租约。
+    await service.release_lease(sid, current_user.id, body.lease_id)
 
 
 @router.post("/{sid}/comments", response_model=SectionCommentResponse, status_code=status.HTTP_201_CREATED, operation_id="section_add_comment")

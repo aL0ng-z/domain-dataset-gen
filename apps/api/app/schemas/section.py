@@ -1,7 +1,15 @@
 import uuid
 from datetime import datetime
 
+from pydantic import Field
+
 from domain.schemas import BaseSchema, RequestSchema
+
+
+class SectionLeaseSummary(BaseSchema):
+    id: uuid.UUID
+    user_id: uuid.UUID
+    expires_at: datetime
 
 
 class SectionResponse(BaseSchema):
@@ -13,6 +21,7 @@ class SectionResponse(BaseSchema):
     source_pages: dict | None
     raw_markdown: str
     cleaned_markdown: str | None
+    content_revision: int
     status: str
     cleaned_by: uuid.UUID | None
     assignment_status: str
@@ -23,10 +32,26 @@ class SectionResponse(BaseSchema):
     return_reason: str | None
     created_at: datetime
     updated_at: datetime
+    lease: SectionLeaseSummary | None = None
 
 
 class SectionUpdate(RequestSchema):
     cleaned_markdown: str
+    expected_revision: int = Field(description="客户端所见的最新 content_revision（乐观并发）")
+    lease_id: uuid.UUID = Field(description="acquire 返回的 fencing token")
+
+
+class SectionSubmitRequest(RequestSchema):
+    expected_revision: int = Field(description="客户端所见的最新 content_revision")
+    lease_id: uuid.UUID = Field(description="acquire 返回的 fencing token")
+
+
+class LeaseHeartbeatRequest(RequestSchema):
+    lease_id: uuid.UUID
+
+
+class LeaseReleaseRequest(RequestSchema):
+    lease_id: uuid.UUID
 
 
 class SectionReview(RequestSchema):
@@ -53,6 +78,8 @@ class SectionRevisionResponse(BaseSchema):
     section_id: uuid.UUID
     revised_by: uuid.UUID
     cleaned_markdown: str
+    from_revision: int
+    to_revision: int
     revision_note: str | None
     created_at: datetime
 

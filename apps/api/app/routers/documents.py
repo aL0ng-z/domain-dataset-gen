@@ -207,7 +207,6 @@ async def trigger_parse(
     await resolver.ensure_in_project(pid, [(ParserProfile, body.parser_profile_id)])
 
     # T03: 先校验 profile 与 registry，再创建 Task/ParseJob；409 前不得下载 PDF。
-    from app.models.config import ParserProfile
     from app.services.parse_freeze_service import ParseFreezeError, freeze_parse_job
 
     profile = (
@@ -617,15 +616,31 @@ async def bulk_assign_sections(
 async def merge_clean_version(
     pid: uuid.UUID,
     did: uuid.UUID,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
     cleaning_job_id: Annotated[uuid.UUID, Query()],
 ):
     resolver = ProjectResourceResolver(db)
     await _get_cleaning_job(resolver, pid, did, cleaning_job_id)
+    idempotency_key = request.headers.get("Idempotency-Key")
+    if not idempotency_key or len(idempotency_key) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Idempotency-Key 头缺失或超过 128 字符",
+        )
     service = CleanVersionService(db)
+    from app.services.clean_version_service import CleanSourceChangedError
+
     try:
-        version = await service.create_merged_version(did, cleaning_job_id, current_user.id)
+        version = await service.create_merged_version(
+            did, cleaning_job_id, current_user.id, idempotency_key=idempotency_key
+        )
+    except CleanSourceChangedError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CLEAN_SOURCE_CHANGED", "message": "来源 Section 在合并期间已变化"},
+        ) from None
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     await db.commit()
@@ -649,6 +664,11 @@ async def final_review_clean_version(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="合并版本不存在")
 
     service = CleanVersionService(db)
+    from app.services.clean_version_service import (
+        CleanVersionReviewConflictError,
+        CleanVersionStaleError,
+    )
+
     try:
         version = await service.final_review(
             body.version_id,
@@ -659,6 +679,20 @@ async def final_review_clean_version(
             document_id=did,
             cleaning_job_id=cleaning_job_id,
         )
+    except CleanVersionReviewConflictError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CLEAN_VERSION_REVIEW_CONFLICT", "message": "该版本已被其他评审者处理"},
+        ) from None
+    except CleanVersionStaleError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "CLEAN_VERSION_STALE",
+                "message": "目标版本旧于当前 active 版本",
+                "context": {"target_version": e.target_version, "active_version": e.active_version},
+            },
+        ) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     await db.commit()

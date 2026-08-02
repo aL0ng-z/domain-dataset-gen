@@ -54,9 +54,17 @@ def _inject_error_responses(op: dict[str, Any], path: str, method: str) -> None:
     # 404：资源查找。
     if has_resource_id and "404" not in responses:
         responses["404"] = _response("资源不存在", _ERROR_REF)
-    # 409：冲突语义。
+    # 409：冲突语义（租约、合并、终审、内容版本冲突）。
     opid = str(op.get("operationId", ""))
-    if ("lease" in opid or "conflict" in opid) and "409" not in responses:
+    conflict_opid = (
+        "lease" in opid
+        or "conflict" in opid
+        or "merge" in opid
+        or "final_review" in opid
+        or "section_update" in opid
+        or "section_submit" in opid
+    )
+    if conflict_opid and "409" not in responses:
         responses["409"] = _response("冲突", _ERROR_REF)
     # 422：字段校验。始终覆盖为 ValidationErrorResponse（FastAPI 默认注入的是
     # HTTPValidationError，前端需用统一可判别类型）。

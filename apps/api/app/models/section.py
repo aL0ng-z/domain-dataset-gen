@@ -1,9 +1,19 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
@@ -30,6 +40,9 @@ class CleaningJob(Base):
 
 class Section(Base):
     __tablename__ = "sections"
+    __table_args__ = (
+        CheckConstraint("content_revision >= 0", name="ck_sections_content_revision_nonneg"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     cleaning_job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("cleaning_jobs.id", ondelete="CASCADE"))
@@ -39,6 +52,7 @@ class Section(Base):
     source_pages: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     raw_markdown: Mapped[str] = mapped_column(Text, nullable=False)
     cleaned_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     status: Mapped[str] = mapped_column(section_status_enum, nullable=False, default="draft")
     cleaned_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     assignment_status: Mapped[str] = mapped_column(section_assignment_status_enum, nullable=False, server_default="unassigned")
@@ -50,9 +64,27 @@ class Section(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
+    lease: Mapped["SectionLease | None"] = relationship(
+        "SectionLease",
+        primaryjoin="and_(SectionLease.section_id == Section.id, SectionLease.released_at.is_(None), SectionLease.expires_at > func.now())",
+        uselist=False,
+        viewonly=True,
+        lazy="selectin",
+    )
+
 
 class SectionLease(Base):
     __tablename__ = "section_leases"
+    __table_args__ = (
+        Index(
+            "uq_section_leases_active_section",
+            "section_id",
+            unique=True,
+            postgresql_where=text("released_at IS NULL"),
+        ),
+        Index("ix_section_leases_section_expires", "section_id", "expires_at"),
+        CheckConstraint("expires_at > acquired_at", name="ck_section_leases_expiry_after_acquire"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     section_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sections.id", ondelete="CASCADE"))
@@ -75,10 +107,15 @@ class SectionComment(Base):
 
 class SectionRevision(Base):
     __tablename__ = "section_revisions"
+    __table_args__ = (
+        CheckConstraint("to_revision = from_revision + 1", name="ck_section_revisions_contiguous"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     section_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("sections.id", ondelete="CASCADE"))
     revised_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     cleaned_markdown: Mapped[str] = mapped_column(Text, nullable=False)
+    from_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    to_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     revision_note: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

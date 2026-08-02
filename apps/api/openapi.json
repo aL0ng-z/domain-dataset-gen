@@ -791,6 +791,17 @@
             ],
             "title": "Artifact Key"
           },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -855,6 +866,29 @@
             ],
             "title": "Source Cleaning Job Id"
           },
+          "source_revision_map": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision Map"
+          },
+          "source_revision_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision Sha256"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -876,13 +910,16 @@
           "version",
           "section_count",
           "artifact_key",
+          "source_revision_sha256",
+          "content_sha256",
           "status",
           "created_by",
           "reviewed_by",
           "reviewed_at",
           "created_at",
           "updated_at",
-          "merged_markdown"
+          "merged_markdown",
+          "source_revision_map"
         ],
         "title": "CleanedDocumentVersionDetailResponse",
         "type": "object"
@@ -899,6 +936,17 @@
               }
             ],
             "title": "Artifact Key"
+          },
+          "content_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Sha256"
           },
           "created_at": {
             "format": "date-time",
@@ -960,6 +1008,17 @@
             ],
             "title": "Source Cleaning Job Id"
           },
+          "source_revision_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Revision Sha256"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -981,6 +1040,8 @@
           "version",
           "section_count",
           "artifact_key",
+          "source_revision_sha256",
+          "content_sha256",
           "status",
           "created_by",
           "reviewed_by",
@@ -1618,7 +1679,13 @@
               "BAD_REQUEST",
               "PAYLOAD_TOO_LARGE",
               "VALIDATION_ERROR",
-              "INTERNAL_ERROR"
+              "INTERNAL_ERROR",
+              "SECTION_LEASE_HELD",
+              "SECTION_LEASE_LOST",
+              "SECTION_VERSION_CONFLICT",
+              "CLEAN_SOURCE_CHANGED",
+              "CLEAN_VERSION_REVIEW_CONFLICT",
+              "CLEAN_VERSION_STALE"
             ],
             "title": "Code",
             "type": "string"
@@ -2001,6 +2068,36 @@
           "model_config_id"
         ],
         "title": "GenerateRequest",
+        "type": "object"
+      },
+      "LeaseHeartbeatRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_id": {
+            "format": "uuid",
+            "title": "Lease Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_id"
+        ],
+        "title": "LeaseHeartbeatRequest",
+        "type": "object"
+      },
+      "LeaseReleaseRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_id": {
+            "format": "uuid",
+            "title": "Lease Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "lease_id"
+        ],
+        "title": "LeaseReleaseRequest",
         "type": "object"
       },
       "LoginRequest": {
@@ -2977,6 +3074,39 @@
             "title": "Document Id",
             "type": "string"
           },
+          "endpoint_policy_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Policy Ref"
+          },
+          "endpoint_policy_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Policy Sha256"
+          },
+          "endpoint_policy_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Policy Version"
+          },
           "error_message": {
             "anyOf": [
               {
@@ -2988,6 +3118,18 @@
             ],
             "title": "Error Message"
           },
+          "frozen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frozen At"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -2997,6 +3139,28 @@
             "format": "uuid",
             "title": "Parser Profile Id",
             "type": "string"
+          },
+          "parser_profile_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parser Profile Sha256"
+          },
+          "snapshot_schema_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Schema Version"
           },
           "started_at": {
             "anyOf": [
@@ -3023,7 +3187,13 @@
           "error_message",
           "started_at",
           "completed_at",
-          "created_at"
+          "created_at",
+          "snapshot_schema_version",
+          "parser_profile_sha256",
+          "endpoint_policy_ref",
+          "endpoint_policy_version",
+          "endpoint_policy_sha256",
+          "frozen_at"
         ],
         "title": "ParseJobResponse",
         "type": "object"
@@ -3041,6 +3211,51 @@
           "parser_profile_id"
         ],
         "title": "ParseRequest",
+        "type": "object"
+      },
+      "ParserEndpointListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ParserEndpointOption"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ParserEndpointListResponse",
+        "type": "object"
+      },
+      "ParserEndpointOption": {
+        "description": "项目用户可选的端点只读信息；不返回主机/IP/端口/allowlist 或网络区域内部细节。",
+        "properties": {
+          "credential_configured": {
+            "title": "Credential Configured",
+            "type": "boolean"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "endpoint_ref": {
+            "title": "Endpoint Ref",
+            "type": "string"
+          },
+          "parser_name": {
+            "title": "Parser Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "endpoint_ref",
+          "display_name",
+          "parser_name",
+          "credential_configured"
+        ],
+        "title": "ParserEndpointOption",
         "type": "object"
       },
       "ParserProfileCreate": {
@@ -3610,6 +3825,7 @@
         "additionalProperties": false,
         "properties": {
           "refresh_token": {
+            "description": "有效的 refresh token（type=refresh）",
             "title": "Refresh Token",
             "type": "string"
           }
@@ -3776,6 +3992,32 @@
         "title": "SectionLeaseResponse",
         "type": "object"
       },
+      "SectionLeaseSummary": {
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "expires_at"
+        ],
+        "title": "SectionLeaseSummary",
+        "type": "object"
+      },
       "SectionResponse": {
         "properties": {
           "assigned_at": {
@@ -3858,6 +4100,10 @@
             ],
             "title": "Completed At"
           },
+          "content_revision": {
+            "title": "Content Revision",
+            "type": "integer"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -3876,6 +4122,16 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "lease": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SectionLeaseSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "ordinal": {
             "title": "Ordinal",
@@ -3927,6 +4183,7 @@
           "source_pages",
           "raw_markdown",
           "cleaned_markdown",
+          "content_revision",
           "status",
           "cleaned_by",
           "assignment_status",
@@ -3991,6 +4248,10 @@
             "title": "Created At",
             "type": "string"
           },
+          "from_revision": {
+            "title": "From Revision",
+            "type": "integer"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -4016,6 +4277,10 @@
             "format": "uuid",
             "title": "Section Id",
             "type": "string"
+          },
+          "to_revision": {
+            "title": "To Revision",
+            "type": "integer"
           }
         },
         "required": [
@@ -4023,10 +4288,34 @@
           "section_id",
           "revised_by",
           "cleaned_markdown",
+          "from_revision",
+          "to_revision",
           "revision_note",
           "created_at"
         ],
         "title": "SectionRevisionResponse",
+        "type": "object"
+      },
+      "SectionSubmitRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "description": "客户端所见的最新 content_revision",
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "lease_id": {
+            "description": "acquire 返回的 fencing token",
+            "format": "uuid",
+            "title": "Lease Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "lease_id"
+        ],
+        "title": "SectionSubmitRequest",
         "type": "object"
       },
       "SectionUpdate": {
@@ -4035,10 +4324,23 @@
           "cleaned_markdown": {
             "title": "Cleaned Markdown",
             "type": "string"
+          },
+          "expected_revision": {
+            "description": "客户端所见的最新 content_revision（乐观并发）",
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "lease_id": {
+            "description": "acquire 返回的 fencing token",
+            "format": "uuid",
+            "title": "Lease Id",
+            "type": "string"
           }
         },
         "required": [
-          "cleaned_markdown"
+          "cleaned_markdown",
+          "expected_revision",
+          "lease_id"
         ],
         "title": "SectionUpdate",
         "type": "object"
@@ -4396,17 +4698,21 @@
         "type": "object"
       },
       "TokenResponse": {
+        "description": "登录/刷新响应。access_token 仅用于受保护入口；refresh_token 仅用于刷新接口。",
         "properties": {
           "access_token": {
+            "description": "access token（type=access），用于受保护 HTTP/PDF/WebSocket 入口",
             "title": "Access Token",
             "type": "string"
           },
           "refresh_token": {
+            "description": "refresh token（type=refresh），仅用于 POST /api/auth/refresh",
             "title": "Refresh Token",
             "type": "string"
           },
           "token_type": {
             "default": "bearer",
+            "description": "令牌类型，恒为 bearer",
             "title": "Token Type",
             "type": "string"
           }
@@ -10503,6 +10809,16 @@
             },
             "description": "权限不足"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -10600,6 +10916,16 @@
               }
             },
             "description": "权限不足"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
           },
           "422": {
             "content": {
@@ -10852,7 +11178,7 @@
     },
     "/api/projects/{pid}/documents/{did}/file": {
       "get": {
-        "description": "Serve PDF file. Supports both Authorization header and ?token= query param (for iframe).",
+        "description": "Serve PDF file. Requires Authorization: Bearer access token and project viewer.\n\n- 仅接受 Authorization 头；query token 一律拒绝（任务卡 §5.2）。\n- did 必须属于 pid，调用者至少为 viewer；校验完成前不访问 MinIO。\n- 响应 private, no-store；任何日志不得打印 Authorization 或文件内容。",
         "operationId": "document_get_file",
         "parameters": [
           {
@@ -10874,22 +11200,6 @@
               "title": "Did",
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "token",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Token"
-            }
           }
         ],
         "responses": {
@@ -10900,6 +11210,26 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
           },
           "404": {
             "content": {
@@ -10932,6 +11262,11 @@
             "description": "服务器内部错误"
           }
         },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "summary": "Get Document File",
         "tags": [
           "documents"
@@ -13715,7 +14050,7 @@
     },
     "/api/projects/{pid}/parser-profiles/": {
       "get": {
-        "operationId": "parser-profiles_list",
+        "operationId": "list_all_api_projects__pid__parser_profiles__get",
         "parameters": [
           {
             "in": "path",
@@ -13814,7 +14149,7 @@
         ]
       },
       "post": {
-        "operationId": "parser-profiles_create",
+        "operationId": "create_api_projects__pid__parser_profiles__post",
         "parameters": [
           {
             "in": "path",
@@ -13900,9 +14235,87 @@
         ]
       }
     },
+    "/api/projects/{pid}/parser-profiles/endpoints": {
+      "get": {
+        "operationId": "list_endpoints_api_projects__pid__parser_profiles_endpoints_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParserEndpointListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Endpoints",
+        "tags": [
+          "parser-profiles"
+        ]
+      }
+    },
     "/api/projects/{pid}/parser-profiles/{config_id}": {
       "delete": {
-        "operationId": "parser-profiles_delete",
+        "operationId": "delete_api_projects__pid__parser_profiles__config_id__delete",
         "parameters": [
           {
             "in": "path",
@@ -13981,7 +14394,7 @@
         ]
       },
       "get": {
-        "operationId": "parser-profiles_get",
+        "operationId": "get_api_projects__pid__parser_profiles__config_id__get",
         "parameters": [
           {
             "in": "path",
@@ -14067,7 +14480,7 @@
         ]
       },
       "patch": {
-        "operationId": "parser-profiles_update",
+        "operationId": "update_api_projects__pid__parser_profiles__config_id__patch",
         "parameters": [
           {
             "in": "path",
@@ -14165,7 +14578,7 @@
     },
     "/api/projects/{pid}/parser-profiles/{config_id}/set-default": {
       "post": {
-        "operationId": "parser-profiles_set_default",
+        "operationId": "set_default_api_projects__pid__parser_profiles__config_id__set_default_post",
         "parameters": [
           {
             "in": "path",
@@ -16043,6 +16456,16 @@
             },
             "description": "资源不存在"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -16522,6 +16945,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaseHeartbeatRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -16610,6 +17043,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaseReleaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "204": {
             "description": "Successful Response"
@@ -16959,6 +17402,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SectionSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
@@ -16989,6 +17442,16 @@
               }
             },
             "description": "权限不足"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
           },
           "422": {
             "content": {

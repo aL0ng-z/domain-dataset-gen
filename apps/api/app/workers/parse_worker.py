@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.models.config import ParserProfile
 from app.models.document import Document
 from app.models.parse import ParseJob
 from app.security.snapshot import profile_snapshot_sha256, scan_for_secrets
@@ -36,7 +37,6 @@ async def run_parse(
 
     try:
         doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one()
-        profile = (await db.execute(select(ParserProfile).where(ParserProfile.id == parser_profile_id))).scalar_one()
 
         # 项目链复核：以 API 授权的 task.project_id 为锚点，doc 与 parser profile
         # 必须属于同一项目（执行外部 IO/写数据前，任务卡 §2.9）。

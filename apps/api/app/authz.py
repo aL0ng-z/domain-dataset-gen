@@ -22,6 +22,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.chunk import Chunk
 from app.models.chunk_set import ChunkSet
@@ -262,6 +263,7 @@ class ProjectResourceResolver:
             select(Section)
             .join(Document, Document.id == Section.document_id)
             .where(Section.id == sid, Document.project_id == pid)
+            .options(selectinload(Section.lease))
         )
 
     async def cleaned_version(self, pid: uuid.UUID, vid: uuid.UUID) -> CleanedDocumentVersion | None:
