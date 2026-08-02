@@ -21,6 +21,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import splitters
 from app.models.chunk import Chunk
 from app.models.chunk_set import ChunkSet
 from app.models.cleaned_document_version import CleanedDocumentVersion
@@ -475,3 +476,58 @@ async def test_idempotency_replay_and_conflict(
         assert other_set is not None
     except IntegrityError:
         await db_session.rollback()
+
+
+async def test_worker_failure_midway_keeps_old_active(
+    db_session: AsyncSession, org,
+):
+    """worker 在第 N 个 Chunk 故障：新 set failed、无部分 active 结果、旧 active pointer 不变。"""
+    from tests.conftest import ResourceFactory
+    rf = ResourceFactory(db_session)
+    doc = await rf.create_document(org["projects"]["a"].id, org["users"]["admin"].id)
+    cv = await _make_clean_version(db_session, org, doc)
+    profile = await _make_chunk_profile(db_session, org)
+
+    # 先建立一个旧 active set（模拟历史已完成切分）。
+    old_set, _ = await _create_set_and_task(db_session, org, doc, profile, cv, idem_key=f"old-{uuid.uuid4()}")
+    old_set.status = "completed"
+    old_set.completed_at = datetime.now(UTC)
+    doc.active_chunk_set_id = old_set.id
+    doc.status = "chunked"
+    await db_session.commit()
+
+    # 新 set 处理中，注入 handler 故障（覆盖 chunker 抛异常）。
+    new_set, task = await _create_set_and_task(db_session, org, doc, profile, cv, idem_key=f"new-{uuid.uuid4()}")
+    q = TaskQueue(db_session)
+    claimed = await q.claim_due(worker_id="w", batch=10)
+    await db_session.commit()
+    task = claimed[0]
+    new_set.status = "processing"
+    await db_session.commit()
+
+    # 用会抛异常的 chunker 模拟第 N 个 Chunk 故障。
+
+    class _BoomChunker:
+        def chunk(self, *args, **kwargs):
+            raise ValueError("chunker 故障")
+
+    orig_get = splitters.get_chunker
+    splitters.get_chunker = lambda strategy: _BoomChunker()
+    try:
+        from app.workers.chunk_worker import run_chunk_handler
+
+        ctx = _make_ctx(db_session, task, {"document_id": str(doc.id), "chunk_set_id": str(new_set.id)})
+        with pytest.raises(ValueError):
+            await run_chunk_handler(ctx)
+        await db_session.rollback()
+    finally:
+        splitters.get_chunker = orig_get
+
+    # 业务写入已回滚：无新 Chunk、旧 active pointer 不变。
+    new_chunks = (
+        await db_session.execute(select(Chunk).where(Chunk.chunk_set_id == new_set.id))
+    ).scalars().all()
+    assert len(new_chunks) == 0
+    fresh_doc = (await db_session.execute(select(Document).where(Document.id == doc.id))).scalar_one()
+    assert fresh_doc.active_chunk_set_id == old_set.id
+    assert fresh_doc.status == "chunked"
