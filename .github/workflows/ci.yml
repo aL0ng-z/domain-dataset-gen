@@ -93,7 +93,7 @@ jobs:
         run: |
           cd apps/api
           uv run python -m alembic upgrade head
-          uv run python -m alembic downgrade -1
+          uv run python -m alembic downgrade 58918ea257fd
           uv run python -m alembic upgrade head
 
       - name: Pytest (unit + integration + contract)

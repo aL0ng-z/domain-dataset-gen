@@ -25,6 +25,7 @@ const STATUS_STYLES: Record<string, { variant: BadgeVariant; className: string; 
   completed: { variant: "secondary", className: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300", label: "已完成" },
   failed: { variant: "destructive", className: "", label: "失败" },
   cancelled: { variant: "secondary", className: "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400", label: "已取消" },
+  cancelling: { variant: "secondary", className: "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300", label: "取消中" },
 
   // Review statuses
   approved: { variant: "secondary", className: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300", label: "已通过" },

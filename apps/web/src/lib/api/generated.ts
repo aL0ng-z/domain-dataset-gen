@@ -1493,6 +1493,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/tasks/{tid}/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Task Attempts
+         * @description 返回按 attempt_no 排序的审计列表；不返回 payload 中可能敏感的内部字段。
+         */
+        get: operations["task_attempts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/tasks/{tid}/cancel": {
         parameters: {
             query?: never;
@@ -3610,6 +3630,59 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** TaskAttemptResponse */
+        TaskAttemptResponse: {
+            /** Attempt No */
+            attempt_no: number;
+            /** Error Code */
+            error_code: string | null;
+            /** Error Message */
+            error_message: string | null;
+            /** Finished At */
+            finished_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Metrics */
+            metrics?: {
+                [key: string]: unknown;
+            } | null;
+            /** Retriable */
+            retriable: boolean;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Status */
+            status: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+            /** Worker Id */
+            worker_id: string | null;
+        };
+        /**
+         * TaskCancelResponse
+         * @description 取消任务响应：返回当前任务状态。
+         */
+        TaskCancelResponse: {
+            /** Completed At */
+            completed_at: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** State Version */
+            state_version: number;
+            /** Status */
+            status: string;
+        };
         /** TaskPolicyCreate */
         TaskPolicyCreate: {
             /**
@@ -3684,6 +3757,14 @@ export interface components {
         };
         /** TaskResponse */
         TaskResponse: {
+            /** Attempt Count */
+            attempt_count: number;
+            /** Can Cancel */
+            can_cancel: boolean;
+            /** Can Retry */
+            can_retry: boolean;
+            /** Cancel Requested At */
+            cancel_requested_at: string | null;
             /** Completed At */
             completed_at: string | null;
             /**
@@ -3703,6 +3784,8 @@ export interface components {
             entity_id: string;
             /** Entity Type */
             entity_type: string;
+            /** Error Code */
+            error_code: string | null;
             /** Error Message */
             error_message: string | null;
             /**
@@ -3710,6 +3793,13 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Max Attempts */
+            max_attempts: number;
+            /**
+             * Next Run At
+             * Format: date-time
+             */
+            next_run_at: string;
             /** Parent Task Id */
             parent_task_id: string | null;
             /** Progress */
@@ -3719,8 +3809,16 @@ export interface components {
              * Format: uuid
              */
             project_id: string;
+            /** Result Json */
+            result_json?: {
+                [key: string]: unknown;
+            } | null;
+            /** Retry Of Task Id */
+            retry_of_task_id: string | null;
             /** Started At */
             started_at: string | null;
+            /** State Version */
+            state_version: number;
             /** Status */
             status: string;
             /** Task Type */
@@ -5646,7 +5744,9 @@ export interface operations {
     benchmark_export: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 pid: string;
                 bid: string;
@@ -6923,7 +7023,9 @@ export interface operations {
     dataset_export: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 pid: string;
                 did: string;
@@ -7513,7 +7615,9 @@ export interface operations {
     document_trigger_chunk: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 pid: string;
                 did: string;
@@ -7927,7 +8031,9 @@ export interface operations {
     document_start_cleaning: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 pid: string;
                 did: string;
@@ -8128,7 +8234,9 @@ export interface operations {
     document_trigger_generate_batch: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 pid: string;
                 did: string;
@@ -8191,7 +8299,9 @@ export interface operations {
     document_trigger_parse: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 pid: string;
                 did: string;
@@ -11346,6 +11456,74 @@ export interface operations {
             };
         };
     };
+    task_attempts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                tid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskAttemptResponse"][];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     task_cancel: {
         parameters: {
             query?: never;
@@ -11364,7 +11542,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TaskResponse"];
+                    "application/json": components["schemas"]["TaskCancelResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -11408,7 +11586,9 @@ export interface operations {
     task_retry: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 pid: string;
                 tid: string;
@@ -11418,7 +11598,7 @@ export interface operations {
         requestBody?: never;
         responses: {
             /** @description Successful Response */
-            200: {
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };

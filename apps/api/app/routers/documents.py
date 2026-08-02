@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +37,7 @@ from app.schemas.document import (
 from app.schemas.section import BulkAssignRequest, SectionResponse
 from app.services.clean_version_service import CleanVersionService
 from app.services.document_service import DocumentService
+from app.services.idempotency import idempotent_create_task
 from app.services.section_service import SectionService
 from app.services.task_service import TaskService
 from domain.enums import UserRole
@@ -44,13 +45,6 @@ from domain.schemas import PaginatedResponse
 from storage import get_storage_client
 
 router = APIRouter(prefix="/api/projects/{pid}/documents", tags=["documents"])
-
-
-async def _create_bg_redis():
-    """Create a dedicated Redis connection for background tasks."""
-    import redis.asyncio as aioredis
-
-    return aioredis.from_url(settings.redis_url, decode_responses=True)
 
 
 async def _get_cleaning_job(
@@ -197,12 +191,12 @@ async def trigger_parse(
     did: uuid.UUID,
     body: ParseRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     resolver = ProjectResourceResolver(db)
-    doc = await _get_scoped_document(resolver, pid, did)
+    await _get_scoped_document(resolver, pid, did)
     # 请求体引用的 parser profile 必须属于同一项目（任务卡 §5.1）。
     await resolver.ensure_in_project(pid, [(ParserProfile, body.parser_profile_id)])
 
@@ -223,36 +217,56 @@ async def trigger_parse(
     except ParseFreezeError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.message) from exc
 
-    # Reuse app-level Redis connection for publishing task.created event
+    # Idempotency-Key：同 key/同请求返回同 Task；不同请求 409。
+    request_payload = {"document_id": str(did), "parser_profile_id": str(body.parser_profile_id)}
     task_service = TaskService(db, request.app.state.redis)
-    task = await task_service.create_task(pid, "parse", "document", did, current_user.id)
+
+    if idempotency_key:
+        task = await idempotent_create_task(
+            db,
+            task_service=task_service,
+            client_key=idempotency_key,
+            project_id=pid,
+            task_type="parse",
+            payload_for_digest=request_payload,
+            create=lambda key: _create_parse_task_and_job(
+                db, task_service, pid, did, profile, current_user, body, key
+            ),
+        )
+    else:
+        task = await _create_parse_task_and_job(
+            db, task_service, pid, did, profile, current_user, body, None
+        )
+
+    return AsyncTaskAcceptedResponse(task_id=task.id, message="解析任务已创建")
+
+
+async def _create_parse_task_and_job(
+    db, task_service, pid, did, profile, current_user, body, idempotency_key
+):
+    """冻结 ParseJob 并创建持久 parse Task（同一事务）。"""
+    from app.services.parse_freeze_service import freeze_parse_job
 
     # 在同一事务内原子冻结 profile/policy 快照并创建 ParseJob。
     parse_job = await freeze_parse_job(
         db, document_id=did, profile=profile, require_credential_ready=True
     )
 
+    task = await task_service.create_task(
+        pid,
+        "parse",
+        "document",
+        did,
+        current_user.id,
+        payload={"document_id": str(did), "parse_job_id": str(parse_job.id)},
+        handler="parse_document",
+        idempotency_key=idempotency_key,
+    )
+    doc = (await db.execute(select(Document).where(Document.id == did))).scalar_one()
     doc.status = "parsing"
+    # 业务 job + Task 在同一事务提交后由独立 runner 领取（不再调用 background_tasks）。
     await db.commit()
-
-    from app.database import async_session_factory
-    from app.workers.parse_worker import run_parse
-
-    async def _run():
-        bg_redis = await _create_bg_redis()
-        async with async_session_factory() as session:
-            try:
-                await run_parse(
-                    task.id, did, body.parser_profile_id, session, redis=bg_redis, parse_job_id=parse_job.id
-                )
-                await session.commit()
-            except Exception:
-                await session.rollback()
-            finally:
-                await bg_redis.close()
-
-    background_tasks.add_task(_run)
-    return AsyncTaskAcceptedResponse(task_id=task.id, message="解析任务已创建")
+    return task
 
 
 @router.get("/{did}/parse-jobs", response_model=list[ParseJobResponse], operation_id="document_list_parse_jobs")
@@ -338,10 +352,10 @@ async def start_cleaning(
     pid: uuid.UUID,
     did: uuid.UUID,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
     body: CleaningStartRequest | None = None,
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     resolver = ProjectResourceResolver(db)
     await _get_scoped_document(resolver, pid, did)
@@ -394,38 +408,50 @@ async def start_cleaning(
     await db.flush()
 
     task_service = TaskService(db, request.app.state.redis)
-    task = await task_service.create_task(pid, "clean", "document", did, current_user.id)
+    clean_payload = {
+        "document_id": str(did),
+        "parse_job_id": str(parse_job.id),
+        "cleaning_job_id": str(cleaning_job.id),
+    }
+    if idempotency_key:
+        task = await idempotent_create_task(
+            db,
+            task_service=task_service,
+            client_key=idempotency_key,
+            project_id=pid,
+            task_type="clean",
+            payload_for_digest=clean_payload,
+            create=lambda key: _create_clean_task(
+                task_service, pid, did, current_user, clean_payload, key
+            ),
+        )
+    else:
+        task = await _create_clean_task(
+            task_service, pid, did, current_user, clean_payload, None
+        )
+    # 业务 job + Task 同一事务提交后由独立 runner 领取。
     await db.commit()
 
-    from app.database import async_session_factory
-    from app.workers.clean_worker import run_clean
-
-    async def _run():
-        redis_client = await _create_bg_redis()
-        async with async_session_factory() as session:
-            try:
-                await run_clean(
-                    task.id,
-                    did,
-                    parse_job.id,
-                    current_user.id,
-                    session,
-                    redis=redis_client,
-                    cleaning_job_id=cleaning_job.id,
-                )
-                await session.commit()
-            except Exception:
-                await session.rollback()
-            finally:
-                await redis_client.close()
-
-    background_tasks.add_task(_run)
     return {
         "task_id": task.id,
         "cleaning_job_id": cleaning_job.id,
         "reused": False,
         "message": "清洗任务已创建",
     }
+
+
+async def _create_clean_task(task_service, pid, did, current_user, payload, idempotency_key):
+    """创建持久 clean Task（同一事务内，不自行 commit）。"""
+    return await task_service.create_task(
+        pid,
+        "clean",
+        "document",
+        did,
+        current_user.id,
+        payload=payload,
+        handler="clean_document",
+        idempotency_key=idempotency_key,
+    )
 
 
 @router.get("/{did}/sections", response_model=PaginatedResponse[SectionResponse], operation_id="document_list_sections")
@@ -463,9 +489,9 @@ async def trigger_chunk(
     did: uuid.UUID,
     body: ChunkRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     resolver = ProjectResourceResolver(db)
     doc = await _get_scoped_document(resolver, pid, did)
@@ -474,25 +500,32 @@ async def trigger_chunk(
     await resolver.ensure_in_project(pid, [(ChunkProfile, body.chunk_profile_id)])
 
     task_service = TaskService(db, request.app.state.redis)
-    task = await task_service.create_task(pid, "chunk", "document", did, current_user.id)
+    chunk_payload = {
+        "document_id": str(did),
+        "chunk_profile_id": str(body.chunk_profile_id),
+    }
+    if idempotency_key:
+        task = await idempotent_create_task(
+            db,
+            task_service=task_service,
+            client_key=idempotency_key,
+            project_id=pid,
+            task_type="chunk",
+            payload_for_digest=chunk_payload,
+            create=lambda key: task_service.create_task(
+                pid, "chunk", "document", did, current_user.id,
+                payload=chunk_payload, handler="chunk_document", idempotency_key=key,
+            ),
+        )
+    else:
+        task = await task_service.create_task(
+            pid, "chunk", "document", did, current_user.id,
+            payload=chunk_payload, handler="chunk_document",
+        )
     doc.status = "chunking"
+    # 业务 job + Task 同一事务提交后由独立 runner 领取。
     await db.commit()
 
-    from app.database import async_session_factory
-    from app.workers.chunk_worker import run_chunk
-
-    async def _run():
-        redis_client = await _create_bg_redis()
-        async with async_session_factory() as session:
-            try:
-                await run_chunk(task.id, did, body.chunk_profile_id, session, redis=redis_client)
-                await session.commit()
-            except Exception:
-                await session.rollback()
-            finally:
-                await redis_client.close()
-
-    background_tasks.add_task(_run)
     return AsyncTaskAcceptedResponse(task_id=task.id, message="切分任务已创建")
 
 
@@ -527,9 +560,9 @@ async def trigger_generate_batch(
     did: uuid.UUID,
     body: GenerateBatchRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     resolver = ProjectResourceResolver(db)
     doc = await _get_scoped_document(resolver, pid, did)
@@ -545,34 +578,34 @@ async def trigger_generate_batch(
     )
 
     task_service = TaskService(db, request.app.state.redis)
-    task = await task_service.create_task(pid, "generate_batch", "document", did, current_user.id)
+    batch_payload = {
+        "document_id": str(did),
+        "prompt_template_id": str(body.prompt_template_id),
+        "model_config_id": str(body.model_config_id),
+        "created_by": str(current_user.id),
+    }
+    if idempotency_key:
+        task = await idempotent_create_task(
+            db,
+            task_service=task_service,
+            client_key=idempotency_key,
+            project_id=pid,
+            task_type="generate_batch",
+            payload_for_digest=batch_payload,
+            create=lambda key: task_service.create_task(
+                pid, "generate_batch", "document", did, current_user.id,
+                payload=batch_payload, handler="generate_batch", idempotency_key=key,
+            ),
+        )
+    else:
+        task = await task_service.create_task(
+            pid, "generate_batch", "document", did, current_user.id,
+            payload=batch_payload, handler="generate_batch",
+        )
     doc.status = "generating"
+    # 业务 job + Task 同一事务提交后由独立 runner 领取。
     await db.commit()
 
-    from app.database import async_session_factory
-    from app.workers.generate_worker import run_generate_batch
-
-    async def _run():
-        redis_client = await _create_bg_redis()
-        async with async_session_factory() as session:
-            try:
-                await run_generate_batch(
-                    task.id,
-                    did,
-                    body.prompt_template_id,
-                    body.model_config_id,
-                    pid,
-                    current_user.id,
-                    session,
-                    redis=redis_client,
-                )
-                await session.commit()
-            except Exception:
-                await session.rollback()
-            finally:
-                await redis_client.close()
-
-    background_tasks.add_task(_run)
     return AsyncTaskAcceptedResponse(task_id=task.id, message="批量生成任务已创建")
 
 

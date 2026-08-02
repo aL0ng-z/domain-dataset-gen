@@ -97,17 +97,23 @@ class ChunkService:
         self.db.add(gen_run)
         await self.db.flush()
 
-        # Create task record
-        task = Task(
+        # 创建持久化 Task（handler=generate_single，payload 只存资源 id）。
+        from app.services.task_service import TaskService
+
+        task_service = TaskService(self.db)
+        task = await task_service.create_task(
             project_id=project_id,
             task_type="generate",
             entity_type="chunk",
             entity_id=chunk_id,
-            status="queued",
             created_by=created_by,
+            payload={
+                "chunk_id": str(chunk_id),
+                "prompt_template_id": str(prompt_template_id),
+                "model_config_id": str(model_config_id),
+            },
+            handler="generate_single",
         )
-        self.db.add(task)
-        await self.db.flush()
 
         # Update chunk status
         chunk.status = "generating"

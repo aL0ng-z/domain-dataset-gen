@@ -95,12 +95,13 @@ async def _test_engine() -> AsyncGenerator[AsyncEngine, None]:
 
 @pytest.fixture(scope="session")
 async def _prepare_schema(_test_engine) -> AsyncGenerator[None, None]:
-    """按当前模型创建全部表（幂等；不覆盖已有表，真实迁移由 smoke test 覆盖）。
+    """按当前模型确保 schema 一致（缺列的表重建，不覆盖其他表）。
 
-    Session 开始时清空全部业务表，避免上一次被中断/并发的测试残留数据
-    （如其他 worktree 复用同一测试库）导致 org 等 fixture 的用户创建冲突。
-    T03 的 snapshot 触发器/CHECK 由迁移建立；create_all 不覆盖已有表，因此
-    测试库必须保持迁移后的 schema（fixture 已填充 snapshot 字段满足约束）。
+    多 worktree 并发复用同一测试库时，另一 worktree 的 create_all 可能用其旧模型
+    创建了缺少新列的 tasks 表（如 T07 的 handler/state_version）。这里检测关键表
+    的 schema 漂移：仅当 `tasks.handler` 列缺失时 drop tasks/task_attempts 并重建，
+    让本 worktree 的模型补齐新列；其余表保持不动，尽量减小对并发 worktree 的干扰。
+    真实迁移链路由 run-migration-smoke 覆盖。
     """
     from app import models  # noqa: F401  # 确保所有模型已注册
     from app.database import Base
@@ -109,6 +110,21 @@ async def _prepare_schema(_test_engine) -> AsyncGenerator[None, None]:
     # 导致 CREATE TYPE/表 失败；这里幂等地确保 public schema 存在。
     async with _test_engine.begin() as conn:
         await conn.execute(text('CREATE SCHEMA IF NOT EXISTS public'))
+        # 检测 tasks 表是否缺 T07 新列（handler/state_version）。
+        drift = await conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='tasks' AND column_name IN ('handler','state_version')"
+            )
+        )
+        existing_cols = {row[0] for row in drift.fetchall()}
+        if existing_cols is not None and "handler" not in existing_cols:
+            # tasks 存在但缺 T07 列（旧 worktree 模型创建）：重建以补齐新列。
+            # 同时删除旧 task_status 枚举（缺 cancelling），create_all 会用当前模型
+            # 重建含 6 值（含 cancelling）的枚举类型。
+            await conn.execute(text("DROP TABLE IF EXISTS task_attempts CASCADE"))
+            await conn.execute(text("DROP TABLE IF EXISTS tasks CASCADE"))
+            await conn.execute(text("DROP TYPE IF EXISTS task_status"))
         await conn.run_sync(Base.metadata.create_all)
     async with _test_engine.begin() as conn:
         await conn.execute(text(_TRUNCATE_ALL_SQL))
@@ -552,6 +568,13 @@ class ResourceFactory:
             entity_id=entity_id,
             status="queued",
             created_by=created_by,
+            # T07：持久队列必需字段（handler/payload/next_run_at）。
+            handler=f"{task_type}:v1",
+            payload={},
+            payload_version=1,
+            max_attempts=1,
+            timeout_seconds=300,
+            next_run_at=datetime.now(UTC),
         )
         self.session.add(task)
         await self.session.flush()

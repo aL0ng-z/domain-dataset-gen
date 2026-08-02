@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -35,6 +35,7 @@ const STATUS_OPTIONS = [
   { value: "all", label: "全部状态" },
   { value: "queued", label: "排队中" },
   { value: "processing", label: "处理中" },
+  { value: "cancelling", label: "取消中" },
   { value: "completed", label: "已完成" },
   { value: "failed", label: "失败" },
   { value: "cancelled", label: "已取消" },
@@ -50,39 +51,72 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [typeFilter, setTypeFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  // 乱序丢弃：记录每个 task 已见的最高 state_version。
+  const seenStateVersion = useRef<Record<string, number>>({});
 
-  const fetchTasks = useCallback((silent = false) => {
-    if (!silent) setLoading(true);
-    api
-      .get("/projects/{pid}/tasks/", {
-        params: { pid: projectId },
-        query: {
-          page,
-          page_size: pageSize,
-          task_type: typeFilter !== "all" ? typeFilter : undefined,
-          status: statusFilter !== "all" ? statusFilter : undefined,
-        },
-      })
-      .then((data) => {
-        setTasks(data.items);
-        setTotal(data.total);
-      })
-      .catch(() => toast.error("加载任务列表失败"))
-      .finally(() => {
-        if (!silent) setLoading(false);
-      });
-  }, [projectId, page, pageSize, typeFilter, statusFilter]);
+  const fetchTasks = useCallback(
+    (silent = false) => {
+      if (!silent) setLoading(true);
+      api
+        .get("/projects/{pid}/tasks/", {
+          params: { pid: projectId },
+          query: {
+            page,
+            page_size: pageSize,
+            task_type: typeFilter !== "all" ? typeFilter : undefined,
+            status: statusFilter !== "all" ? statusFilter : undefined,
+          },
+        })
+        .then((data) => {
+          setTasks(data.items);
+          setTotal(data.total);
+          // 重置乱序基线：以 REST 快照为准。
+          const baseline: Record<string, number> = {};
+          data.items.forEach((t) => {
+            baseline[t.id] = t.state_version ?? 0;
+          });
+          seenStateVersion.current = baseline;
+        })
+        .catch(() => toast.error("加载任务列表失败"))
+        .finally(() => {
+          if (!silent) setLoading(false);
+        });
+    },
+    [projectId, page, pageSize, typeFilter, statusFilter]
+  );
 
   useEffect(() => {
     const refreshTimer = window.setTimeout(() => fetchTasks(), 0);
     return () => window.clearTimeout(refreshTimer);
   }, [fetchTasks]);
 
+  // WebSocket 事件：按 state_version 丢弃乱序消息；收到事件后重新 GET。
   useEffect(() => {
     if (!lastMessage) return;
+    const msg = lastMessage as {
+      event?: string;
+      task_id?: string;
+      state_version?: number;
+    };
+    if (!msg.task_id) return;
+    const version = msg.state_version ?? 0;
+    const seen = seenStateVersion.current[msg.task_id] ?? 0;
+    if (version < seen) return; // 乱序消息丢弃
     const refreshTimer = window.setTimeout(() => fetchTasks(true), 0);
     return () => window.clearTimeout(refreshTimer);
   }, [lastMessage, fetchTasks]);
+
+  // 轮询兜底：存在 processing/cancelling 任务时，即使无 WS 事件也定期刷新。
+  useEffect(() => {
+    const hasActive = tasks.some(
+      (t) => t.status === "processing" || t.status === "cancelling"
+    );
+    if (!hasActive) return;
+    const timer = window.setInterval(() => {
+      fetchTasks(true);
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [tasks, fetchTasks]);
 
   const handleCancel = useCallback(
     async (taskId: string) => {
@@ -90,8 +124,9 @@ export default function TasksPage() {
         await api.post("/projects/{pid}/tasks/{tid}/cancel", undefined, {
           params: { pid: projectId, tid: taskId },
         });
-        toast.success("任务已取消");
-        fetchTasks();
+        // 点击后立即刷新显示"取消中"，不谎报"已取消"。
+        toast.success("已请求取消");
+        fetchTasks(true);
       } catch {
         toast.error("取消失败");
       }
@@ -101,12 +136,20 @@ export default function TasksPage() {
 
   const handleRetry = useCallback(
     async (taskId: string) => {
+      // 一次点击一个 idempotency key；成功后定位到新 Task。
+      const key = `retry-${taskId}-${Date.now()}`;
       try {
-        await api.post("/projects/{pid}/tasks/{tid}/retry", undefined, {
+        const data = await api.post("/projects/{pid}/tasks/{tid}/retry", undefined, {
           params: { pid: projectId, tid: taskId },
+          headers: { "Idempotency-Key": key },
         });
-        toast.success("已重试任务");
-        fetchTasks();
+        toast.success("已创建重试任务");
+        // 定位到返回的新 Task，而不是等待旧 Task 变 queued。
+        fetchTasks(true);
+        const newTask = data as TaskItem;
+        if (newTask && newTask.id) {
+          toast.success(`重试任务已创建：${newTask.id.slice(0, 8)}`);
+        }
       } catch {
         toast.error("重试失败");
       }
@@ -118,8 +161,7 @@ export default function TasksPage() {
     {
       key: "task_type",
       header: "类型",
-      render: (row) =>
-        TASK_TYPE_LABELS[row.task_type] || row.task_type,
+      render: (row) => TASK_TYPE_LABELS[row.task_type] || row.task_type,
     },
     {
       key: "status",
@@ -134,6 +176,7 @@ export default function TasksPage() {
           const text = {
             queued: "等待解析",
             processing: "解析处理中",
+            cancelling: "取消中",
             completed: "解析结果已生成",
             failed: "解析失败",
             cancelled: "已取消",
@@ -155,17 +198,25 @@ export default function TasksPage() {
       },
     },
     {
-      key: "created_at",
-      header: "创建时间",
-      render: (row) =>
-        new Date(row.created_at).toLocaleString("zh-CN"),
+      key: "attempt",
+      header: "尝试次数",
+      render: (row) => (
+        <span className="text-xs tabular-nums">
+          {row.attempt_count}/{row.max_attempts}
+        </span>
+      ),
     },
     {
-      key: "started_at",
-      header: "开始时间",
+      key: "created_at",
+      header: "创建时间",
+      render: (row) => new Date(row.created_at).toLocaleString("zh-CN"),
+    },
+    {
+      key: "next_run_at",
+      header: "下次执行",
       render: (row) =>
-        row.started_at
-          ? new Date(row.started_at).toLocaleString("zh-CN")
+        row.status === "queued" && row.next_run_at
+          ? new Date(row.next_run_at).toLocaleString("zh-CN")
           : "-",
     },
     {
@@ -185,6 +236,7 @@ export default function TasksPage() {
             className="text-xs text-destructive truncate block max-w-xs"
             title={row.error_message}
           >
+            {row.error_code ? `[${row.error_code}] ` : ""}
             {row.error_message}
           </span>
         ) : (
@@ -196,17 +248,17 @@ export default function TasksPage() {
       header: "操作",
       render: (row) => (
         <div className="flex gap-1">
-          {(row.status === "queued" || row.status === "processing") && (
+          {row.can_cancel && (
             <Button
               variant="ghost"
               size="xs"
               onClick={() => handleCancel(row.id)}
             >
               <XCircleIcon className="size-3" />
-              取消
+              {row.status === "cancelling" ? "取消中" : "取消"}
             </Button>
           )}
-          {row.status === "failed" && (
+          {row.can_retry && (
             <Button
               variant="ghost"
               size="xs"

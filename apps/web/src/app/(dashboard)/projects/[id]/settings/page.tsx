@@ -80,8 +80,9 @@ interface ModelConfig extends ConfigItem {
   model_name: string;
   base_url: string;
   api_key_encrypted?: string;
-  max_tokens?: number;
-  temperature?: number;
+  max_tokens?: number | null;
+  temperature?: number | null;
+  extra_params?: { [key: string]: unknown } | null;
 }
 
 function ModelConfigTab({ projectId }: { projectId: string }) {
@@ -108,7 +109,7 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
         params: { pid: projectId },
         query: { page: 1, page_size: 100 },
       })
-      .then((data) => setItems(data.items as ModelConfig[]))
+      .then((data) => setItems(data.items))
       .catch(() => toast.error("加载模型配置失败"))
       .finally(() => setLoading(false));
   }, [projectId]);
@@ -186,6 +187,9 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
         base_url: form.base_url,
         api_key: form.api_key,
       };
+      if (form.api_key.trim()) {
+        payload.api_key = form.api_key;
+      }
       if (form.max_tokens !== "" && form.max_tokens !== null) {
         payload.max_tokens = Number(form.max_tokens);
       }
@@ -218,11 +222,13 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
     }
     setTesting(true);
     try {
-      const res = await api.post("/projects/{pid}/model-configs/{config_id}/test", {}, {
-        params: { pid: projectId, config_id: editItem.id },
-      });
-      if ((res as { status?: string }).status === "success") {
-        toast.success(`连接成功: ${(res as { response?: string }).response}`);
+      const res = await api.post(
+        "/projects/{pid}/model-configs/{config_id}/test",
+        {},
+        { params: { pid: projectId, config_id: editItem.id } }
+      );
+      if (res.status === "success") {
+        toast.success(`连接成功: ${res.response}`);
       } else {
         toast.error(`连接失败: ${res.error}`);
       }
@@ -445,7 +451,7 @@ function GenericConfigTab({
   extraFields,
 }: {
   projectId: string;
-  endpoint: "chunk-profiles" | "export-profiles" | "task-policies";
+  endpoint: string;
   label: string;
   extraFields?: { key: string; label: string; type?: string }[];
 }) {
@@ -459,23 +465,29 @@ function GenericConfigTab({
     config_json: "{}",
   });
 
-  // 三个配置类端点共享同一响应形状；路由模板按 endpoint 映射，避免动态字符串。
-  const listPath =
-    endpoint === "chunk-profiles" ? "/projects/{pid}/chunk-profiles/" as const
-    : endpoint === "export-profiles" ? "/projects/{pid}/export-profiles/" as const
-    : "/projects/{pid}/task-policies/" as const;
-
   const fetchItems = useCallback(() => {
     setLoading(true);
-    api
-      .get(listPath, {
-        params: { pid: projectId },
-        query: { page: 1, page_size: 100 },
-      })
-      .then((data) => setItems((data as { items: GenericConfig[] }).items))
-      .catch(() => toast.error(`加载${label}失败`))
-      .finally(() => setLoading(false));
-  }, [projectId, label, listPath]);
+    const query = { page: 1, page_size: 100 };
+    if (endpoint === "chunk-profiles") {
+      api
+        .get("/projects/{pid}/chunk-profiles/", { params: { pid: projectId }, query })
+        .then((data) => setItems(data.items as GenericConfig[]))
+        .catch(() => toast.error(`加载${label}失败`))
+        .finally(() => setLoading(false));
+    } else if (endpoint === "export-profiles") {
+      api
+        .get("/projects/{pid}/export-profiles/", { params: { pid: projectId }, query })
+        .then((data) => setItems(data.items as GenericConfig[]))
+        .catch(() => toast.error(`加载${label}失败`))
+        .finally(() => setLoading(false));
+    } else {
+      api
+        .get("/projects/{pid}/task-policies/", { params: { pid: projectId }, query })
+        .then((data) => setItems(data.items as GenericConfig[]))
+        .catch(() => toast.error(`加载${label}失败`))
+        .finally(() => setLoading(false));
+    }
+  }, [projectId, endpoint, label]);
 
   useEffect(() => {
     const refreshTimer = window.setTimeout(() => {
@@ -521,30 +533,67 @@ function GenericConfigTab({
       return;
     }
     try {
-      // Parse config_json to send as object
-      const payload: Record<string, unknown> = { ...form };
-      try {
-        payload.config_json = JSON.parse(form.config_json || "{}");
-      } catch {
-        // keep as string if invalid json
-      }
-      // 三个配置端点请求体均含 name + options；动态端点无法静态推导具体 schema，
-      // 通过条件路径的请求体类型联合消解。
-      if (editItem) {
-        if (endpoint === "chunk-profiles") {
-          await api.patch("/projects/{pid}/chunk-profiles/{config_id}", payload as components["schemas"]["ChunkProfileUpdate"], { params: { pid: projectId, config_id: editItem.id } });
-        } else if (endpoint === "export-profiles") {
-          await api.patch("/projects/{pid}/export-profiles/{config_id}", payload as components["schemas"]["ExportProfileUpdate"], { params: { pid: projectId, config_id: editItem.id } });
+      // GenericConfigTab 覆盖多个 profile 类型（chunk/export/task-policy），
+      // 按 endpoint 构造对应 create/update 请求体（字段均允许可选/部分）。
+      const commonBody = {
+        name: form.name,
+        ...(form.description ? { description: form.description } : {}),
+      };
+      if (endpoint === "chunk-profiles") {
+        const body: components["schemas"]["ChunkProfileCreate"] & { options?: unknown } = {
+          ...commonBody,
+          max_tokens: Number(form.max_tokens || 512),
+          overlap_tokens: Number(form.overlap_tokens || 50),
+          strategy: form.strategy || "hybrid_heading_recursive",
+        };
+        if (editItem) {
+          const patch: components["schemas"]["ChunkProfileUpdate"] = { ...body };
+          await api.patch(
+            "/projects/{pid}/chunk-profiles/{config_id}",
+            patch,
+            { params: { pid: projectId, config_id: editItem.id } }
+          );
         } else {
-          await api.patch("/projects/{pid}/task-policies/{config_id}", payload as components["schemas"]["TaskPolicyUpdate"], { params: { pid: projectId, config_id: editItem.id } });
+          await api.post("/projects/{pid}/chunk-profiles/", body, {
+            params: { pid: projectId },
+          });
+        }
+      } else if (endpoint === "export-profiles") {
+        const body: components["schemas"]["ExportProfileCreate"] = {
+          ...commonBody,
+          format: form.format || "sft_jsonl",
+        };
+        if (editItem) {
+          const patch: components["schemas"]["ExportProfileUpdate"] = { ...body };
+          await api.patch(
+            "/projects/{pid}/export-profiles/{config_id}",
+            patch,
+            { params: { pid: projectId, config_id: editItem.id } }
+          );
+        } else {
+          await api.post("/projects/{pid}/export-profiles/", body, {
+            params: { pid: projectId },
+          });
         }
       } else {
-        if (endpoint === "chunk-profiles") {
-          await api.post("/projects/{pid}/chunk-profiles/", payload as components["schemas"]["ChunkProfileCreate"], { params: { pid: projectId } });
-        } else if (endpoint === "export-profiles") {
-          await api.post("/projects/{pid}/export-profiles/", payload as components["schemas"]["ExportProfileCreate"], { params: { pid: projectId } });
+        const body: components["schemas"]["TaskPolicyCreate"] = {
+          ...commonBody,
+          task_type: form.task_type || "parse",
+          max_retries: Number(form.max_retries || 3),
+          timeout_seconds: Number(form.timeout_seconds || 300),
+          concurrency_limit: Number(form.concurrency_limit || 5),
+        };
+        if (editItem) {
+          const patch: components["schemas"]["TaskPolicyUpdate"] = { ...body };
+          await api.patch(
+            "/projects/{pid}/task-policies/{config_id}",
+            patch,
+            { params: { pid: projectId, config_id: editItem.id } }
+          );
         } else {
-          await api.post("/projects/{pid}/task-policies/", payload as components["schemas"]["TaskPolicyCreate"], { params: { pid: projectId } });
+          await api.post("/projects/{pid}/task-policies/", body, {
+            params: { pid: projectId },
+          });
         }
       }
       toast.success("保存成功");

@@ -4,153 +4,128 @@ import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.config import ParserProfile
 from app.models.document import Document
 from app.models.parse import ParseJob
-from app.security.snapshot import profile_snapshot_sha256, scan_for_secrets
-from app.services.mineru_local_service_manager import ensure_mineru_local_service
-from app.services.paddleocr_local_service_manager import ensure_paddleocr_local_service
-from app.services.parse_freeze_service import build_worker_options
-from app.services.task_service import TaskService
+from app.workers.execution import ExecutionContext
 from parsing import get_parser
 from storage import get_storage_client
 
 
-async def run_parse(
-    task_id: uuid.UUID,
-    document_id: uuid.UUID,
-    parser_profile_id: uuid.UUID,
-    db: AsyncSession,
-    redis=None,
-    parse_job_id: uuid.UUID | None = None,
-):
-    task_service = TaskService(db, redis)
+async def run_parse_handler(ctx: ExecutionContext) -> None:
+    """parse_document:v1 handler。
+
+    payload: {"document_id": UUID, "parse_job_id": UUID}
+    - 项目链以 task.project_id 为锚点复核；
+    - 外部 IO（PDF 下载/解析/上传）与写业务数据前调用 checkpoint；
+    - 快照复核/项目链校验失败抛 ProjectChainError/RuntimeError -> 永久失败。
+    """
+    payload = ctx.payload
+    document_id = uuid.UUID(str(payload["document_id"]))
+    parse_job_id = uuid.UUID(str(payload["parse_job_id"]))
+    db = ctx.db
+
     storage = get_storage_client(
         settings.minio_endpoint, settings.minio_access_key, settings.minio_secret_key, settings.minio_secure
     )
-    parse_job: ParseJob | None = None
 
-    await task_service.update_status(task_id, "processing", progress=10)
+    # 项目链复核：以 task.project_id 为锚点，doc/parse_job 必须同项目。
+    from app.authz import ProjectChainError, verify_project_chain
 
-    try:
-        doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one()
+    doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
+    if doc is None:
+        raise ProjectChainError("文档不存在")
+    await verify_project_chain(
+        db,
+        ctx.project_id,
+        [(Document, document_id), (ParseJob, parse_job_id)],
+        detail="解析任务项目链不一致",
+    )
+    await ctx.checkpoint()
 
-        # 项目链复核：以 API 授权的 task.project_id 为锚点，doc 与 parser profile
-        # 必须属于同一项目（执行外部 IO/写数据前，任务卡 §2.9）。
-        from app.authz import ProjectChainError, verify_project_chain
-        from app.models.task import Task
+    parse_job = (await db.execute(select(ParseJob).where(ParseJob.id == parse_job_id))).scalar_one_or_none()
+    if parse_job is None:
+        raise ProjectChainError("解析任务不存在")
 
-        task_row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
-        if task_row is None:
-            raise ProjectChainError("task 不存在")
-        await verify_project_chain(
-            db,
-            task_row.project_id,
-            [(Document, document_id), (ParserProfile, parser_profile_id)],
-            detail="解析任务项目链不一致",
-        )
+    # ---- 执行前复核（PDF 下载/联网前失败）----
+    _validate_frozen_snapshot(parse_job)
 
-        # Use existing ParseJob if provided, otherwise create new one
-        if parse_job_id:
-            parse_job = (await db.execute(select(ParseJob).where(ParseJob.id == parse_job_id))).scalar_one()
-        else:
-            raise RuntimeError("parse_job_id 必须提供；worker 只消费冻结快照，不再实时读取 profile")
+    parse_job.status = "processing"
+    parse_job.started_at = datetime.now(UTC)
+    await db.flush()
+    await ctx.checkpoint()
 
-        # ---- 执行前复核（PDF 下载/联网前失败）----
-        _validate_frozen_snapshot(parse_job)
+    # 从冻结快照读取功能参数与安全上下文；绝不读取当前 ParserProfile 覆盖语义。
+    profile_snapshot = parse_job.parser_profile_snapshot or {}
+    parser_name = profile_snapshot.get("parser_name", "")
+    functional_options = dict(profile_snapshot.get("options") or {})
+    # 安全上下文从 registry 按冻结的 endpoint_ref 重新解析（registry 只读，永不改语义）。
+    security = _security_context_from_snapshot(parse_job)
 
-        parse_job.status = "processing"
-        parse_job.started_at = datetime.now(UTC)
-        await db.flush()
+    # Download PDF (sync IO → thread pool)
+    await ctx.checkpoint()
+    pdf_data = await asyncio.to_thread(
+        storage.download_file,
+        settings.minio_bucket_documents,
+        doc.minio_key,
+    )
+    await ctx.checkpoint()
 
-        # 从冻结快照读取功能参数与安全上下文；绝不读取当前 ParserProfile 覆盖语义。
-        profile_snapshot = parse_job.parser_profile_snapshot or {}
-        parser_name = profile_snapshot.get("parser_name", "")
-        functional_options = dict(profile_snapshot.get("options") or {})
-        # 安全上下文从 registry 按冻结的 endpoint_ref 重新解析（registry 只读，永不改语义）。
-        security = _security_context_from_snapshot(parse_job)
+    # Parse (CPU/IO-bound → thread pool)
+    api_tokens = {
+        "mineru": settings.mineru_api_token,
+        "paddleocr": settings.paddleocr_api_token,
+    }
+    parser_options = build_worker_options(
+        parse_job,
+        parser_name=parser_name,
+        stored_options=functional_options,
+        security=security,
+        api_tokens=api_tokens,
+    )
+    if parser_name == "mineru_local_service":
+        await asyncio.to_thread(ensure_mineru_local_service, _local_manager_options(security, functional_options))
+    if parser_name == "paddleocr_local_service":
+        await asyncio.to_thread(ensure_paddleocr_local_service, _local_manager_options(security, functional_options))
+    parser = get_parser(parser_name, options=parser_options)
+    result = await asyncio.to_thread(parser.parse, pdf_data)
+    await ctx.checkpoint()
 
-        # Download PDF (sync IO → thread pool)
-        await task_service.update_status(task_id, "processing", progress=20)
-        pdf_data = await asyncio.to_thread(
-            storage.download_file,
-            settings.minio_bucket_documents,
-            doc.minio_key,
-        )
+    # Upload results (sync IO → thread pool)
+    md_key = f"{doc.project_id}/{document_id}/parsed/{parse_job.id}/raw.md"
+    await asyncio.to_thread(
+        storage.upload_file,
+        settings.minio_bucket_outputs,
+        md_key,
+        result.raw_markdown.encode("utf-8"),
+        "text/markdown",
+    )
 
-        # Parse (CPU/IO-bound → thread pool)
-        await task_service.update_status(task_id, "processing", progress=40)
-        api_tokens = {
-            "mineru": settings.mineru_api_token,
-            "paddleocr": settings.paddleocr_api_token,
-        }
-        parser_options = build_worker_options(
-            parse_job,
-            parser_name=parser_name,
-            stored_options=functional_options,
-            security=security,
-            api_tokens=api_tokens,
-        )
-        if parser_name == "mineru_local_service":
-            await asyncio.to_thread(ensure_mineru_local_service, _local_manager_options(security, functional_options))
-        if parser_name == "paddleocr_local_service":
-            await asyncio.to_thread(ensure_paddleocr_local_service, _local_manager_options(security, functional_options))
-        parser = get_parser(parser_name, options=parser_options)
-        result = await asyncio.to_thread(parser.parse, pdf_data)
+    json_key = f"{doc.project_id}/{document_id}/parsed/{parse_job.id}/structured.json"
+    await asyncio.to_thread(
+        storage.upload_file,
+        settings.minio_bucket_outputs,
+        json_key,
+        json.dumps(result.structured_json, ensure_ascii=False, default=str).encode("utf-8"),
+        "application/json",
+    )
+    await ctx.checkpoint()
 
-        # Upload results (sync IO → thread pool)
-        await task_service.update_status(task_id, "processing", progress=70)
-        md_key = f"{doc.project_id}/{document_id}/parsed/{parse_job.id}/raw.md"
-        await asyncio.to_thread(
-            storage.upload_file,
-            settings.minio_bucket_outputs,
-            md_key,
-            result.raw_markdown.encode("utf-8"),
-            "text/markdown",
-        )
+    # Update parse job（发布事务前 checkpoint 由 runner 在 handler 返回后执行）。
+    parse_job.status = "completed"
+    parse_job.completed_at = datetime.now(UTC)
+    parse_job.raw_markdown_key = md_key
+    parse_job.structured_json_key = json_key
+    parse_job.page_mapping = result.page_mapping
 
-        json_key = f"{doc.project_id}/{document_id}/parsed/{parse_job.id}/structured.json"
-        await asyncio.to_thread(
-            storage.upload_file,
-            settings.minio_bucket_outputs,
-            json_key,
-            json.dumps(result.structured_json, ensure_ascii=False, default=str).encode("utf-8"),
-            "application/json",
-        )
+    # Update document
+    doc.status = "parsed"
+    if result.structured_json.get("page_count"):
+        doc.page_count = result.structured_json["page_count"]
 
-        # Update parse job
-        parse_job.status = "completed"
-        parse_job.completed_at = datetime.now(UTC)
-        parse_job.raw_markdown_key = md_key
-        parse_job.structured_json_key = json_key
-        parse_job.page_mapping = result.page_mapping
-
-        # Update document
-        doc.status = "parsed"
-        if result.structured_json.get("page_count"):
-            doc.page_count = result.structured_json["page_count"]
-
-        await db.flush()
-        await task_service.update_status(task_id, "completed", progress=100)
-
-    except Exception as e:
-        job = parse_job
-        if job is None and parse_job_id is not None:
-            job = (await db.execute(select(ParseJob).where(ParseJob.id == parse_job_id))).scalar_one_or_none()
-        if job is None:
-            result_job = await db.execute(
-                select(ParseJob).where(ParseJob.document_id == document_id).order_by(ParseJob.created_at.desc())
-            )
-            job = result_job.scalars().first()
-        if job:
-            job.status = "failed"
-            # 错误消息脱敏：不把 URL query、响应体秘密或 PDF 内容写入 error_message。
-            job.error_message = _safe_error_message(e)
-            job.completed_at = datetime.now(UTC)
-        await task_service.update_status(task_id, "failed", error_message=_safe_error_message(e))
+    await db.flush()
 
 
 def _validate_frozen_snapshot(parse_job: ParseJob) -> None:
@@ -161,11 +136,15 @@ def _validate_frozen_snapshot(parse_job: ParseJob) -> None:
         raise RuntimeError("parse_job 快照不完整")
     if not parse_job.parser_profile_sha256 or not parse_job.endpoint_policy_sha256:
         raise RuntimeError("parse_job 快照 hash 缺失")
+    from app.security.snapshot import profile_snapshot_sha256
+
     recomputed = profile_snapshot_sha256(
         parse_job.parser_profile_snapshot, parse_job.snapshot_schema_version
     )
     if recomputed != parse_job.parser_profile_sha256:
         raise RuntimeError("parse_job profile 快照 hash 不匹配")
+    from app.security.snapshot import scan_for_secrets
+
     hits = scan_for_secrets(parse_job.parser_profile_snapshot) + scan_for_secrets(parse_job.endpoint_policy_snapshot)
     if hits:
         raise RuntimeError("parse_job 快照含禁用秘密字段")
@@ -240,3 +219,9 @@ def _safe_error_message(exc: Exception) -> str:
     message = _re2.sub(r"(?i)\bBearer\s+[A-Za-z0-9._\-]+", "Bearer [REDACTED]", message)
     # 若消息含响应体/文件大块内容（base64/长文本），截断到安全长度。
     return message[:2000]
+
+
+# 向后兼容导入：parse_freeze_service.build_worker_options 与 local service manager。
+from app.services.mineru_local_service_manager import ensure_mineru_local_service  # noqa: E402
+from app.services.paddleocr_local_service_manager import ensure_paddleocr_local_service  # noqa: E402
+from app.services.parse_freeze_service import build_worker_options  # noqa: E402

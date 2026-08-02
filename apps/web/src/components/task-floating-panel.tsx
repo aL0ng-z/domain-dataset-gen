@@ -39,9 +39,10 @@ export function TaskFloatingPanel({ projectId }: TaskFloatingPanelProps) {
     Promise.all([
       api.get("/projects/{pid}/tasks/", { params: { pid: projectId }, query: { page: 1, page_size: 20, status: "queued" } }),
       api.get("/projects/{pid}/tasks/", { params: { pid: projectId }, query: { page: 1, page_size: 20, status: "processing" } }),
+      api.get("/projects/{pid}/tasks/", { params: { pid: projectId }, query: { page: 1, page_size: 20, status: "cancelling" } }),
     ])
-      .then(([queued, processing]) => {
-        const activeTasks = [...queued.items, ...processing.items]
+      .then(([queued, processing, cancelling]) => {
+        const activeTasks = [...queued.items, ...processing.items, ...cancelling.items]
           .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
           .slice(0, 20);
         setTasks(activeTasks);
@@ -62,7 +63,7 @@ export function TaskFloatingPanel({ projectId }: TaskFloatingPanelProps) {
   }, [lastMessage, fetchTasks]);
 
   const runningCount = tasks.filter(
-    (t) => t.status === "queued" || t.status === "processing"
+    (t) => t.status === "queued" || t.status === "processing" || t.status === "cancelling"
   ).length;
 
   return (

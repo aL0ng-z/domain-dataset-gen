@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.authz import ProjectResourceResolver
@@ -19,6 +19,7 @@ from app.schemas.dataset import (
 )
 from app.schemas.export import ExportRequest, ExportResponse
 from app.services.benchmark_service import BenchmarkService
+from app.services.idempotency import idempotent_create_task
 from app.services.task_service import TaskService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
@@ -159,11 +160,10 @@ async def export_benchmark(
     bid: uuid.UUID,
     body: ExportRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
-    from app.workers.export_worker import run_export_benchmark
 
     # Verify benchmark exists and export profile belongs to the same project
     resolver = ProjectResourceResolver(db)
@@ -174,24 +174,31 @@ async def export_benchmark(
     # Create task for tracking
     redis = getattr(request.app.state, "redis", None)
     task_service = TaskService(db, redis)
-    task = await task_service.create_task(
-        project_id=pid,
-        task_type="export",
-        entity_type="benchmark",
-        entity_id=bid,
-        created_by=current_user.id,
-    )
-
-    background_tasks.add_task(
-        run_export_benchmark,
-        task_id=task.id,
-        project_id=pid,
-        benchmark_id=bid,
-        export_profile_id=body.export_profile_id,
-        created_by=current_user.id,
-        db=db,
-        redis=redis,
-    )
+    export_payload = {
+        "benchmark_id": str(bid),
+        "export_profile_id": str(body.export_profile_id),
+        "created_by": str(current_user.id),
+    }
+    if idempotency_key:
+        task = await idempotent_create_task(
+            db,
+            task_service=task_service,
+            client_key=idempotency_key,
+            project_id=pid,
+            task_type="export",
+            payload_for_digest=export_payload,
+            create=lambda key: task_service.create_task(
+                project_id=pid, task_type="export", entity_type="benchmark", entity_id=bid,
+                created_by=current_user.id, payload=export_payload, handler="export_benchmark",
+                idempotency_key=key,
+            ),
+        )
+    else:
+        task = await task_service.create_task(
+            project_id=pid, task_type="export", entity_type="benchmark", entity_id=bid,
+            created_by=current_user.id, payload=export_payload, handler="export_benchmark",
+        )
+    await db.commit()
 
     from app.schemas.export import ExportResponse
     return ExportResponse(
