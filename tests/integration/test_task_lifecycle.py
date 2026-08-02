@@ -371,7 +371,7 @@ async def test_terminal_status_immutable(db_session: AsyncSession, org):
 
     # 迟到 worker（旧 run token）试图把 completed 回退为 queued：
     # CAS 校验 status == completed != processing（受影响行数 0）。
-    from app.workers.queue import TaskQueueError as TQE
+    from app.workers.queue import TaskQueueError
 
     try:
         stale = await q.transition(
@@ -379,7 +379,7 @@ async def test_terminal_status_immutable(db_session: AsyncSession, org):
             from_status="processing", to_status="queued",
             expected_state_version=orig_state_version,
         )
-    except TQE:
+    except TaskQueueError:
         stale = False
     await db_session.commit()
     assert not stale
