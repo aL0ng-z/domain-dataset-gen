@@ -250,7 +250,6 @@ async def test_patch_completed_set_chunk_immutable(client: AsyncClient, org):
     await db.flush()
 
     # T06 CHECK(ck_chunk_sets_legacy_required_fields)：非 legacy 集合必填 task_id。
-    from app.models.task import Task
     from app.services.task_service import TaskService
 
     task = await TaskService(db).create_task(

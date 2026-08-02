@@ -4,6 +4,46 @@
 
 ---
 
+## T08 生成链路修复（2026-08-03）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `libs/domain/domain/schemas.py` | 注册 T08 生成链路 ErrorResponse 领域 code（§5.2 有限联合）；顺带补 T06 遗漏的 `CLEAN_VERSION_NOT_READY` | 已完成 |
+| `apps/api/app/generation/snapshot.py` | PromptTemplate/ModelConfig 冻结快照白名单、版本化 canonical JSON/SHA-256、递归 secret scanner（无法安全分类即 fail closed） | 已完成 |
+| `apps/api/app/generation/renderer.py` | 稳定 renderer version、确定性消息渲染、rendered_prompt_sha256（对精确 UTF-8 bytes） | 已完成 |
+| `apps/api/app/models/generation_batch.py` | 扩展 retry_of_generation_batch_id（RESTRICT+线性后继唯一）、模板/模型快照+hash+renderer、is_legacy/provenance/error_code、计数与选择集 CHECK | 已完成 |
+| `apps/api/app/models/generation.py` | GenerationRun 扩展 generation_batch_id+(batch,chunk) 唯一、rendered_prompt_sha256、provenance 审计；Candidate.generation_run_id 唯一；终态/错误/输出 CHECK | 已完成 |
+| `apps/api/app/models/prompt_template.py` | PromptTemplateVersion `(template_id, version)` 唯一约束 | 已完成 |
+| `apps/api/migrations/versions/t08_generation_flow.py` | batch/run 状态枚举重建含 cancelled；扩展列/FK/唯一约束/CHECK；跨表 trigger（verified Run 必须属 verified Batch）；迁移前 Batch/Run 逐行诚实分类 verified/legacy_unavailable/invalid；downgrade 预检 | 已完成 |
+| `apps/api/app/services/generation_service.py` | 单/批量生成合并编排：原子冻结模板版本+快照+hash+renderer，active ChunkSet ready chunks 选择，parent/child task + GenerationRun 原子创建，pending/processing 并发 409 | 已完成 |
+| `apps/api/app/services/generation_retry_service.py` | retry 派生新 Task/Batch/Run，复制 verified 快照，只选无 completed Run 的 Chunk，retry_of_task_id 指向旧 parent；PROVENANCE_INVALID/NOT_RETRYABLE/RETRY_EXISTS | 已完成 |
+| `apps/api/app/workers/generate_worker.py` | generate_single/batch 重写：只读冻结快照重建 input_prompt 并核验 hash，凭证仅调用前即时解析，成功落 raw/Candidate/usage 后 CAS 递增批次计数；非 JSON 明确失败；父任务聚合真实终态；终态钩子 CAS 收敛 Batch/Run/Chunk 不残留 generating | 已完成 |
+| `apps/api/app/routers/*` | POST chunk generate / document generate-batch 改 202 GenerateAcceptedResponse；GET batch 详情/runs 分页/chunk candidates；POST batch retry；404/409 领域 code 映射（含 SnapshotUnsafeError->409） | 已完成 |
+| `apps/api/app/authz.py` | 新增 generation_batch 项目归属 resolver；verify_project_chain/ensure_in_project 注册 GenerationBatch | 已完成 |
+| `apps/web` | 单 Chunk 页模板+模型双选择、202 后异步跟踪/刷新恢复/retry/provenance 展示；文档详情批量生成对话框（全部 ready/已选 chunks、部分失败明细）；新增 generation.test.tsx 4 项 | 已完成 |
+| 测试 | `tests/integration/test_generation_flow.py`（11 项 fake LLM 矩阵）+ `test_generation_api.py`（14 项 API 合同）+ `test_generation_migration_provenance.py`（19 项回填分类） | 已完成 |
+
+### 设计决策
+
+- **快照冻结即正确性来源**：创建 Batch 时在同一事务物化 PromptTemplateVersion、构建模板/模型非秘密快照与 SHA-256、冻结 renderer version；worker 只读这些快照重建 input_prompt 并核验 `rendered_prompt_sha256`，绝不重新读取模板/模型的当前可变参数。凭证仅通过 model config 服务端引用在调用前即时解析，不进入快照/hash/API 响应。
+- **secret fail closed**：extra_params 只能含白名单非秘密字段；发现 secret 键或无法分类字段即抛 `SnapshotUnsafeError`，路由映射 409 `GENERATION_SNAPSHOT_UNSAFE`，不创建 Batch/Task。
+- **父任务聚合真实终态**：batch handler 从 child task 持久状态聚合，任一 child 最终失败即 batch/parent failed（绝不假 completed）；全部成功才 completed；未全部终态回队退避轮询。失败/取消经 runner 回滚后由终态钩子以新会话 CAS 收敛，不覆盖已完成产物。
+- **retry 线性派生链**：新 Batch 复制旧 verified 快照/hash/renderer，`retry_of_generation_batch_id` 指向旧 Batch（RESTRICT+唯一），只选无 completed Run 的 Chunk；新 parent task `retry_of_task_id` 指向旧 parent，entity 指向新 Batch。旧终态永不改写/复活；同源已有直接后继 -> 409 RETRY_EXISTS，不产生分叉。
+- **legacy provenance 诚实回填**：迁移只接受可独立重建且 hash/归属全通过的行才 verified；缺少必要输入标 legacy_unavailable，发现矛盾 FK/版本/内容标 invalid，绝不从当前配置猜测历史快照。分类为纯函数，供迁移与测试复用。
+- **202 接收语义**：路由只校验并原子创建 Batch+Task，返回 `GenerateAcceptedResponse`（task_id/generation_batch_id/queued），不假装同步返回 Candidate；前端以 Task 为执行状态源、以 Batch 为业务汇总源，刷新可通过 URL task/batch id 恢复。
+
+### 验证状态
+
+- 后端矩阵+合同测试 44 项（11 生成流程 + 14 API 合同 + 19 回填分类）通过，fake LLM 不访问真实外部服务。
+- 迁移往返 `upgrade head → downgrade t06 → upgrade head` 通过；provenance 回填输出三种分类计数。
+- 全量 `python -m pytest -q` 305 项通过（含修复 4 个预存 fixture/code 注册问题：conftest 合成历史 GenerationRun 标记 legacy、CLEAN_VERSION_NOT_READY 注册、chunk_set task_id 补全、worker 故障 patch 目标）。
+- 前端 `npm run lint`、`npm exec tsc -- --noEmit`、`npm test -- --run`（64 项）、`npm run api:check`、`npm run build` 全部通过。
+- `python -m ruff check apps/api libs tests scripts` 通过；`python scripts/export_openapi.py --check` 通过。
+
+---
+
 ## T06 版本化切分与 Token 预算（2026-08-03）
 
 ### 本轮总览
