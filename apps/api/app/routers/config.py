@@ -197,6 +197,10 @@ def _make_parser_profile_router() -> APIRouter:
         db: Annotated[AsyncSession, Depends(get_db)],
         _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
     ):
+        # 项目作用域校验：config_id 必须属于 pid（跨项目 -> 404，不泄露对象存在性）。
+        resolver = ProjectResourceResolver(db)
+        if await resolver.parser_profile(pid, config_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置不存在")
         service = ParserProfileService(db)
         obj = await service.get(config_id)
         if obj is None:

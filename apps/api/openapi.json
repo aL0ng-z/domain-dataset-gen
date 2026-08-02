@@ -1313,6 +1313,17 @@
             ],
             "title": "Content"
           },
+          "revision_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision Note"
+          },
           "status": {
             "anyOf": [
               {

@@ -19,6 +19,7 @@ class CuratedItemResponse(BaseSchema):
 class CuratedItemUpdate(RequestSchema):
     content: dict | None = None
     status: str | None = None
+    revision_note: str | None = None
 
 
 class CuratedRevisionResponse(BaseSchema):

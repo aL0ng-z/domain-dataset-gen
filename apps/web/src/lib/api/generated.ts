@@ -2335,6 +2335,8 @@ export interface components {
             content?: {
                 [key: string]: unknown;
             } | null;
+            /** Revision Note */
+            revision_note?: string | null;
             /** Status */
             status?: string | null;
         };
