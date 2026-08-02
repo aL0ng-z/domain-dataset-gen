@@ -2,12 +2,14 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.authz import ProjectResourceResolver, authorize_flat_resource
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.chunk import Chunk
+from app.models.chunk_set import ChunkSet
 from app.models.config import ModelConfig
 from app.models.prompt_template import PromptTemplate
 from app.models.user import User
@@ -17,6 +19,19 @@ from app.services.chunk_service import ChunkService
 from domain.enums import UserRole
 
 router = APIRouter(prefix="/api/chunks", tags=["chunks"])
+
+
+def _chunk_response(chunk) -> ChunkResponse:
+    """构建带 chunk_set_id/chunk_set_version 的响应（T06 §5）。"""
+    resp = ChunkResponse.model_validate(chunk)
+    return resp
+
+
+async def _load_set_version(db: AsyncSession, chunk_set_id: uuid.UUID) -> int | None:
+    result = await db.execute(
+        select(ChunkSet.version).where(ChunkSet.id == chunk_set_id)
+    )
+    return result.scalar_one_or_none()
 
 
 @router.get("/{cid}", response_model=ChunkResponse, operation_id="chunk_get")
@@ -32,7 +47,9 @@ async def get_chunk(
     chunk = await resolver.chunk(pid, cid)
     if chunk is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chunk不存在")
-    return chunk
+    resp = _chunk_response(chunk)
+    resp.chunk_set_version = await _load_set_version(db, chunk.chunk_set_id)
+    return resp
 
 
 @router.patch("/{cid}", response_model=ChunkResponse, operation_id="chunk_update")
@@ -49,11 +66,25 @@ async def update_chunk(
     chunk = await resolver.chunk(pid, cid)
     if chunk is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chunk不存在")
+
+    # T06 §5：已完成集合上的 PATCH 返回 409 CHUNK_SET_IMMUTABLE（切分版本不可变）。
+    if chunk.chunk_set_id is not None:
+        cs = (
+            await db.execute(select(ChunkSet).where(ChunkSet.id == chunk.chunk_set_id))
+        ).scalar_one_or_none()
+        if cs is not None and cs.status in ("completed", "rejected"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "CHUNK_SET_IMMUTABLE", "message": "切分版本不可变，禁止原地编辑"},
+            )
+
     service = ChunkService(db)
     chunk = await service.update_chunk(cid, **body.model_dump(exclude_unset=True))
     if chunk is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chunk不存在")
-    return chunk
+    resp = _chunk_response(chunk)
+    resp.chunk_set_version = await _load_set_version(db, chunk.chunk_set_id)
+    return resp
 
 
 @router.post("/{cid}/generate", response_model=TaskResponse, status_code=status.HTTP_201_CREATED, operation_id="chunk_generate")

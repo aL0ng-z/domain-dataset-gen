@@ -12,12 +12,14 @@ from app.config import settings
 from app.database import get_db
 from app.dependencies import require_project_member
 from app.models.chunk import Chunk
+from app.models.chunk_set import ChunkSet
 from app.models.config import ParserProfile
 from app.models.document import Document
 from app.models.parse import ParseJob
 from app.models.section import CleaningJob, Section
 from app.models.user import User
 from app.schemas.chunk import ChunkResponse
+from app.schemas.chunk_set import ChunkTriggerResponse
 from app.schemas.cleaned_version import (
     CleanedDocumentVersionResponse,
     CleanedFinalReviewRequest,
@@ -35,6 +37,11 @@ from app.schemas.document import (
     ParseRequest,
 )
 from app.schemas.section import BulkAssignRequest, SectionResponse
+from app.services.chunk_set_service import (
+    ChunkSetService,
+    CleanVersionNotReadyError,
+    CleanVersionStaleError,
+)
 from app.services.clean_version_service import CleanVersionService
 from app.services.document_service import DocumentService
 from app.services.idempotency import idempotent_create_task
@@ -45,6 +52,13 @@ from domain.schemas import PaginatedResponse
 from storage import get_storage_client
 
 router = APIRouter(prefix="/api/projects/{pid}/documents", tags=["documents"])
+
+
+def _chunk_response_with_version(chunk, version_map: dict) -> ChunkResponse:
+    """构建带 chunk_set_version 的 ChunkResponse（响应合同 §5）。"""
+    resp = ChunkResponse.model_validate(chunk)
+    resp.chunk_set_version = version_map.get(chunk.chunk_set_id)
+    return resp
 
 
 async def _get_cleaning_job(
@@ -201,7 +215,7 @@ async def trigger_parse(
     await resolver.ensure_in_project(pid, [(ParserProfile, body.parser_profile_id)])
 
     # T03: 先校验 profile 与 registry，再创建 Task/ParseJob；409 前不得下载 PDF。
-    from app.services.parse_freeze_service import ParseFreezeError, freeze_parse_job
+    from app.services.parse_freeze_service import ParseFreezeError
 
     profile = (
         await db.execute(select(ParserProfile).where(ParserProfile.id == body.parser_profile_id))
@@ -483,7 +497,7 @@ async def list_sections(
     return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
 
-@router.post("/{did}/chunk", response_model=AsyncTaskAcceptedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="document_trigger_chunk")
+@router.post("/{did}/chunk", response_model=ChunkTriggerResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="document_trigger_chunk")
 async def trigger_chunk(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -493,40 +507,84 @@ async def trigger_chunk(
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
+    """T06 版本化切分：ChunkSet + T07 Task 同一事务创建；幂等/并发 409 语义。
+
+    - 请求头必须含 Idempotency-Key（缺失/超长 -> 422）。
+    - cleaned_version_id 省略取 Document.active；显式必须等于 active，否则 409。
+    - 相同 key/相同规范请求重放返回同一对象（reused:true）；摘要不同 409
+      IDEMPOTENCY_KEY_REUSED；另一个不同 key 切分进行中 409 CHUNK_RUN_IN_PROGRESS。
+    """
+    if not idempotency_key or len(idempotency_key) > 100:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Idempotency-Key 头缺失或超过 100 字符",
+        )
+
     resolver = ProjectResourceResolver(db)
-    doc = await _get_scoped_document(resolver, pid, did)
+    await _get_scoped_document(resolver, pid, did)
     from app.models.config import ChunkProfile
 
     await resolver.ensure_in_project(pid, [(ChunkProfile, body.chunk_profile_id)])
+    profile = (
+        await db.execute(select(ChunkProfile).where(ChunkProfile.id == body.chunk_profile_id))
+    ).scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="切分配置不存在")
 
-    task_service = TaskService(db, request.app.state.redis)
-    chunk_payload = {
-        "document_id": str(did),
-        "chunk_profile_id": str(body.chunk_profile_id),
-    }
-    if idempotency_key:
-        task = await idempotent_create_task(
-            db,
-            task_service=task_service,
-            client_key=idempotency_key,
-            project_id=pid,
-            task_type="chunk",
-            payload_for_digest=chunk_payload,
-            create=lambda key: task_service.create_task(
-                pid, "chunk", "document", did, current_user.id,
-                payload=chunk_payload, handler="chunk_document", idempotency_key=key,
-            ),
+    # 同一文档已有其它 key 的活跃切分：409 CHUNK_RUN_IN_PROGRESS（部分唯一索引兜底）。
+    # 同 key 的活跃 set 直接复用（下放 create_chunk_set_task 锁内复核返回既有对象）。
+    active = (
+        await db.execute(
+            select(ChunkSet)
+            .where(
+                ChunkSet.document_id == did,
+                ChunkSet.status.in_(("pending", "processing")),
+            )
         )
-    else:
-        task = await task_service.create_task(
-            pid, "chunk", "document", did, current_user.id,
-            payload=chunk_payload, handler="chunk_document",
+    ).scalar_one_or_none()
+    if active is not None and active.idempotency_key != idempotency_key:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CHUNK_RUN_IN_PROGRESS", "message": "该文档已有切分任务进行中"},
         )
-    doc.status = "chunking"
-    # 业务 job + Task 同一事务提交后由独立 runner 领取。
+
+    service = ChunkSetService(db)
+    try:
+        clean_version = await service.resolve_clean_version(did, body.cleaned_version_id)
+    except CleanVersionNotReadyError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CLEAN_VERSION_NOT_READY", "message": str(e)},
+        ) from e
+    except CleanVersionStaleError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "CLEAN_VERSION_STALE",
+                "message": str(e),
+                "context": {"target_version": e.target_version, "active_version": e.active_version},
+            },
+        ) from e
+
+    chunk_set, task, reused = await service.create_chunk_set_task(
+        project_id=pid,
+        document_id=did,
+        profile=profile,
+        clean_version=clean_version,
+        created_by=current_user.id,
+        idempotency_key=idempotency_key,
+    )
+    # 业务 ChunkSet + Task 同一事务提交后由独立 runner 领取。
     await db.commit()
+    await db.refresh(chunk_set)
 
-    return AsyncTaskAcceptedResponse(task_id=task.id, message="切分任务已创建")
+    return ChunkTriggerResponse(
+        task_id=task.id,
+        chunk_set_id=chunk_set.id,
+        reused=reused,
+        status=chunk_set.status,
+        message="复用既有切分任务" if reused else "切分任务已创建",
+    )
 
 
 @router.get("/{did}/chunks", response_model=PaginatedResponse[ChunkResponse], operation_id="document_list_chunks")
@@ -538,20 +596,51 @@ async def list_chunks(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 50,
     chunk_status: Annotated[str | None, Query(alias="status")] = None,
+    chunk_set_id: Annotated[uuid.UUID | None, Query()] = None,
+    section_id: Annotated[uuid.UUID | None, Query()] = None,
 ):
+    """Chunk 列表：默认限定 active_chunk_set_id；可显式传 chunk_set_id 查看历史。"""
     from sqlalchemy import func
 
+    from app.models.chunk_set import ChunkSet
+
     resolver = ProjectResourceResolver(db)
-    await _get_scoped_document(resolver, pid, did)
-    offset = (page - 1) * page_size
+    doc = await _get_scoped_document(resolver, pid, did)
+
+    # 解析目标集合：默认 active；显式 chunk_set_id 必须属于该文档（否则 404）。
+    target_set_id = chunk_set_id
+    if target_set_id is None:
+        target_set_id = doc.active_chunk_set_id
+    else:
+        cs = await resolver.chunk_set(pid, chunk_set_id)
+        if cs is None or cs.document_id != did:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="切分集合不存在")
+
     base = select(Chunk).where(Chunk.document_id == did)
+    if target_set_id is not None:
+        base = base.where(Chunk.chunk_set_id == target_set_id)
     if chunk_status:
         base = base.where(Chunk.status == chunk_status)
+    if section_id:
+        base = base.where(Chunk.section_id == section_id)
+
+    offset = (page - 1) * page_size
     count_result = await db.execute(select(func.count()).select_from(base.subquery()))
     total = count_result.scalar() or 0
     result = await db.execute(base.order_by(Chunk.ordinal).offset(offset).limit(page_size))
     items = list(result.scalars().all())
-    return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
+
+    # 补充 chunk_set_version（响应合同：GET /chunks 默认只返回 active set）。
+    chunk_sets = (
+        await db.execute(
+            select(ChunkSet).where(ChunkSet.document_id == did)
+        )
+    ).scalars().all()
+    version_map = {cs.id: cs.version for cs in chunk_sets}
+    resp_items = []
+    for c in items:
+        resp_items.append(_chunk_response_with_version(c, version_map))
+    return PaginatedResponse(items=resp_items, total=total, page=page, page_size=page_size)
 
 
 @router.post("/{did}/generate-batch", response_model=AsyncTaskAcceptedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="document_trigger_generate_batch")

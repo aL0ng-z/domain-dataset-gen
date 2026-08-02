@@ -11,6 +11,7 @@ from app.routers import (
     auth,
     benchmarks,
     candidates,
+    chunk_sets,
     chunks,
     cleaned_versions,
     curated_items,
@@ -73,6 +74,7 @@ app.include_router(sections.router)
 app.include_router(tasks.router)
 app.include_router(monitoring.router)
 app.include_router(chunks.router)
+app.include_router(chunk_sets.router)
 app.include_router(prompt_templates.router)
 app.include_router(candidates.router)
 app.include_router(curated_items.router)

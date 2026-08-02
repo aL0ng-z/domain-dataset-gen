@@ -676,6 +676,18 @@
             "format": "uuid",
             "title": "Chunk Profile Id",
             "type": "string"
+          },
+          "cleaned_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleaned Version Id"
           }
         },
         "required": [
@@ -686,6 +698,22 @@
       },
       "ChunkResponse": {
         "properties": {
+          "chunk_set_id": {
+            "format": "uuid",
+            "title": "Chunk Set Id",
+            "type": "string"
+          },
+          "chunk_set_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Set Version"
+          },
           "content": {
             "title": "Content",
             "type": "string"
@@ -754,10 +782,465 @@
           "source_pages",
           "token_count",
           "status",
+          "chunk_set_id",
           "created_at",
           "updated_at"
         ],
         "title": "ChunkResponse",
+        "type": "object"
+      },
+      "ChunkSetDetailResponse": {
+        "description": "单个集合详情：冻结配置与汇总。",
+        "properties": {
+          "chunk_profile_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Profile Id"
+          },
+          "cleaned_document_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleaned Document Version Id"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "config_json": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Json"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "default": false,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "is_legacy": {
+            "title": "Is Legacy",
+            "type": "boolean"
+          },
+          "output_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Sha256"
+          },
+          "source_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Sha256"
+          },
+          "splitter_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Splitter Version"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "total_chunks": {
+            "title": "Total Chunks",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "document_id",
+          "version",
+          "is_legacy",
+          "status",
+          "cleaned_document_version_id",
+          "chunk_profile_id",
+          "strategy",
+          "config_json",
+          "total_chunks",
+          "total_tokens",
+          "source_sha256",
+          "output_sha256",
+          "splitter_version",
+          "error_message",
+          "task_id",
+          "completed_at",
+          "created_at"
+        ],
+        "title": "ChunkSetDetailResponse",
+        "type": "object"
+      },
+      "ChunkSetListResponse": {
+        "description": "分页版本历史（T06 §5 GET chunk-sets）。",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChunkSetSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "ChunkSetListResponse",
+        "type": "object"
+      },
+      "ChunkSetSummary": {
+        "description": "切分集合汇总：冻结配置、来源、hash 与统计（T06 §5）。",
+        "properties": {
+          "chunk_profile_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Profile Id"
+          },
+          "chunk_profile_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Profile Name"
+          },
+          "cleaned_document_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleaned Document Version"
+          },
+          "cleaned_document_version_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleaned Document Version Id"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "config_json": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Json"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "document_id": {
+            "format": "uuid",
+            "title": "Document Id",
+            "type": "string"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "default": false,
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "is_legacy": {
+            "title": "Is Legacy",
+            "type": "boolean"
+          },
+          "output_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Sha256"
+          },
+          "source_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Sha256"
+          },
+          "splitter_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Splitter Version"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "strategy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strategy"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "total_chunks": {
+            "title": "Total Chunks",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "document_id",
+          "version",
+          "is_legacy",
+          "status",
+          "cleaned_document_version_id",
+          "chunk_profile_id",
+          "strategy",
+          "config_json",
+          "total_chunks",
+          "total_tokens",
+          "source_sha256",
+          "output_sha256",
+          "splitter_version",
+          "error_message",
+          "task_id",
+          "completed_at",
+          "created_at"
+        ],
+        "title": "ChunkSetSummary",
+        "type": "object"
+      },
+      "ChunkTriggerResponse": {
+        "description": "202 切分已接受：task/chunk_set/幂等重放语义。",
+        "properties": {
+          "chunk_set_id": {
+            "format": "uuid",
+            "title": "Chunk Set Id",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "reused": {
+            "title": "Reused",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "chunk_set_id",
+          "reused",
+          "status",
+          "message"
+        ],
+        "title": "ChunkTriggerResponse",
         "type": "object"
       },
       "ChunkUpdate": {
@@ -1696,7 +2179,10 @@
               "SECTION_VERSION_CONFLICT",
               "CLEAN_SOURCE_CHANGED",
               "CLEAN_VERSION_REVIEW_CONFLICT",
-              "CLEAN_VERSION_STALE"
+              "CLEAN_VERSION_STALE",
+              "IDEMPOTENCY_KEY_REUSED",
+              "CHUNK_RUN_IN_PROGRESS",
+              "CHUNK_SET_IMMUTABLE"
             ],
             "title": "Code",
             "type": "string"
@@ -8326,6 +8812,95 @@
         ]
       }
     },
+    "/api/projects/{pid}/chunk-sets/{csid}": {
+      "get": {
+        "description": "返回单个切分集合的冻结配置与汇总（对象归属遵循 T02）。",
+        "operationId": "chunk_set_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "csid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Csid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkSetDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Chunk Set",
+        "tags": [
+          "chunk-sets"
+        ]
+      }
+    },
     "/api/projects/{pid}/clone-config-from/{source_pid}": {
       "post": {
         "description": "Clone all config profiles from source project to target project.",
@@ -10554,6 +11129,7 @@
     },
     "/api/projects/{pid}/documents/{did}/chunk": {
       "post": {
+        "description": "T06 版本化切分：ChunkSet + T07 Task 同一事务创建；幂等/并发 409 语义。\n\n- 请求头必须含 Idempotency-Key（缺失/超长 -> 422）。\n- cleaned_version_id 省略取 Document.active；显式必须等于 active，否则 409。\n- 相同 key/相同规范请求重放返回同一对象（reused:true）；摘要不同 409\n  IDEMPOTENCY_KEY_REUSED；另一个不同 key 切分进行中 409 CHUNK_RUN_IN_PROGRESS。",
         "operationId": "document_trigger_chunk",
         "parameters": [
           {
@@ -10608,7 +11184,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AsyncTaskAcceptedResponse"
+                  "$ref": "#/components/schemas/ChunkTriggerResponse"
                 }
               }
             },
@@ -10666,8 +11242,131 @@
         ]
       }
     },
+    "/api/projects/{pid}/documents/{did}/chunk-sets": {
+      "get": {
+        "description": "分页返回文档的切分版本历史（新版本优先）。",
+        "operationId": "document_list_chunk_sets",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "did",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Did",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChunkSetListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "资源不存在"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Chunk Sets",
+        "tags": [
+          "chunk-sets"
+        ]
+      }
+    },
     "/api/projects/{pid}/documents/{did}/chunks": {
       "get": {
+        "description": "Chunk 列表：默认限定 active_chunk_set_id；可显式传 chunk_set_id 查看历史。",
         "operationId": "document_list_chunks",
         "parameters": [
           {
@@ -10727,6 +11426,40 @@
                 }
               ],
               "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "chunk_set_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Chunk Set Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "section_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Section Id"
             }
           }
         ],

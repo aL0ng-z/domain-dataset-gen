@@ -123,10 +123,11 @@ class ChunkSetService:
         clean_version: CleanedDocumentVersion,
         created_by: uuid.UUID,
         idempotency_key: str | None,
-    ) -> tuple[ChunkSet, Task]:
+    ) -> tuple[ChunkSet, Task, bool]:
         """在同一事务中创建 ChunkSet + T07 queued Task（调用方负责 commit）。
 
         版本号在锁定 documents 行后分配（不允许无锁 MAX(version)+1）。
+        返回 ``(chunk_set, task, reused)``：reused=True 表示同 key 幂等重放（未新建）。
         """
         # 锁定 Document 行：版本分配与 active 校验的串行化点。
         doc = (
@@ -151,7 +152,7 @@ class ChunkSetService:
                 ).scalar_one_or_none()
                 if task is None:
                     raise RuntimeError(f"ChunkSet {existing.id} 的 task 不存在")
-                return existing, task
+                return existing, task, True
 
         # 版本号在行锁内分配。
         from sqlalchemy import func
@@ -206,4 +207,4 @@ class ChunkSetService:
         doc.status = "chunking"
         await self.db.flush()
         await self.db.refresh(chunk_set)
-        return chunk_set, task
+        return chunk_set, task, False
