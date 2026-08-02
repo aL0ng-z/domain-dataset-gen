@@ -11,6 +11,7 @@ from app.authz import ProjectResourceResolver
 from app.config import settings
 from app.database import get_db
 from app.dependencies import require_project_member
+from app.generation.snapshot import SnapshotUnsafeError
 from app.models.chunk import Chunk
 from app.models.chunk_set import ChunkSet
 from app.models.config import ParserProfile
@@ -737,6 +738,11 @@ async def trigger_generate_batch(
     except (PromptTemplateVersionMaterializeError, ValueError) as e:
         raise _gen_http_error(
             409, "GENERATION_CONFIG_UNAVAILABLE", str(e), {"config_type": "prompt_template"}
+        ) from e
+    except SnapshotUnsafeError as e:
+        raise _gen_http_error(
+            409, "GENERATION_SNAPSHOT_UNSAFE", str(e),
+            {"config_type": "model_config", "field_path": str(body.model_config_id)},
         ) from e
     except GenerationInProgressError as e:
         raise _gen_http_error(

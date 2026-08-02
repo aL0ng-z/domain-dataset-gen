@@ -2564,7 +2564,7 @@
       },
       "GenerateBatchRequest": {
         "additionalProperties": false,
-        "description": "批量生成请求；selected_chunk_ids 可省略（省略 = active ChunkSet 全部 ready）。",
+        "description": "批量生成请求；selected_chunk_ids 可省略（省略 = active ChunkSet 全部 ready）。\n\n显式传入时若非空数组且非 None，允许任意子集；空数组属于 Pydantic 结构\n校验错误（422 ValidationErrorResponse），业务冲突不借用 422。",
         "properties": {
           "model_config_id": {
             "format": "uuid",

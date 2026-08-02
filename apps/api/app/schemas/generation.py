@@ -1,6 +1,8 @@
 import uuid
 from datetime import datetime
 
+from pydantic import field_validator
+
 from domain.schemas import BaseSchema, RequestSchema
 
 
@@ -20,11 +22,22 @@ class GenerateRequest(RequestSchema):
 
 
 class GenerateBatchRequest(RequestSchema):
-    """批量生成请求；selected_chunk_ids 可省略（省略 = active ChunkSet 全部 ready）。"""
+    """批量生成请求；selected_chunk_ids 可省略（省略 = active ChunkSet 全部 ready）。
+
+    显式传入时若非空数组且非 None，允许任意子集；空数组属于 Pydantic 结构
+    校验错误（422 ValidationErrorResponse），业务冲突不借用 422。
+    """
 
     prompt_template_id: uuid.UUID
     model_config_id: uuid.UUID
     selected_chunk_ids: list[uuid.UUID] | None = None
+
+    @field_validator("selected_chunk_ids")
+    @classmethod
+    def _selected_not_empty(cls, v: list[uuid.UUID] | None) -> list[uuid.UUID] | None:
+        if v is not None and len(v) == 0:
+            raise ValueError("selected_chunk_ids 不能为空数组")
+        return v
 
 
 class GenerationBatchResponse(BaseSchema):

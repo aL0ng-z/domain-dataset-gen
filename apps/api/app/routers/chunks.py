@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.authz import ProjectResourceResolver, authorize_flat_resource
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.generation.snapshot import SnapshotUnsafeError
 from app.models.chunk_set import ChunkSet
 from app.models.user import User
 from app.schemas.candidate import CandidateResponse
@@ -115,8 +116,14 @@ async def generate_from_chunk(
 ):
     """单 Chunk 生成（T08 §5.1）：202 接收，服务端固定选择 [cid]。"""
     resolver = ProjectResourceResolver(db)
+    chunk_project_id = await resolver.chunk_project_id(cid)
+    if chunk_project_id is None:
+        # 资源不存在或按 T02 不可见 -> 404 GENERATION_SOURCE_NOT_FOUND（不泄露 ID 存在性）。
+        raise _generation_http_error(
+            404, "GENERATION_SOURCE_NOT_FOUND", "Chunk 不存在", {"source_type": "Chunk"}
+        )
     pid = await authorize_flat_resource(
-        db, current_user, await resolver.chunk_project_id(cid), UserRole.editor
+        db, current_user, chunk_project_id, UserRole.editor
     )
     chunk = await resolver.chunk(pid, cid)
     if chunk is None:
@@ -162,6 +169,11 @@ async def generate_from_chunk(
     except (PromptTemplateVersionMaterializeError, ValueError) as e:
         raise _generation_http_error(
             409, "GENERATION_CONFIG_UNAVAILABLE", str(e), {"config_type": "prompt_template"}
+        ) from e
+    except SnapshotUnsafeError as e:
+        raise _generation_http_error(
+            409, "GENERATION_SNAPSHOT_UNSAFE", str(e),
+            {"config_type": "model_config", "field_path": str(body.model_config_id)},
         ) from e
     except GenerationInProgressError as e:
         raise _generation_http_error(
