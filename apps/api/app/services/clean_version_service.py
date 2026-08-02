@@ -199,10 +199,12 @@ class CleanVersionService:
         self, document_id: uuid.UUID, idempotency_key: str
     ) -> CleanedDocumentVersion | None:
         result = await self.db.execute(
-            select(CleanedDocumentVersion).where(
+            select(CleanedDocumentVersion)
+            .where(
                 CleanedDocumentVersion.document_id == document_id,
                 CleanedDocumentVersion.merge_idempotency_key == idempotency_key,
             )
+            .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
 
