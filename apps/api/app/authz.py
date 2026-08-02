@@ -113,6 +113,7 @@ async def verify_project_chain(
         ChunkSet: resolver.chunk_set,
         GenerationRun: resolver.generation_run,
         Candidate: resolver.candidate,
+        GenerationBatch: resolver.generation_batch,
         ParseJob: resolver.parse_job,
         CleaningJob: resolver.cleaning_job,
         Export: resolver.export,
@@ -485,6 +486,7 @@ class ProjectResourceResolver:
             ChunkSet: self.chunk_set,
             GenerationRun: self.generation_run,
             Candidate: self.candidate,
+            GenerationBatch: self.generation_batch,
         }
         for model, resource_id in checks:
             resolver = resolvers.get(model)

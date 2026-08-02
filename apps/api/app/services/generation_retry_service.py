@@ -117,6 +117,8 @@ class GenerationRetryPlanner:
         await self.db.refresh(new_batch)
 
         # 新 parent task（generate_batch handler，entity -> 新 Batch）。
+        # 通过 T07 的 retry_of_task_id 指向旧 parent task（任务卡 §5.4）。
+        source_parent_task = await self._find_source_parent_task(source_batch)
         parent_payload = {
             "document_id": str(source_batch.document_id),
             "generation_batch_id": str(new_batch.id),
@@ -131,6 +133,9 @@ class GenerationRetryPlanner:
             handler="generate_batch",
             idempotency_key=idempotency_key,
         )
+        if source_parent_task is not None:
+            parent_task.retry_of_task_id = source_parent_task.id
+            await self.db.flush()
 
         # 每个未成功 Chunk 创建 verified 新 Run + child task。
         prompt_snapshot = source_batch.prompt_template_snapshot
@@ -200,3 +205,17 @@ class GenerationRetryPlanner:
             ).scalars().all()
         )
         return [c for c in chunks if c.id not in completed_chunk_ids]
+
+    async def _find_source_parent_task(self, batch: GenerationBatch) -> Task | None:
+        """查找源 Batch 的 parent task（generate_batch handler，entity -> 该 Batch）。
+
+        用于新 parent task 的 retry_of_task_id 指向（T07 派生链）。
+        """
+        result = await self.db.execute(
+            select(Task).where(
+                Task.task_type == "generate_batch",
+                Task.entity_type == "generation_batch",
+                Task.entity_id == batch.id,
+            )
+        )
+        return result.scalars().first()

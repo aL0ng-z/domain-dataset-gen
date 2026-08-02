@@ -275,7 +275,7 @@ async def _finalize_batch_completed(db: AsyncSession, batch: GenerationBatch) ->
     batch.status = "completed"
     batch.completed_at = datetime.now(UTC)
     candidate_ids = [
-        str(c.id) for c in (
+        str(cid) for cid in (
             await db.execute(
                 select(Candidate.id).where(Candidate.source_generation_batch_id == batch.id)
             )
@@ -319,7 +319,7 @@ async def _finalize_batch_failed(
         "failed": len(failed_runs),
         "cancelled": int(status_counts.get("cancelled", 0)),
         "candidate_ids": [
-            str(c.id) for c in (
+            str(cid) for cid in (
                 await db.execute(
                     select(Candidate.id).where(Candidate.source_generation_batch_id == batch.id)
                 )
@@ -381,7 +381,7 @@ def _make_batch_terminal_hook(batch_id: uuid.UUID, document_id: uuid.UUID):
             for r in runs if r.status == "failed"
         ]
         candidate_ids = [
-            str(c.id) for c in (
+            str(cid) for cid in (
                 await db.execute(
                     select(Candidate.id).where(Candidate.source_generation_batch_id == batch_id)
                 )
