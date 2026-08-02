@@ -162,16 +162,39 @@ class TaskService:
         """取消任务：queued 原子转 cancelled；processing 转 cancelling。
 
         重复请求幂等返回当前状态；终态返回当前对象且不改写完成时间。
+        父任务取消向所有非终态子任务传播（CAS 聚合）。
         """
         ok, status = await self.queue.request_cancel(
             task_id=task_id, cancel_requested_by=cancel_requested_by
         )
         if not ok:
             return None
+        # 父任务取消传播：向所有非终态子任务请求取消。
+        if status in ("cancelled", "cancelling"):
+            await self._cancel_children(task_id, cancel_requested_by)
         task = await self.get_task(task_id)
         if task is not None:
             await self._publish_event(task, f"task.{task.status}")
         return task
+
+    async def _cancel_children(
+        self, parent_task_id: uuid.UUID, cancel_requested_by: uuid.UUID
+    ) -> None:
+        """向所有非终态子任务传播取消请求。"""
+        result = await self.db.execute(
+            select(Task).where(
+                Task.parent_task_id == parent_task_id,
+                Task.status.in_(("queued", "processing", "cancelling")),
+            )
+        )
+        children = list(result.scalars().all())
+        for child in children:
+            await self.queue.request_cancel(
+                task_id=child.id, cancel_requested_by=cancel_requested_by
+            )
+        if children:
+            for child in children:
+                await self._publish_event(child, f"task.{child.status}")
 
     # ------------------------------------------------------------------
     # Retry
