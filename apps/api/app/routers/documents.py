@@ -2,7 +2,7 @@ import asyncio
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -616,14 +616,13 @@ async def bulk_assign_sections(
 async def merge_clean_version(
     pid: uuid.UUID,
     did: uuid.UUID,
-    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
     cleaning_job_id: Annotated[uuid.UUID, Query()],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
     resolver = ProjectResourceResolver(db)
     await _get_cleaning_job(resolver, pid, did, cleaning_job_id)
-    idempotency_key = request.headers.get("Idempotency-Key")
     if not idempotency_key or len(idempotency_key) > 128:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

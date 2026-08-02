@@ -142,7 +142,7 @@ describe("api client with mock server", () => {
     localStorage.setItem("refresh_token", "refresh-1");
 
     // /items 每次都 401，之后 refresh 成功，重试也 401（用于统计重试次数）
-    server.mock("GET", "/items", () => ({
+    server.mock("GET", "/projects/", () => ({
       status: 401,
       body: { detail: "unauthorized" },
     }));
@@ -153,7 +153,7 @@ describe("api client with mock server", () => {
 
     const results = await Promise.all(
       Array.from({ length: 20 }, () =>
-        api.get("/items").then(
+        api.get("/projects/").then(
           () => "resolved",
           () => "rejected",
         ),
@@ -162,8 +162,8 @@ describe("api client with mock server", () => {
 
     // 刷新只发生 1 次（single-flight）
     expect(server.getHandler("POST", "/auth/refresh")?.callCount).toBe(1);
-    // 每个请求只重试一次：初始 1 + 重试 1 = 2 次 /items 调用，共 40 次
-    expect(server.getHandler("GET", "/items")?.callCount).toBe(40);
+    // 每个请求只重试一次：初始 1 + 重试 1 = 2 次 /projects/ 调用，共 40 次
+    expect(server.getHandler("GET", "/projects/")?.callCount).toBe(40);
     // 全部一致失败（重试后仍 401），无无限重试
     expect(results).toEqual(Array.from({ length: 20 }, () => "rejected"));
   });
@@ -175,7 +175,7 @@ describe("api client with mock server", () => {
       localStorage.setItem("access_token", "old-token");
       localStorage.setItem("refresh_token", "refresh-1");
 
-      server.mock("GET", "/items", () => ({
+      server.mock("GET", "/projects/", () => ({
         status: 401,
         body: { detail: "unauthorized" },
       }));
@@ -186,7 +186,7 @@ describe("api client with mock server", () => {
 
       const results = await Promise.all(
         Array.from({ length: 20 }, () =>
-          api.get("/items").then(
+          api.get("/projects/").then(
             () => "resolved",
             () => "rejected",
           ),

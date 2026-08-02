@@ -834,7 +834,11 @@ export interface paths {
         };
         /**
          * Get Document File
-         * @description Serve PDF file. Supports both Authorization header and ?token= query param (for iframe).
+         * @description Serve PDF file. Requires Authorization: Bearer access token and project viewer.
+         *
+         *     - 仅接受 Authorization 头；query token 一律拒绝（任务卡 §5.2）。
+         *     - did 必须属于 pid，调用者至少为 viewer；校验完成前不访问 MinIO。
+         *     - 响应 private, no-store；任何日志不得打印 Authorization 或文件内容。
          */
         get: operations["document_get_file"];
         put?: never;
@@ -1251,10 +1255,27 @@ export interface paths {
             cookie?: never;
         };
         /** List All */
-        get: operations["parser-profiles_list"];
+        get: operations["list_all_api_projects__pid__parser_profiles__get"];
         put?: never;
         /** Create */
-        post: operations["parser-profiles_create"];
+        post: operations["create_api_projects__pid__parser_profiles__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/parser-profiles/endpoints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Endpoints */
+        get: operations["list_endpoints_api_projects__pid__parser_profiles_endpoints_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1269,15 +1290,15 @@ export interface paths {
             cookie?: never;
         };
         /** Get */
-        get: operations["parser-profiles_get"];
+        get: operations["get_api_projects__pid__parser_profiles__config_id__get"];
         put?: never;
         post?: never;
         /** Delete */
-        delete: operations["parser-profiles_delete"];
+        delete: operations["delete_api_projects__pid__parser_profiles__config_id__delete"];
         options?: never;
         head?: never;
         /** Update */
-        patch: operations["parser-profiles_update"];
+        patch: operations["update_api_projects__pid__parser_profiles__config_id__patch"];
         trace?: never;
     };
     "/api/projects/{pid}/parser-profiles/{config_id}/set-default": {
@@ -1290,7 +1311,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Set Default */
-        post: operations["parser-profiles_set_default"];
+        post: operations["set_default_api_projects__pid__parser_profiles__config_id__set_default_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2096,6 +2117,8 @@ export interface components {
         CleanedDocumentVersionDetailResponse: {
             /** Artifact Key */
             artifact_key: string | null;
+            /** Content Sha256 */
+            content_sha256: string | null;
             /**
              * Created At
              * Format: date-time
@@ -2126,6 +2149,12 @@ export interface components {
             section_count: number;
             /** Source Cleaning Job Id */
             source_cleaning_job_id: string | null;
+            /** Source Revision Map */
+            source_revision_map: {
+                [key: string]: unknown;
+            } | null;
+            /** Source Revision Sha256 */
+            source_revision_sha256: string | null;
             /** Status */
             status: string;
             /**
@@ -2140,6 +2169,8 @@ export interface components {
         CleanedDocumentVersionResponse: {
             /** Artifact Key */
             artifact_key: string | null;
+            /** Content Sha256 */
+            content_sha256: string | null;
             /**
              * Created At
              * Format: date-time
@@ -2168,6 +2199,8 @@ export interface components {
             section_count: number;
             /** Source Cleaning Job Id */
             source_cleaning_job_id: string | null;
+            /** Source Revision Sha256 */
+            source_revision_sha256: string | null;
             /** Status */
             status: string;
             /**
@@ -2472,7 +2505,7 @@ export interface components {
              * @description 稳定大写 snake case 业务错误码，前端按 code 分支
              * @enum {string}
              */
-            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR";
+            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE";
             /**
              * Context
              * @description 仅含经 schema 声明的非敏感结构；允许为 null
@@ -2654,6 +2687,22 @@ export interface components {
              * Format: uuid
              */
             prompt_template_id: string;
+        };
+        /** LeaseHeartbeatRequest */
+        LeaseHeartbeatRequest: {
+            /**
+             * Lease Id
+             * Format: uuid
+             */
+            lease_id: string;
+        };
+        /** LeaseReleaseRequest */
+        LeaseReleaseRequest: {
+            /**
+             * Lease Id
+             * Format: uuid
+             */
+            lease_id: string;
         };
         /** LoginRequest */
         LoginRequest: {
@@ -2994,8 +3043,16 @@ export interface components {
              * Format: uuid
              */
             document_id: string;
+            /** Endpoint Policy Ref */
+            endpoint_policy_ref: string | null;
+            /** Endpoint Policy Sha256 */
+            endpoint_policy_sha256: string | null;
+            /** Endpoint Policy Version */
+            endpoint_policy_version: string | null;
             /** Error Message */
             error_message: string | null;
+            /** Frozen At */
+            frozen_at: string | null;
             /**
              * Id
              * Format: uuid
@@ -3006,6 +3063,10 @@ export interface components {
              * Format: uuid
              */
             parser_profile_id: string;
+            /** Parser Profile Sha256 */
+            parser_profile_sha256: string | null;
+            /** Snapshot Schema Version */
+            snapshot_schema_version: number | null;
             /** Started At */
             started_at: string | null;
             /** Status */
@@ -3018,6 +3079,25 @@ export interface components {
              * Format: uuid
              */
             parser_profile_id: string;
+        };
+        /** ParserEndpointListResponse */
+        ParserEndpointListResponse: {
+            /** Items */
+            items: components["schemas"]["ParserEndpointOption"][];
+        };
+        /**
+         * ParserEndpointOption
+         * @description 项目用户可选的端点只读信息；不返回主机/IP/端口/allowlist 或网络区域内部细节。
+         */
+        ParserEndpointOption: {
+            /** Credential Configured */
+            credential_configured: boolean;
+            /** Display Name */
+            display_name: string;
+            /** Endpoint Ref */
+            endpoint_ref: string;
+            /** Parser Name */
+            parser_name: string;
         };
         /** ParserProfileCreate */
         ParserProfileCreate: {
@@ -3266,7 +3346,10 @@ export interface components {
         };
         /** RefreshRequest */
         RefreshRequest: {
-            /** Refresh Token */
+            /**
+             * Refresh Token
+             * @description 有效的 refresh token（type=refresh）
+             */
             refresh_token: string;
         };
         /** RegisterRequest */
@@ -3358,6 +3441,24 @@ export interface components {
              */
             user_id: string;
         };
+        /** SectionLeaseSummary */
+        SectionLeaseSummary: {
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
         /** SectionResponse */
         SectionResponse: {
             /** Assigned At */
@@ -3379,6 +3480,8 @@ export interface components {
             cleaning_job_id: string;
             /** Completed At */
             completed_at: string | null;
+            /** Content Revision */
+            content_revision: number;
             /**
              * Created At
              * Format: date-time
@@ -3396,6 +3499,7 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            lease?: components["schemas"]["SectionLeaseSummary"] | null;
             /** Ordinal */
             ordinal: number;
             /** Raw Markdown */
@@ -3435,6 +3539,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** From Revision */
+            from_revision: number;
             /**
              * Id
              * Format: uuid
@@ -3452,11 +3558,38 @@ export interface components {
              * Format: uuid
              */
             section_id: string;
+            /** To Revision */
+            to_revision: number;
+        };
+        /** SectionSubmitRequest */
+        SectionSubmitRequest: {
+            /**
+             * Expected Revision
+             * @description 客户端所见的最新 content_revision
+             */
+            expected_revision: number;
+            /**
+             * Lease Id
+             * Format: uuid
+             * @description acquire 返回的 fencing token
+             */
+            lease_id: string;
         };
         /** SectionUpdate */
         SectionUpdate: {
             /** Cleaned Markdown */
             cleaned_markdown: string;
+            /**
+             * Expected Revision
+             * @description 客户端所见的最新 content_revision（乐观并发）
+             */
+            expected_revision: number;
+            /**
+             * Lease Id
+             * Format: uuid
+             * @description acquire 返回的 fencing token
+             */
+            lease_id: string;
         };
         /** SnapshotManifestResponse */
         SnapshotManifestResponse: {
@@ -3617,14 +3750,24 @@ export interface components {
             /** Output Tokens */
             output_tokens: number;
         };
-        /** TokenResponse */
+        /**
+         * TokenResponse
+         * @description 登录/刷新响应。access_token 仅用于受保护入口；refresh_token 仅用于刷新接口。
+         */
         TokenResponse: {
-            /** Access Token */
+            /**
+             * Access Token
+             * @description access token（type=access），用于受保护 HTTP/PDF/WebSocket 入口
+             */
             access_token: string;
-            /** Refresh Token */
+            /**
+             * Refresh Token
+             * @description refresh token（type=refresh），仅用于 POST /api/auth/refresh
+             */
             refresh_token: string;
             /**
              * Token Type
+             * @description 令牌类型，恒为 bearer
              * @default bearer
              */
             token_type: string;
@@ -7678,6 +7821,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description 冲突 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description 请求参数校验失败 */
             422: {
                 headers: {
@@ -7703,7 +7855,9 @@ export interface operations {
             query: {
                 cleaning_job_id: string;
             };
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 pid: string;
                 did: string;
@@ -7732,6 +7886,15 @@ export interface operations {
             };
             /** @description 权限不足 */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 冲突 */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7894,9 +8057,7 @@ export interface operations {
     };
     document_get_file: {
         parameters: {
-            query?: {
-                token?: string | null;
-            };
+            query?: never;
             header?: never;
             path: {
                 pid: string;
@@ -7913,6 +8074,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             /** @description 资源不存在 */
@@ -9800,7 +9979,7 @@ export interface operations {
             };
         };
     };
-    "parser-profiles_list": {
+    list_all_api_projects__pid__parser_profiles__get: {
         parameters: {
             query?: {
                 page?: number;
@@ -9861,7 +10040,7 @@ export interface operations {
             };
         };
     };
-    "parser-profiles_create": {
+    create_api_projects__pid__parser_profiles__post: {
         parameters: {
             query?: never;
             header?: never;
@@ -9923,7 +10102,65 @@ export interface operations {
             };
         };
     };
-    "parser-profiles_get": {
+    list_endpoints_api_projects__pid__parser_profiles_endpoints_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParserEndpointListResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_api_projects__pid__parser_profiles__config_id__get: {
         parameters: {
             query?: never;
             header?: never;
@@ -9982,7 +10219,7 @@ export interface operations {
             };
         };
     };
-    "parser-profiles_delete": {
+    delete_api_projects__pid__parser_profiles__config_id__delete: {
         parameters: {
             query?: never;
             header?: never;
@@ -10039,7 +10276,7 @@ export interface operations {
             };
         };
     };
-    "parser-profiles_update": {
+    update_api_projects__pid__parser_profiles__config_id__patch: {
         parameters: {
             query?: never;
             header?: never;
@@ -10102,7 +10339,7 @@ export interface operations {
             };
         };
     };
-    "parser-profiles_set_default": {
+    set_default_api_projects__pid__parser_profiles__config_id__set_default_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -11343,6 +11580,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description 冲突 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description 请求参数校验失败 */
             422: {
                 headers: {
@@ -11688,7 +11934,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LeaseHeartbeatRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -11755,7 +12005,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LeaseReleaseRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             204: {
@@ -12011,7 +12265,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SectionSubmitRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
@@ -12033,6 +12291,15 @@ export interface operations {
             };
             /** @description 权限不足 */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 冲突 */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

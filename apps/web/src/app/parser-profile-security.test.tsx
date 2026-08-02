@@ -24,7 +24,7 @@ describe("ParserProfile 安全合同", () => {
     server = createApiMockServer();
     server.install();
     server.onGet(
-      `/projects/${projectId}/parser-profiles?page=1&page_size=100`,
+      `/projects/${projectId}/parser-profiles/?page=1&page_size=100`,
       { items: [], total: 0, page: 1, page_size: 100 },
     );
     server.onGet(`/projects/${projectId}/parser-profiles/endpoints`, {
@@ -116,7 +116,13 @@ describe("ParserProfile 安全合同", () => {
     const user = userEvent.setup();
     server.mock("POST", `/projects/${projectId}/parser-profiles/`, {
       status: 422,
-      body: { detail: "unsafe_parser_option: 禁用字段" },
+      body: {
+        code: "VALIDATION_ERROR",
+        message: "unsafe_parser_option: 禁用字段",
+        errors: [
+          { loc: ["body", "parser_options", "base_url"], msg: "unsafe_parser_option: 禁用字段", type: "value_error" },
+        ],
+      },
     });
     renderTab();
 
@@ -128,7 +134,7 @@ describe("ParserProfile 安全合同", () => {
   });
 
   it("编辑旧 profile 时不回显旧 URL，只显示 requires_endpoint_remap", async () => {
-    server.onGet(`/projects/${projectId}/parser-profiles?page=1&page_size=100`, {
+    server.onGet(`/projects/${projectId}/parser-profiles/?page=1&page_size=100`, {
       items: [
         {
           id: "p1",

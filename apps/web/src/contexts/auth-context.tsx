@@ -116,9 +116,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }, ME_REQUEST_TIMEOUT);
 
     api
-      .get<User>("/auth/me")
+      .get("/auth/me")
       .then((u) => {
-        setUser(u);
+        setUser(u as User);
       })
       .catch(() => {
         authLogout();

@@ -14,9 +14,18 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { StatusBadge } from "@/components/status-badge";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
 import { useWs } from "@/hooks/use-ws";
+import { useCleaningWorkbench, isBusinessError } from "@/hooks/use-cleaning-workbench";
 import {
   ArrowLeftIcon,
   SaveIcon,
@@ -26,6 +35,8 @@ import {
   MessageSquareIcon,
   PanelLeftCloseIcon,
   PanelLeftOpenIcon,
+  ClipboardIcon,
+  RefreshCcwIcon,
 } from "lucide-react";
 
 // Dynamically import CodeMirror to avoid SSR issues
@@ -35,7 +46,6 @@ const CodeMirrorEditor = dynamic(
 );
 
 type Section = components["schemas"]["SectionResponse"];
-type Comment = components["schemas"]["SectionCommentResponse"];
 type CleanedVersion = components["schemas"]["CleanedDocumentVersionResponse"];
 type CleaningJobContext = components["schemas"]["CleaningJobResponse"];
 type ProjectMember = components["schemas"]["ProjectMemberResponse"];
@@ -90,6 +100,14 @@ function normalizeMarkdownForPreview(markdown: string) {
     .replace(/\\([\\`*{}\[\]()#+\-.!_$>|~=])/g, "$1");
 }
 
+/** 一次“合并清洗版本”用户意图对应一个幂等键；未知结果时按 key 查询而非换 key 重试。 */
+function makeMergeIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `merge-${crypto.randomUUID()}`;
+  }
+  return `merge-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export default function CleaningWorkbenchPage() {
   const params = useParams<{ id: string; did: string }>();
   const router = useRouter();
@@ -100,14 +118,9 @@ export default function CleaningWorkbenchPage() {
 
   const [sections, setSections] = useState<Section[]>([]);
   const [cleaningJobs, setCleaningJobs] = useState<CleaningJobContext[]>([]);
-  const [selectedSectionId, setSelectedSectionId] = useState<string | null>(null);
-  const [selectedSection, setSelectedSection] = useState<Section | null>(null);
-  const [editedMarkdown, setEditedMarkdown] = useState("");
-  const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState("");
   const [loading, setLoading] = useState(true);
   const [contextLoading, setContextLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
@@ -120,6 +133,15 @@ export default function CleaningWorkbenchPage() {
   const displayedContextId = useRef<string | null>(cleaningJobId);
   displayedContextId.current = cleaningJobId;
 
+  // dirty guard：导航/切换前确认（保存 / 放弃 / 留在当前页）。
+  const [guardPrompt, setGuardPrompt] = useState<{
+    pendingTarget: () => void;
+  } | null>(null);
+  const [merging, setMerging] = useState(false);
+
+  const workbench = useCleaningWorkbench();
+  const { setSelectedSectionId } = workbench;
+
   const cleaningUrlFor = useCallback((id: string) => (
     `/projects/${projectId}/documents/${docId}/clean?cleaning_job_id=${encodeURIComponent(id)}`
   ), [projectId, docId]);
@@ -128,14 +150,11 @@ export default function CleaningWorkbenchPage() {
     displayedContextId.current = id;
     setLoading(true);
     setSections([]);
-    setSelectedSectionId(null);
-    setSelectedSection(null);
-    setEditedMarkdown("");
-    setComments([]);
+    workbench.resetForCleanup();
     setVersions([]);
     setSelectedForAssign(new Set());
     router.push(cleaningUrlFor(id));
-  }, [router, cleaningUrlFor]);
+  }, [router, cleaningUrlFor, workbench]);
 
   const activeCleaningJob = cleaningJobs.find((job) => job.id === cleaningJobId);
 
@@ -166,7 +185,6 @@ export default function CleaningWorkbenchPage() {
   }, [fetchCleaningJobs]);
 
   // PDF Blob 下载：经 apiFetch 携带 Authorization（任务卡 §5.2、§6）。
-  // 不使用带 token 的 query URL；失败时展示错误且不回退为 query URL。
   const [pdfUrl, setPdfUrl] = useState("");
   const [pdfError, setPdfError] = useState(false);
 
@@ -187,7 +205,6 @@ export default function CleaningWorkbenchPage() {
         if (!cancelled) setPdfError(true);
       });
 
-    // 切换文档/卸载时 revoke，避免内存泄漏（任务卡 §9 风险表）。
     return () => {
       cancelled = true;
       if (objectUrl) {
@@ -197,7 +214,7 @@ export default function CleaningWorkbenchPage() {
     };
   }, [projectId, docId]);
 
-  // Fetch sections list (no selectedSectionId dep to avoid refetch loop)
+  // Fetch sections list
   const fetchSections = useCallback(() => {
     if (!cleaningJobId) return;
     api
@@ -221,7 +238,7 @@ export default function CleaningWorkbenchPage() {
       .finally(() => {
         if (displayedContextId.current === cleaningJobId) setLoading(false);
       });
-  }, [projectId, docId, cleaningJobId]);
+  }, [projectId, docId, cleaningJobId, setSelectedSectionId]);
 
   useEffect(() => {
     fetchSections();
@@ -271,145 +288,60 @@ export default function CleaningWorkbenchPage() {
     return () => window.clearInterval(refreshTimer);
   }, [activeCleaningJob, fetchCleaningJobs, fetchSections]);
 
-  // Fetch selected section detail + comments
+  // 首次选中 section 后加载详情 + 租约；cleanup 由 hook 内的 effect 负责（只释放自身 lease）。
   useEffect(() => {
-    if (!selectedSectionId) return;
-    api
-      .get("/sections/{sid}", { params: { sid: selectedSectionId } })
-      .then((section) => {
-        setSelectedSection(section);
-        setEditedMarkdown(section.cleaned_markdown ?? section.raw_markdown ?? "");
-      })
-      .catch(() => toast.error("加载章节详情失败"));
+    if (!workbench.selectedSectionId) return;
+    workbench.loadSection(workbench.selectedSectionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workbench.selectedSectionId]);
 
-    // Comments API returns list (not paginated)
-    api
-      .get("/sections/{sid}/comments", { params: { sid: selectedSectionId } })
-      .then((data) => setComments(data))
-      .catch(() => setComments([]));
-  }, [selectedSectionId]);
-
-  // Acquire lease on selection, then keep it alive; release on switch/unmount.
-  useEffect(() => {
-    if (!selectedSectionId) return;
-
-    let isActive = true;
-    let leaseAcquired = false;
-    let interval: ReturnType<typeof setInterval> | null = null;
-
-    const stopHeartbeat = () => {
-      if (interval) {
-        clearInterval(interval);
-        interval = null;
-      }
-    };
-
-    const releaseLease = async () => {
-      if (!leaseAcquired) return;
-      leaseAcquired = false;
-      try {
-        await api.post("/sections/{sid}/lease/release", undefined, {
-          params: { sid: selectedSectionId },
-        });
-      } catch {
-        // Ignore release failures during navigation/unmount.
-      }
-    };
-
-    const acquireLease = async () => {
-      try {
-        await api.post("/sections/{sid}/lease/acquire", undefined, {
-          params: { sid: selectedSectionId },
-        });
-        leaseAcquired = true;
-
-        if (!isActive) {
-          await releaseLease();
-          return;
-        }
-
-        interval = setInterval(() => {
-          api.post("/sections/{sid}/lease/heartbeat", undefined, {
-            params: { sid: selectedSectionId },
-          }).catch(() => {
-            stopHeartbeat();
-            leaseAcquired = false;
-          });
-        }, 30000);
-      } catch {
-        // If acquire fails, do not start heartbeat polling.
-      }
-    };
-
-    void acquireLease();
-
-    return () => {
-      isActive = false;
-      stopHeartbeat();
-      void releaseLease();
-    };
-  }, [selectedSectionId]);
-
+  // 保存 / 提交：工具栏按钮触发。
   const handleSave = useCallback(async () => {
-    if (!selectedSectionId) return;
-    setSaving(true);
-    try {
-      await api.patch("/sections/{sid}", { cleaned_markdown: editedMarkdown }, {
-        params: { sid: selectedSectionId },
-      });
-      toast.success("保存成功");
-      fetchSections();
-    } catch {
-      toast.error("保存失败");
-    } finally {
-      setSaving(false);
-    }
-  }, [selectedSectionId, editedMarkdown, fetchSections]);
+    await workbench.save();
+    fetchSections();
+  }, [workbench, fetchSections]);
 
   const handleSubmitReview = useCallback(async () => {
-    if (!selectedSectionId) return;
-    try {
-      await api.post("/sections/{sid}/submit", undefined, { params: { sid: selectedSectionId } });
+    const ok = await workbench.submit();
+    if (ok) {
       toast.success("已提交审核");
       fetchSections();
-    } catch {
-      toast.error("提交审核失败");
     }
-  }, [selectedSectionId, fetchSections]);
+  }, [workbench, fetchSections]);
 
   const handleApprove = useCallback(async () => {
-    if (!selectedSectionId) return;
+    if (!workbench.selectedSectionId) return;
     try {
-      await api.post("/sections/{sid}/review", { action: "accept" }, { params: { sid: selectedSectionId } });
+      await api.post("/sections/{sid}/review", { action: "accept" }, { params: { sid: workbench.selectedSectionId } });
       toast.success("已通过");
       fetchSections();
     } catch {
       toast.error("操作失败");
     }
-  }, [selectedSectionId, fetchSections]);
+  }, [workbench.selectedSectionId, fetchSections]);
 
   const handleReject = useCallback(async () => {
-    if (!selectedSectionId) return;
+    if (!workbench.selectedSectionId) return;
     try {
-      await api.post("/sections/{sid}/review", { action: "reject" }, { params: { sid: selectedSectionId } });
+      await api.post("/sections/{sid}/review", { action: "reject" }, { params: { sid: workbench.selectedSectionId } });
       toast.success("已驳回");
       fetchSections();
     } catch {
       toast.error("操作失败");
     }
-  }, [selectedSectionId, fetchSections]);
+  }, [workbench.selectedSectionId, fetchSections]);
 
   const handleAddComment = useCallback(async () => {
-    if (!selectedSectionId || !newComment.trim()) return;
+    if (!workbench.selectedSectionId || !newComment.trim()) return;
     try {
-      await api.post("/sections/{sid}/comments", { comment_type: "general", content: newComment }, { params: { sid: selectedSectionId } });
+      await api.post("/sections/{sid}/comments", { comment_type: "general", content: newComment }, { params: { sid: workbench.selectedSectionId } });
       setNewComment("");
-      const data = await api.get("/sections/{sid}/comments", { params: { sid: selectedSectionId } });
-      setComments(data);
+      const data = await api.get("/sections/{sid}/comments", { params: { sid: workbench.selectedSectionId } });
+      workbench.setComments(data);
     } catch {
       toast.error("评论失败");
     }
-  }, [selectedSectionId, newComment]);
+  }, [workbench, newComment]);
 
   const toggleAssignSelect = (sid: string) => {
     setSelectedForAssign((prev) => {
@@ -441,42 +373,70 @@ export default function CleaningWorkbenchPage() {
   }, [assigneePick, selectedForAssign, projectId, docId, cleaningJobId, fetchSections]);
 
   const handleComplete = useCallback(async () => {
-    if (!selectedSectionId) return;
+    if (!workbench.selectedSectionId) return;
     try {
-      await api.post("/sections/{sid}/complete", undefined, { params: { sid: selectedSectionId } });
+      await api.post("/sections/{sid}/complete", undefined, { params: { sid: workbench.selectedSectionId } });
       toast.success("已标记完成");
       fetchSections();
     } catch {
       toast.error("标记完成失败");
     }
-  }, [selectedSectionId, fetchSections]);
+  }, [workbench.selectedSectionId, fetchSections]);
 
   const handleReturn = useCallback(async () => {
-    if (!selectedSectionId) return;
+    if (!workbench.selectedSectionId) return;
     const reason = window.prompt("请输入退回原因：");
     if (!reason) return;
     try {
-      await api.post("/sections/{sid}/return", { reason }, { params: { sid: selectedSectionId } });
+      await api.post("/sections/{sid}/return", { reason }, { params: { sid: workbench.selectedSectionId } });
       toast.success("已退回");
       fetchSections();
     } catch {
       toast.error("退回失败");
     }
-  }, [selectedSectionId, fetchSections]);
+  }, [workbench.selectedSectionId, fetchSections]);
 
-  const handleMerge = useCallback(async () => {
+  // 合并：一次用户意图生成并复用同一个幂等键；未知结果按 key 查询。
+  const mergeIdempotencyRef = useRef<string | null>(null);
+
+  const doMerge = useCallback(async () => {
     if (!cleaningJobId) return;
+    if (!mergeIdempotencyRef.current) {
+      mergeIdempotencyRef.current = makeMergeIdempotencyKey();
+    }
+    const idemKey = mergeIdempotencyRef.current;
+    setMerging(true);
     try {
-      await api.post("/projects/{pid}/documents/{did}/cleaning/merge", undefined, {
+      const version = await api.post("/projects/{pid}/documents/{did}/cleaning/merge", undefined, {
         params: { pid: projectId, did: docId },
         query: { cleaning_job_id: cleaningJobId },
+        headers: { "Idempotency-Key": idemKey },
       });
-      toast.success("已生成合并版本");
+      toast.success(`已生成合并版本 v${version.version}`);
+      mergeIdempotencyRef.current = null; // 成功后允许下一次新意图
       fetchVersions();
-    } catch {
-      toast.error("合并失败");
+    } catch (e) {
+      if (isBusinessError(e, "CLEAN_SOURCE_CHANGED")) {
+        toast.error("来源章节已变化，请确认后重新合并");
+        mergeIdempotencyRef.current = null; // 来源变化：新合并意图，刷新提示后用户确认
+      } else {
+        toast.error("合并失败");
+      }
+      fetchVersions();
+    } finally {
+      setMerging(false);
     }
   }, [projectId, docId, cleaningJobId, fetchVersions]);
+
+  const handleMerge = useCallback(() => {
+    if (!workbench.isDirty) {
+      void doMerge();
+    } else {
+      setGuardPrompt({
+        pendingTarget: () => void doMerge(),
+      });
+    }
+  }, [workbench.isDirty, doMerge]);
 
   const isAdmin = currentUser?.role === "admin" || currentUser?.role === "reviewer";
 
@@ -503,10 +463,11 @@ export default function CleaningWorkbenchPage() {
 
   const latestVersion = versions[0];
   const previewMarkdown = useMemo(
-    () => normalizeMarkdownForPreview(editedMarkdown),
-    [editedMarkdown]
+    () => normalizeMarkdownForPreview(workbench.editedMarkdown),
+    [workbench.editedMarkdown]
   );
 
+  // final-review：stale/conflict 时刷新版本列表与 Document active pointer，不本地覆盖赢家。
   const handleFinalReview = useCallback(async (action: "accept" | "reject") => {
     if (!latestVersion) return;
     if (!cleaningJobId) return;
@@ -520,14 +481,71 @@ export default function CleaningWorkbenchPage() {
       });
       toast.success(action === "accept" ? "已通过" : "已驳回");
       fetchVersions();
-    } catch {
-      toast.error("操作失败");
+      fetchSections();
+    } catch (e) {
+      if (isBusinessError(e, "CLEAN_VERSION_STALE") || isBusinessError(e, "CLEAN_VERSION_REVIEW_CONFLICT")) {
+        toast.error(action === "accept" ? "该版本已过期或已被处理，请刷新查看最新状态" : "该版本已被处理");
+        // 不本地覆盖赢家状态：刷新版本列表与 Document active pointer。
+        fetchVersions();
+        fetchSections();
+      } else {
+        toast.error("操作失败");
+      }
     }
-  }, [latestVersion, projectId, docId, cleaningJobId, fetchVersions]);
+  }, [latestVersion, projectId, docId, cleaningJobId, fetchVersions, fetchSections]);
 
-  // 当前章节是否已被他人锁定：SectionResponse 不含锁字段，由租约语义由 T05 负责；
-  // 这里保持与后端合同一致，不虚构 locked_by。
-  const isLockedByOther = false;
+  // 版本冲突/租约丢失时编辑器只读。
+  const editorReadOnly =
+    workbench.acquiringLease || workbench.leaseLost || workbench.conflictState !== null || !workbench.lease;
+
+  // dirty guard：切换章节/来源前确认。
+  const guardedSwitchSection = useCallback((sectionId: string) => {
+    if (workbench.isDirty) {
+      setGuardPrompt({
+        pendingTarget: () => workbench.switchSection(sectionId),
+      });
+    } else {
+      workbench.switchSection(sectionId);
+    }
+  }, [workbench]);
+
+  const selectedSection = workbench.selectedSection;
+  const selectedSectionId = workbench.selectedSectionId;
+
+  // 切换清洗来源：仅当有当前脏内容且持有租约时提示。
+  const guardedSwitchCleaningContext = useCallback((id: string) => {
+    if (workbench.isDirty) {
+      setGuardPrompt({ pendingTarget: () => switchCleaningContext(id) });
+    } else {
+      switchCleaningContext(id);
+    }
+  }, [workbench, switchCleaningContext]);
+
+  const [loadingVersionInProgress, setLoadingVersionInProgress] = useState<string | null>(null);
+  const viewFullText = useCallback(async (vid: string) => {
+    setLoadingVersionInProgress(vid);
+    try {
+      const ver = await api.get("/cleaned-versions/{vid}", { params: { vid } });
+      const w = window.open("", "_blank");
+      if (w) {
+        w.document.write(`<pre style="white-space:pre-wrap;padding:16px;font-family:ui-monospace,monospace">${ver.merged_markdown.replace(/</g, "&lt;")}</pre>`);
+        w.document.title = `合并版本 v${ver.version}`;
+      }
+    } catch {
+      toast.error("查看全文失败");
+    } finally {
+      setLoadingVersionInProgress(null);
+    }
+  }, []);
+
+  const handleCopyLocal = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(workbench.editedMarkdown);
+      toast.success("已复制本地内容");
+    } catch {
+      toast.error("复制失败");
+    }
+  }, [workbench.editedMarkdown]);
 
   if (loading || contextLoading) {
     return (
@@ -556,6 +574,93 @@ export default function CleaningWorkbenchPage() {
 
   return (
     <div className="flex h-full">
+      {/* dirty guard 对话框 */}
+      <Dialog
+        open={guardPrompt !== null}
+        onOpenChange={(open) => {
+          if (!open) setGuardPrompt(null);
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>有未保存的修改</DialogTitle>
+            <DialogDescription>
+              当前章节存在未保存的文本。保存后可保留修改；放弃会丢失本地文本。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setGuardPrompt(null);
+              }}
+            >
+              留在当前页
+            </Button>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                const pending = guardPrompt?.pendingTarget;
+                setGuardPrompt(null);
+                await workbench.save();
+                if (pending) pending();
+              }}
+              disabled={workbench.saving}
+            >
+              <SaveIcon className="size-3" />
+              保存并继续
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                const pending = guardPrompt?.pendingTarget;
+                setGuardPrompt(null);
+                workbench.resetForCleanup();
+                if (pending) pending();
+              }}
+            >
+              放弃
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 版本冲突对话框 */}
+      <Dialog
+        open={workbench.conflictState !== null}
+        onOpenChange={(open) => {
+          if (!open) workbench.reloadFromServer();
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>内容已被他人更新</DialogTitle>
+            <DialogDescription>
+              你的本地文本已保留，不会被自动覆盖。可以重新载入服务端最新版本，或复制本地内容。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                void handleCopyLocal();
+              }}
+            >
+              <ClipboardIcon className="size-3" />
+              复制本地内容
+            </Button>
+            <Button
+              onClick={() => {
+                void workbench.reloadFromServer();
+              }}
+            >
+              <RefreshCcwIcon className="size-3" />
+              重新载入
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Section sidebar */}
       {sidebarOpen && (
         <div className="w-56 shrink-0 border-r flex flex-col">
@@ -643,7 +748,7 @@ export default function CleaningWorkbenchPage() {
                       className={`flex-1 text-left rounded px-2 py-1.5 text-xs transition-colors ${
                         selectedSectionId === section.id ? "bg-accent text-accent-foreground" : "hover:bg-muted"
                       }`}
-                      onClick={() => setSelectedSectionId(section.id)}
+                      onClick={() => guardedSwitchSection(section.id)}
                     >
                       <div className="flex items-center gap-1 justify-between">
                         <span className="truncate flex-1">{section.ordinal + 1}. {section.heading_path || "无标题"}</span>
@@ -686,7 +791,7 @@ export default function CleaningWorkbenchPage() {
           <select
             className="max-w-64 rounded border px-2 py-1 text-xs bg-transparent"
             value={activeCleaningJob.id}
-            onChange={(event) => switchCleaningContext(event.target.value)}
+            onChange={(event) => guardedSwitchCleaningContext(event.target.value)}
           >
             {cleaningJobs.map((job) => (
               <option key={job.id} value={job.id}>
@@ -707,13 +812,29 @@ export default function CleaningWorkbenchPage() {
             className="text-xs"
           />
           <div className="flex-1" />
-          <Button variant="outline" size="sm" onClick={handleSave} disabled={saving || isLockedByOther}>
+          {workbench.leaseLost && (
+            <Badge variant="outline" className="text-orange-600">租约已失效 · 只读</Badge>
+          )}
+          {editorReadOnly && !workbench.leaseLost && (
+            <Badge variant="outline" className="text-muted-foreground">只读</Badge>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSave}
+            disabled={workbench.saving || editorReadOnly || !workbench.isDirty}
+          >
             <SaveIcon className="size-3" />
-            保存
+            {workbench.saving ? "保存中..." : "保存"}
           </Button>
-          <Button variant="outline" size="sm" onClick={handleSubmitReview}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleSubmitReview}
+            disabled={workbench.submitting || editorReadOnly}
+          >
             <SendIcon className="size-3" />
-            提交审核
+            {workbench.submitting ? "提交中..." : "提交审核"}
           </Button>
           {selectedSection?.assigned_to === currentUser?.id && selectedSection?.assignment_status !== "completed" && (
             <Button variant="outline" size="sm" onClick={handleComplete}>
@@ -745,9 +866,9 @@ export default function CleaningWorkbenchPage() {
               size="xs"
               variant="outline"
               onClick={handleMerge}
-              disabled={completionStats.completed === 0}
+              disabled={completionStats.completed === 0 || merging}
             >
-              生成合并版本
+              {merging ? "合并中..." : "生成合并版本"}
             </Button>
           )}
           {latestVersion && (
@@ -763,23 +884,13 @@ export default function CleaningWorkbenchPage() {
                   <Button size="xs" variant="outline" onClick={() => handleFinalReview("reject")}>
                     <XIcon className="size-3" /> 驳回
                   </Button>
-                  <Link
-                    href={`#`}
-                    onClick={async (e) => {
-                      e.preventDefault();
-                      const ver = await api.get("/cleaned-versions/{vid}", {
-                        params: { vid: latestVersion.id },
-                      });
-                      const w = window.open("", "_blank");
-                      if (w) {
-                        w.document.write(`<pre style="white-space:pre-wrap;padding:16px;font-family:ui-monospace,monospace">${ver.merged_markdown.replace(/</g, "&lt;")}</pre>`);
-                        w.document.title = `合并版本 v${latestVersion.version}`;
-                      }
-                    }}
+                  <button
                     className="text-xs text-blue-600 underline"
+                    onClick={() => void viewFullText(latestVersion.id)}
+                    disabled={loadingVersionInProgress === latestVersion.id}
                   >
-                    查看全文
-                  </Link>
+                    {loadingVersionInProgress === latestVersion.id ? "加载中..." : "查看全文"}
+                  </button>
                 </>
               )}
             </>
@@ -836,13 +947,24 @@ export default function CleaningWorkbenchPage() {
           <div className="flex flex-col min-h-0">
             <div className="px-2 py-1 border-b text-xs font-medium text-muted-foreground bg-muted/50">
               Markdown 编辑器
+              {selectedSection && (
+                <span className="ml-2 text-[10px] text-muted-foreground">
+                  rev {selectedSection.content_revision ?? 0}
+                </span>
+              )}
             </div>
             <div className="flex-1 min-h-0 overflow-auto">
-              <CodeMirrorEditor
-                value={editedMarkdown}
-                onChange={setEditedMarkdown}
-                readOnly={isLockedByOther}
-              />
+              {workbench.acquiringLease ? (
+                <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+                  获取编辑租约中...
+                </div>
+              ) : (
+                <CodeMirrorEditor
+                  value={workbench.editedMarkdown}
+                  onChange={workbench.setEditedMarkdown}
+                  readOnly={editorReadOnly}
+                />
+              )}
             </div>
             {/* Comments panel */}
             <div className="h-48 shrink-0 border-t flex flex-col">
@@ -852,7 +974,7 @@ export default function CleaningWorkbenchPage() {
               </div>
               <ScrollArea className="flex-1">
                 <div className="p-2 space-y-2">
-                  {comments.map((c) => (
+                  {workbench.comments.map((c) => (
                     <div key={c.id} className="text-xs">
                       <div className="flex items-center gap-1">
                         <span className="font-medium">{c.user_id?.slice(0, 8) || "用户"}</span>
@@ -863,7 +985,7 @@ export default function CleaningWorkbenchPage() {
                       <div className="mt-0.5">{c.content}</div>
                     </div>
                   ))}
-                  {comments.length === 0 && (
+                  {workbench.comments.length === 0 && (
                     <div className="text-xs text-muted-foreground text-center py-2">暂无评论</div>
                   )}
                 </div>

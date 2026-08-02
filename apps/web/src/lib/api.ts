@@ -324,6 +324,7 @@ export function parseJsonObject(value: string): Record<string, unknown> {
 export interface RequestInitTyped {
   params?: Record<string, string | number>;
   query?: Record<string, string | number | boolean | undefined | null>;
+  headers?: Record<string, string>;
   signal?: AbortSignal;
   timeout?: number;
 }
@@ -353,7 +354,6 @@ export const api = {
       init?.signal,
     )) as SuccessResponse<MethodOf<Path, "get">>;
   },
-
   post: async <Path extends keyof RelativePaths>(
     path: Path,
     body?: BodyParams<MethodOf<Path, "post">>,
@@ -364,6 +364,7 @@ export const api = {
       {
         method: "POST",
         body: body === undefined ? undefined : JSON.stringify(body),
+        headers: init?.headers,
       },
       init?.timeout ?? LONG_TIMEOUT,
       init?.signal,
@@ -377,7 +378,7 @@ export const api = {
   ): Promise<SuccessResponse<MethodOf<Path, "put">>> => {
     return (await fetchApi(
       buildUrl(path, init),
-      { method: "PUT", body: JSON.stringify(body) },
+      { method: "PUT", body: JSON.stringify(body), headers: init?.headers },
       init?.timeout ?? LONG_TIMEOUT,
       init?.signal,
     )) as SuccessResponse<MethodOf<Path, "put">>;
@@ -393,6 +394,7 @@ export const api = {
       {
         method: "PATCH",
         body: body === undefined ? undefined : JSON.stringify(body),
+        headers: init?.headers,
       },
       init?.timeout ?? LONG_TIMEOUT,
       init?.signal,
@@ -405,7 +407,7 @@ export const api = {
   ): Promise<SuccessResponse<MethodOf<Path, "delete">>> => {
     return (await fetchApi(
       buildUrl(path, init),
-      { method: "DELETE" },
+      { method: "DELETE", headers: init?.headers },
       init?.timeout ?? LONG_TIMEOUT,
       init?.signal,
     )) as SuccessResponse<MethodOf<Path, "delete">>;
@@ -418,7 +420,7 @@ export const api = {
   ): Promise<SuccessResponse<MethodOf<Path, "post">>> => {
     return (await fetchApi(
       buildUrl(path, init),
-      { method: "POST", body: formData },
+      { method: "POST", body: formData, headers: init?.headers },
       init?.timeout,
       init?.signal,
     )) as SuccessResponse<MethodOf<Path, "post">>;

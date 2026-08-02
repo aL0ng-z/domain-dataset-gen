@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { PlusIcon, PencilIcon, Loader2Icon, ZapIcon } from "lucide-react";
 
 /* ========= Shared types ========= */
@@ -103,10 +104,11 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
   const fetchItems = useCallback(() => {
     setLoading(true);
     api
-      .get<{ items: ModelConfig[] }>(
-        `/projects/${projectId}/model-configs?page=1&page_size=100`
-      )
-      .then((data) => setItems(data.items))
+      .get("/projects/{pid}/model-configs/", {
+        params: { pid: projectId },
+        query: { page: 1, page_size: 100 },
+      })
+      .then((data) => setItems(data.items as ModelConfig[]))
       .catch(() => toast.error("加载模型配置失败"))
       .finally(() => setLoading(false));
   }, [projectId]);
@@ -177,15 +179,13 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
       return;
     }
     try {
-      const payload: Record<string, unknown> = {
+      const payload: components["schemas"]["ModelConfigCreate"] = {
         name: form.name,
         provider: form.provider,
         model_name: form.model_name,
         base_url: form.base_url,
+        api_key: form.api_key,
       };
-      if (form.api_key.trim()) {
-        payload.api_key = form.api_key;
-      }
       if (form.max_tokens !== "" && form.max_tokens !== null) {
         payload.max_tokens = Number(form.max_tokens);
       }
@@ -193,19 +193,17 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
         payload.temperature = Number(form.temperature);
       }
       if (editItem) {
-        await api.patch(
-          `/projects/${projectId}/model-configs/${editItem.id}`,
-          payload
-        );
+        await api.patch("/projects/{pid}/model-configs/{config_id}", payload, {
+          params: { pid: projectId, config_id: editItem.id },
+        });
         toast.success("保存成功");
         setDialogOpen(false);
       } else {
-        const created = await api.post<ModelConfig>(
-          `/projects/${projectId}/model-configs/`,
-          payload
-        );
+        const created = await api.post("/projects/{pid}/model-configs/", payload, {
+          params: { pid: projectId },
+        });
         toast.success("创建成功，可点击「测试连接」验证");
-        setEditItem(created); // Switch to edit mode so test button appears
+        setEditItem(created as ModelConfig); // Switch to edit mode so test button appears
       }
       fetchItems();
     } catch {
@@ -220,12 +218,11 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
     }
     setTesting(true);
     try {
-      const res = await api.post<{ status: string; response?: string; error?: string }>(
-        `/projects/${projectId}/model-configs/${editItem.id}/test`,
-        {}
-      );
-      if (res.status === "success") {
-        toast.success(`连接成功: ${res.response}`);
+      const res = await api.post("/projects/{pid}/model-configs/{config_id}/test", {}, {
+        params: { pid: projectId, config_id: editItem.id },
+      });
+      if ((res as { status?: string }).status === "success") {
+        toast.success(`连接成功: ${(res as { response?: string }).response}`);
       } else {
         toast.error(`连接失败: ${res.error}`);
       }
@@ -448,7 +445,7 @@ function GenericConfigTab({
   extraFields,
 }: {
   projectId: string;
-  endpoint: string;
+  endpoint: "chunk-profiles" | "export-profiles" | "task-policies";
   label: string;
   extraFields?: { key: string; label: string; type?: string }[];
 }) {
@@ -462,16 +459,23 @@ function GenericConfigTab({
     config_json: "{}",
   });
 
+  // 三个配置类端点共享同一响应形状；路由模板按 endpoint 映射，避免动态字符串。
+  const listPath =
+    endpoint === "chunk-profiles" ? "/projects/{pid}/chunk-profiles/" as const
+    : endpoint === "export-profiles" ? "/projects/{pid}/export-profiles/" as const
+    : "/projects/{pid}/task-policies/" as const;
+
   const fetchItems = useCallback(() => {
     setLoading(true);
     api
-      .get<{ items: GenericConfig[] }>(
-        `/projects/${projectId}/${endpoint}?page=1&page_size=100`
-      )
-      .then((data) => setItems(data.items))
+      .get(listPath, {
+        params: { pid: projectId },
+        query: { page: 1, page_size: 100 },
+      })
+      .then((data) => setItems((data as { items: GenericConfig[] }).items))
       .catch(() => toast.error(`加载${label}失败`))
       .finally(() => setLoading(false));
-  }, [projectId, endpoint, label]);
+  }, [projectId, label, listPath]);
 
   useEffect(() => {
     const refreshTimer = window.setTimeout(() => {
@@ -524,16 +528,24 @@ function GenericConfigTab({
       } catch {
         // keep as string if invalid json
       }
+      // 三个配置端点请求体均含 name + options；动态端点无法静态推导具体 schema，
+      // 通过条件路径的请求体类型联合消解。
       if (editItem) {
-        await api.patch(
-          `/projects/${projectId}/${endpoint}/${editItem.id}`,
-          payload
-        );
+        if (endpoint === "chunk-profiles") {
+          await api.patch("/projects/{pid}/chunk-profiles/{config_id}", payload as components["schemas"]["ChunkProfileUpdate"], { params: { pid: projectId, config_id: editItem.id } });
+        } else if (endpoint === "export-profiles") {
+          await api.patch("/projects/{pid}/export-profiles/{config_id}", payload as components["schemas"]["ExportProfileUpdate"], { params: { pid: projectId, config_id: editItem.id } });
+        } else {
+          await api.patch("/projects/{pid}/task-policies/{config_id}", payload as components["schemas"]["TaskPolicyUpdate"], { params: { pid: projectId, config_id: editItem.id } });
+        }
       } else {
-        await api.post(
-          `/projects/${projectId}/${endpoint}/`,
-          payload
-        );
+        if (endpoint === "chunk-profiles") {
+          await api.post("/projects/{pid}/chunk-profiles/", payload as components["schemas"]["ChunkProfileCreate"], { params: { pid: projectId } });
+        } else if (endpoint === "export-profiles") {
+          await api.post("/projects/{pid}/export-profiles/", payload as components["schemas"]["ExportProfileCreate"], { params: { pid: projectId } });
+        } else {
+          await api.post("/projects/{pid}/task-policies/", payload as components["schemas"]["TaskPolicyCreate"], { params: { pid: projectId } });
+        }
       }
       toast.success("保存成功");
       setDialogOpen(false);
