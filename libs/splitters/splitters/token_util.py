@@ -27,12 +27,12 @@ def _bytes_are_valid_utf8(data: bytes) -> bool:
         return False
 
 
-def token_bytes(encoder: "Encoding", tokens: list[int]) -> list[bytes]:
+def token_bytes(encoder: Encoding, tokens: list[int]) -> list[bytes]:
     """每个 token 的原始字节片段（确定性）。"""
     return [encoder.decode_single_token_bytes(t) for t in tokens]
 
 
-def clean_suffix(encoder: "Encoding", tokens: list[int], max_count: int) -> tuple[str, int]:
+def clean_suffix(encoder: Encoding, tokens: list[int], max_count: int) -> tuple[str, int]:
     """从 tokens 尾部取至多 max_count 个 token，返回（干净文本, 实际 token 数）。
 
     从后往前寻找最长后缀（token 数 <= max_count）且以完整 UTF-8 字符边界开始；
@@ -58,7 +58,7 @@ def clean_suffix(encoder: "Encoding", tokens: list[int], max_count: int) -> tupl
     return encoder.decode(tokens[best_start:end]), end - best_start
 
 
-def hard_split(encoder: "Encoding", text: str, budget: int) -> list[str]:
+def hard_split(encoder: Encoding, text: str, budget: int) -> list[str]:
     """按 token 预算硬切分文本，每个片段是完整合法 UTF-8。
 
     - 切分点取预算内最远干净字符边界，尽量接近预算；

@@ -28,7 +28,6 @@ from collections.abc import Sequence
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 revision: str = "t06_versioned_chunking"
 down_revision: str | Sequence[str] | None = ("t07_task_lifecycle", "t05_clean_edit_concurrency_lease")
