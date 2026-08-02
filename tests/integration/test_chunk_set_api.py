@@ -249,6 +249,14 @@ async def test_patch_completed_set_chunk_immutable(client: AsyncClient, org):
     db.add(sec)
     await db.flush()
 
+    # T06 CHECK(ck_chunk_sets_legacy_required_fields)：非 legacy 集合必填 task_id。
+    from app.models.task import Task
+    from app.services.task_service import TaskService
+
+    task = await TaskService(db).create_task(
+        org["projects"]["a"].id, "chunk", "document", doc.id, org["users"]["editor"].id,
+        payload={"document_id": str(doc.id)}, handler="chunk_document",
+    )
     cs = ChunkSet(
         document_id=doc.id,
         cleaned_document_version_id=cv.id,
@@ -259,6 +267,7 @@ async def test_patch_completed_set_chunk_immutable(client: AsyncClient, org):
         version=1,
         is_legacy=False,
         splitter_version="2.0.0@cl100k_base:0.12.0",
+        task_id=task.id,
         created_by=org["users"]["editor"].id,
     )
     db.add(cs)

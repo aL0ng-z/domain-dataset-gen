@@ -498,6 +498,10 @@ async def test_worker_failure_midway_keeps_old_active(
 
     # 新 set 处理中，注入 handler 故障（覆盖 chunker 抛异常）。
     new_set, task = await _create_set_and_task(db_session, org, doc, profile, cv, idem_key=f"new-{uuid.uuid4()}")
+    # _create_set_and_task 会把 doc.status 置为 chunking（新集合处理中）；
+    # 测试意图是验证 worker 失败后旧 active pointer 与文档状态不被破坏，
+    # 因此把 doc 恢复为 chunked 基线后再注入故障。
+    doc.status = "chunked"
     q = TaskQueue(db_session)
     claimed = await q.claim_due(worker_id="w", batch=10)
     await db_session.commit()
@@ -513,6 +517,11 @@ async def test_worker_failure_midway_keeps_old_active(
 
     orig_get = splitters.get_chunker
     splitters.get_chunker = lambda strategy: _BoomChunker()
+    # rollback 会 expire 全部对象；先捕获后续断言需要的 id（避免 rollback 后
+    # lazy-load 触发 MissingGreenlet）。
+    new_set_id = new_set.id
+    old_set_id = old_set.id
+    doc_id = doc.id
     try:
         from app.workers.chunk_worker import run_chunk_handler
 
@@ -525,9 +534,9 @@ async def test_worker_failure_midway_keeps_old_active(
 
     # 业务写入已回滚：无新 Chunk、旧 active pointer 不变。
     new_chunks = (
-        await db_session.execute(select(Chunk).where(Chunk.chunk_set_id == new_set.id))
+        await db_session.execute(select(Chunk).where(Chunk.chunk_set_id == new_set_id))
     ).scalars().all()
     assert len(new_chunks) == 0
-    fresh_doc = (await db_session.execute(select(Document).where(Document.id == doc.id))).scalar_one()
-    assert fresh_doc.active_chunk_set_id == old_set.id
+    fresh_doc = (await db_session.execute(select(Document).where(Document.id == doc_id))).scalar_one()
+    assert fresh_doc.active_chunk_set_id == old_set_id
     assert fresh_doc.status == "chunked"

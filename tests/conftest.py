@@ -513,12 +513,17 @@ class ResourceFactory:
     ):
         from app.models.generation import GenerationRun
 
+        # T08：fixture 生成的是迁移前合成历史 run，诚实标记为 legacy_unavailable
+        # （无 input_prompt/hash/raw_output，无法通过 verified CHECK）。
         run = GenerationRun(
             chunk_id=chunk_id,
             prompt_template_id=prompt_template_id,
             model_config_id=model_config_id,
             context_mode="single_chunk",
             status="completed",
+            is_legacy=True,
+            provenance_status="legacy_unavailable",
+            provenance_error_code="LEGACY_TEST_FIXTURE",
         )
         self.session.add(run)
         await self.session.flush()

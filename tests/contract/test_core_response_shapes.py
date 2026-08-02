@@ -156,9 +156,25 @@ async def _make_doc_chain(db_session, project_id, uploaded_by):
     await db_session.flush()
     await db_session.refresh(section)
 
+    # T06：chunks.chunk_set_id NOT NULL。惰性创建 legacy 隔离集合满足 FK 约束。
+    from app.models.chunk_set import ChunkSet
+
+    chunk_set = ChunkSet(
+        document_id=doc.id,
+        status="completed",
+        version=1,
+        is_legacy=True,
+        summary_json={"provenance": "test_fixture"},
+        created_by=uploaded_by,
+    )
+    db_session.add(chunk_set)
+    await db_session.flush()
+    await db_session.refresh(chunk_set)
+
     chunk = Chunk(
         section_id=section.id,
         document_id=doc.id,
+        chunk_set_id=chunk_set.id,
         ordinal=1,
         heading_path="h1",
         content="chunk content",
@@ -197,6 +213,9 @@ async def _make_candidate(db_session, chunk, project_id):
         model_config_id=model_config_id,
         context_mode="single_chunk",
         status="completed",
+        is_legacy=True,
+        provenance_status="legacy_unavailable",
+        provenance_error_code="LEGACY_TEST_FIXTURE",
     )
     db_session.add(run)
     await db_session.flush()
