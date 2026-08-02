@@ -55,6 +55,7 @@ class TaskStatus(StrEnum):
     completed = "completed"
     failed = "failed"
     cancelled = "cancelled"
+    cancelling = "cancelling"
 
 
 class TaskType(StrEnum):
