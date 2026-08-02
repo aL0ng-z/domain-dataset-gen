@@ -4,6 +4,51 @@
 
 ---
 
+## T07 任务生命周期、派发、重试与取消（2026-08-03）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `apps/api/migrations/versions/t07_task_lifecycle.py` | Task 扩展（handler/payload/state_version/attempt/lease/cancel/retry）+ task_attempts 审计表 + task_status 枚举 cancelling + 双 head merge | 已完成 |
+| `apps/api/app/workers/queue.py` | 原子 create/claim（SKIP LOCKED）/heartbeat/CAS transition/reaper 回收 | 已完成 |
+| `apps/api/app/workers/execution.py` | ExecutionContext：checkpoint 校验 run token/lease/timeout/cancel；HandlerRegistry 稳定名+version 分派 | 已完成 |
+| `apps/api/app/workers/runner.py` | 独立 runner 轮询持久队列；成功路径业务写入+completed 原子提交，失败/取消回滚后单独落库 | 已完成 |
+| `apps/api/app/workers/*_worker.py` | 7 个 handler（parse/clean/chunk/generate_single/generate_batch/export_dataset/export_benchmark）持久化 | 已完成 |
+| `apps/api/app/routers/*.py` | 触发 API 移除 BackgroundTasks，改为事务内创建持久 Task；接入 Idempotency-Key | 已完成 |
+| `apps/api/app/routers/tasks.py` | GET 详情/attempts、POST cancel/retry（仅 failed + Idempotency-Key） | 已完成 |
+| `apps/web` | 任务中心展示 cancelling/attempt/retry 后继/state_version 乱序丢弃/轮询兜底 | 已完成 |
+| `infra/docker/Dockerfile.worker` + compose | 独立 worker 服务 | 已完成 |
+| `docs/runbooks/task-lifecycle.md` | 部署/监控/故障/迁移回滚 runbook | 已完成 |
+| 测试 | `tests/integration/test_task_lifecycle.py` / `test_task_runner.py` / `test_task_api.py`（20 用例） | 已完成 |
+
+### 设计决策
+
+- **PostgreSQL 持久队列替代 FastAPI 进程内 BackgroundTasks**：Task 成为可恢复真实执行记录，
+  API 重启不丢任务；runner 独立进程轮询领取。
+- **至少一次执行 + 幂等 handler**：不虚假承诺 exactly-once；可重试错误按 Policy 退避，
+  永久错误只执行一次；未知 handler 永久失败。
+- **run token + 数据库 CAS 防迟到写**：心跳/状态提交携带 run token，过期 worker 影响 0 行；
+  所有转换 `WHERE id=? AND status=? AND state_version=?`。
+- **取消在发布前设门禁**：handler 在外部调用/批次循环/发布事务前 checkpoint；
+  失败/取消路径回滚全部业务写入后再单独落库，取消前不留下正式业务产物。
+- **父任务聚合**：全部子任务终态才 completed，任一失败则 failed；父取消向子任务传播。
+- **双 head 迁移收敛**：t07 同时依赖 T02/T03 两个 head 做 merge，修复 master `upgrade head`
+  报 Multiple head 的问题；mergepoint 的 `downgrade -1` 歧义改为显式目标 58918ea257fd。
+
+### 验证状态
+
+- 后端：`tests/integration/test_task_lifecycle.py` / `test_task_runner.py` / `test_task_api.py`
+  共 20 用例通过。
+- 迁移：upgrade head -> downgrade 58918ea257fd -> upgrade head 往返通过。
+- Ruff：`python -m ruff check apps/api libs tests` 通过。
+- 前端：`npm run lint`、`npm exec tsc -- --noEmit`、`npm run api:check`、`npm test -- --run`（50 passed）、
+  `npm run build` 全部通过。
+- 注：master 既有 10 个失败用例（T01/T02/T03/T04 领域：parser-profiles/auth tokens/role matrix/
+  protected-token-types/parse_job snapshot）在干净 master 上同样失败，与本卡无关。
+
+---
+
 ## T03 解析器出站与凭证安全（2026-08-01）
 
 ### 本轮总览

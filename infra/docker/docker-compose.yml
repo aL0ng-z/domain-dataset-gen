@@ -64,6 +64,25 @@ services:
         mc mb --ignore-existing local/$${MINIO_BUCKET_OUTPUTS} &&
         echo "Buckets created successfully"
 
+  # T07: 独立任务 runner（持久 PostgreSQL 队列消费者）。
+  # 独立于 API 进程运行；API 重启不丢任务；多副本并发领取由数据库 CAS 保证。
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    env_file: .env
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      MINIO_ENDPOINT: minio:9000
+    command: ["python", "-m", "app.workers.runner"]
+
 volumes:
   pgdata:
   miniodata:

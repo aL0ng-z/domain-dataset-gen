@@ -1,0 +1,33 @@
+FROM python:3.11-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy library packages first (change less often)
+COPY libs/ libs/
+
+# Copy API application (contains app.workers runner)
+COPY apps/api/ apps/api/
+
+# Install all library packages
+RUN pip install --no-cache-dir \
+    ./libs/domain \
+    ./libs/storage \
+    ./libs/parsing \
+    ./libs/cleaning \
+    ./libs/splitters \
+    ./libs/llm
+
+# Install API with dev dependencies
+RUN pip install --no-cache-dir "./apps/api[dev]"
+
+WORKDIR /app/apps/api
+
+# T07: 独立任务 runner（持久 PostgreSQL 队列消费者）。
+# 以 PYTHONPATH=apps/api 运行 app.workers.runner，消费 tasks 队列并执行 handler。
+ENV PYTHONPATH=/app/apps/api:/app/libs/domain:/app/libs/storage:/app/libs/parsing:/app/libs/cleaning:/app/libs/splitters:/app/libs/llm
+
+CMD ["python", "-m", "app.workers.runner"]
