@@ -24,7 +24,7 @@ describe("ParserProfile 安全合同", () => {
     server = createApiMockServer();
     server.install();
     server.onGet(
-      `/projects/${projectId}/parser-profiles?page=1&page_size=100`,
+      `/projects/${projectId}/parser-profiles/?page=1&page_size=100`,
       { items: [], total: 0, page: 1, page_size: 100 },
     );
     server.onGet(`/projects/${projectId}/parser-profiles/endpoints`, {
@@ -128,7 +128,7 @@ describe("ParserProfile 安全合同", () => {
   });
 
   it("编辑旧 profile 时不回显旧 URL，只显示 requires_endpoint_remap", async () => {
-    server.onGet(`/projects/${projectId}/parser-profiles?page=1&page_size=100`, {
+    server.onGet(`/projects/${projectId}/parser-profiles/?page=1&page_size=100`, {
       items: [
         {
           id: "p1",

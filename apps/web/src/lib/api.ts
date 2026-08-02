@@ -112,8 +112,13 @@ export type ApiError = ApiBusinessError | ApiValidationError;
 function parseError(status: number, body: unknown): ApiError {
   const obj = (body ?? {}) as Record<string, unknown>;
   const code = typeof obj.code === "string" ? obj.code : "INTERNAL_ERROR";
+  // 兼容后端 HTTPException detail 字符串（如 parser-profile 422 返回 detail）。
   const message =
-    typeof obj.message === "string" ? obj.message : "请求失败";
+    typeof obj.message === "string"
+      ? obj.message
+      : typeof obj.detail === "string"
+        ? obj.detail
+        : "请求失败";
   const requestId = typeof obj.request_id === "string" ? obj.request_id : undefined;
 
   if (status === 422 && Array.isArray(obj.errors)) {
@@ -326,6 +331,8 @@ export interface RequestInitTyped {
   query?: Record<string, string | number | boolean | undefined | null>;
   signal?: AbortSignal;
   timeout?: number;
+  /** 附加请求头（如 Idempotency-Key）。与 Authorization 合并，不覆盖既有头。 */
+  headers?: Record<string, string>;
 }
 
 function buildUrl(path: string, init?: RequestInitTyped): string {
@@ -364,6 +371,7 @@ export const api = {
       {
         method: "POST",
         body: body === undefined ? undefined : JSON.stringify(body),
+        ...(init?.headers ? { headers: init.headers } : {}),
       },
       init?.timeout ?? LONG_TIMEOUT,
       init?.signal,

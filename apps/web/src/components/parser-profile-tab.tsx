@@ -39,6 +39,22 @@ interface ParserProfileItem {
   requires_endpoint_remap?: boolean;
 }
 
+// 后端返回的 parser_options 为 { [key: string]: unknown } | null，与本地编辑类型兼容。
+type ParserProfileApiItem = {
+  id: string;
+  name: string;
+  parser_name: string;
+  parser_options: { [key: string]: unknown } | null;
+  is_default: boolean;
+  version: number;
+  requires_endpoint_remap?: boolean;
+};
+
+function toProfileItem(api: ParserProfileApiItem): ParserProfileItem {
+  const options = api.parser_options as Record<string, string | number | boolean> | null;
+  return { ...api, parser_options: options };
+}
+
 // 允许的功能参数编辑表单（白名单与后端 ALLOWED_OPTION_FIELDS 对齐）。
 const FUNCTIONAL_FIELDS: Record<
   string,
@@ -116,15 +132,20 @@ export function ParserProfileTab({ projectId }: { projectId: string }) {
   const fetchItems = useCallback(() => {
     setLoading(true);
     api
-      .get<{ items: ParserProfileItem[] }>(`/projects/${projectId}/parser-profiles?page=1&page_size=100`)
-      .then((data) => setItems(data.items))
+      .get("/projects/{pid}/parser-profiles/", {
+        params: { pid: projectId },
+        query: { page: 1, page_size: 100 },
+      })
+      .then((data) => setItems((data.items as ParserProfileApiItem[]).map(toProfileItem)))
       .catch(() => toast.error("加载解析器配置失败"))
       .finally(() => setLoading(false));
   }, [projectId]);
 
   const fetchEndpoints = useCallback(() => {
     api
-      .get<{ items: ParserEndpoint[] }>(`/projects/${projectId}/parser-profiles/endpoints`)
+      .get("/projects/{pid}/parser-profiles/endpoints", {
+        params: { pid: projectId },
+      })
       .then((data) => setEndpoints(data.items))
       .catch(() => toast.error("加载服务端端点列表失败"));
   }, [projectId]);
@@ -211,10 +232,16 @@ export function ParserProfileTab({ projectId }: { projectId: string }) {
       };
 
       if (editItem) {
-        await api.patch(`/projects/${projectId}/parser-profiles/${editItem.id}`, payload);
+        await api.patch(
+          "/projects/{pid}/parser-profiles/{config_id}",
+          payload,
+          { params: { pid: projectId, config_id: editItem.id } }
+        );
         toast.success("保存成功");
       } else {
-        await api.post(`/projects/${projectId}/parser-profiles/`, payload);
+        await api.post("/projects/{pid}/parser-profiles/", payload, {
+          params: { pid: projectId },
+        });
         toast.success("创建成功");
       }
       setDialogOpen(false);
@@ -230,7 +257,9 @@ export function ParserProfileTab({ projectId }: { projectId: string }) {
   const handleDelete = async (item: ParserProfileItem) => {
     if (!confirm(`确定要删除解析器配置「${item.name}」吗？`)) return;
     try {
-      await api.delete(`/projects/${projectId}/parser-profiles/${item.id}`);
+      await api.delete("/projects/{pid}/parser-profiles/{config_id}", {
+        params: { pid: projectId, config_id: item.id },
+      });
       toast.success("已删除");
       fetchItems();
     } catch {

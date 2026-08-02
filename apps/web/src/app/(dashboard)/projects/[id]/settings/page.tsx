@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { api } from "@/lib/api";
+import type { components } from "@/lib/api/generated";
 import { PlusIcon, PencilIcon, Loader2Icon, ZapIcon } from "lucide-react";
 
 /* ========= Shared types ========= */
@@ -79,8 +80,9 @@ interface ModelConfig extends ConfigItem {
   model_name: string;
   base_url: string;
   api_key_encrypted?: string;
-  max_tokens?: number;
-  temperature?: number;
+  max_tokens?: number | null;
+  temperature?: number | null;
+  extra_params?: { [key: string]: unknown } | null;
 }
 
 function ModelConfigTab({ projectId }: { projectId: string }) {
@@ -103,9 +105,10 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
   const fetchItems = useCallback(() => {
     setLoading(true);
     api
-      .get<{ items: ModelConfig[] }>(
-        `/projects/${projectId}/model-configs?page=1&page_size=100`
-      )
+      .get("/projects/{pid}/model-configs/", {
+        params: { pid: projectId },
+        query: { page: 1, page_size: 100 },
+      })
       .then((data) => setItems(data.items))
       .catch(() => toast.error("加载模型配置失败"))
       .finally(() => setLoading(false));
@@ -177,11 +180,12 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
       return;
     }
     try {
-      const payload: Record<string, unknown> = {
+      const payload: components["schemas"]["ModelConfigCreate"] = {
         name: form.name,
         provider: form.provider,
         model_name: form.model_name,
         base_url: form.base_url,
+        api_key: form.api_key,
       };
       if (form.api_key.trim()) {
         payload.api_key = form.api_key;
@@ -193,19 +197,17 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
         payload.temperature = Number(form.temperature);
       }
       if (editItem) {
-        await api.patch(
-          `/projects/${projectId}/model-configs/${editItem.id}`,
-          payload
-        );
+        await api.patch("/projects/{pid}/model-configs/{config_id}", payload, {
+          params: { pid: projectId, config_id: editItem.id },
+        });
         toast.success("保存成功");
         setDialogOpen(false);
       } else {
-        const created = await api.post<ModelConfig>(
-          `/projects/${projectId}/model-configs/`,
-          payload
-        );
+        const created = await api.post("/projects/{pid}/model-configs/", payload, {
+          params: { pid: projectId },
+        });
         toast.success("创建成功，可点击「测试连接」验证");
-        setEditItem(created); // Switch to edit mode so test button appears
+        setEditItem(created as ModelConfig); // Switch to edit mode so test button appears
       }
       fetchItems();
     } catch {
@@ -220,9 +222,10 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
     }
     setTesting(true);
     try {
-      const res = await api.post<{ status: string; response?: string; error?: string }>(
-        `/projects/${projectId}/model-configs/${editItem.id}/test`,
-        {}
+      const res = await api.post(
+        "/projects/{pid}/model-configs/{config_id}/test",
+        {},
+        { params: { pid: projectId, config_id: editItem.id } }
       );
       if (res.status === "success") {
         toast.success(`连接成功: ${res.response}`);
@@ -464,13 +467,26 @@ function GenericConfigTab({
 
   const fetchItems = useCallback(() => {
     setLoading(true);
-    api
-      .get<{ items: GenericConfig[] }>(
-        `/projects/${projectId}/${endpoint}?page=1&page_size=100`
-      )
-      .then((data) => setItems(data.items))
-      .catch(() => toast.error(`加载${label}失败`))
-      .finally(() => setLoading(false));
+    const query = { page: 1, page_size: 100 };
+    if (endpoint === "chunk-profiles") {
+      api
+        .get("/projects/{pid}/chunk-profiles/", { params: { pid: projectId }, query })
+        .then((data) => setItems(data.items as GenericConfig[]))
+        .catch(() => toast.error(`加载${label}失败`))
+        .finally(() => setLoading(false));
+    } else if (endpoint === "export-profiles") {
+      api
+        .get("/projects/{pid}/export-profiles/", { params: { pid: projectId }, query })
+        .then((data) => setItems(data.items as GenericConfig[]))
+        .catch(() => toast.error(`加载${label}失败`))
+        .finally(() => setLoading(false));
+    } else {
+      api
+        .get("/projects/{pid}/task-policies/", { params: { pid: projectId }, query })
+        .then((data) => setItems(data.items as GenericConfig[]))
+        .catch(() => toast.error(`加载${label}失败`))
+        .finally(() => setLoading(false));
+    }
   }, [projectId, endpoint, label]);
 
   useEffect(() => {
@@ -517,23 +533,68 @@ function GenericConfigTab({
       return;
     }
     try {
-      // Parse config_json to send as object
-      const payload: Record<string, unknown> = { ...form };
-      try {
-        payload.config_json = JSON.parse(form.config_json || "{}");
-      } catch {
-        // keep as string if invalid json
-      }
-      if (editItem) {
-        await api.patch(
-          `/projects/${projectId}/${endpoint}/${editItem.id}`,
-          payload
-        );
+      // GenericConfigTab 覆盖多个 profile 类型（chunk/export/task-policy），
+      // 按 endpoint 构造对应 create/update 请求体（字段均允许可选/部分）。
+      const commonBody = {
+        name: form.name,
+        ...(form.description ? { description: form.description } : {}),
+      };
+      if (endpoint === "chunk-profiles") {
+        const body: components["schemas"]["ChunkProfileCreate"] & { options?: unknown } = {
+          ...commonBody,
+          max_tokens: Number(form.max_tokens || 512),
+          overlap_tokens: Number(form.overlap_tokens || 50),
+          strategy: form.strategy || "hybrid_heading_recursive",
+        };
+        if (editItem) {
+          const patch: components["schemas"]["ChunkProfileUpdate"] = { ...body };
+          await api.patch(
+            "/projects/{pid}/chunk-profiles/{config_id}",
+            patch,
+            { params: { pid: projectId, config_id: editItem.id } }
+          );
+        } else {
+          await api.post("/projects/{pid}/chunk-profiles/", body, {
+            params: { pid: projectId },
+          });
+        }
+      } else if (endpoint === "export-profiles") {
+        const body: components["schemas"]["ExportProfileCreate"] = {
+          ...commonBody,
+          format: form.format || "sft_jsonl",
+        };
+        if (editItem) {
+          const patch: components["schemas"]["ExportProfileUpdate"] = { ...body };
+          await api.patch(
+            "/projects/{pid}/export-profiles/{config_id}",
+            patch,
+            { params: { pid: projectId, config_id: editItem.id } }
+          );
+        } else {
+          await api.post("/projects/{pid}/export-profiles/", body, {
+            params: { pid: projectId },
+          });
+        }
       } else {
-        await api.post(
-          `/projects/${projectId}/${endpoint}/`,
-          payload
-        );
+        const body: components["schemas"]["TaskPolicyCreate"] = {
+          ...commonBody,
+          task_type: form.task_type || "parse",
+          max_retries: Number(form.max_retries || 3),
+          timeout_seconds: Number(form.timeout_seconds || 300),
+          concurrency_limit: Number(form.concurrency_limit || 5),
+        };
+        if (editItem) {
+          const patch: components["schemas"]["TaskPolicyUpdate"] = { ...body };
+          await api.patch(
+            "/projects/{pid}/task-policies/{config_id}",
+            patch,
+            { params: { pid: projectId, config_id: editItem.id } }
+          );
+        } else {
+          await api.post("/projects/{pid}/task-policies/", body, {
+            params: { pid: projectId },
+          });
+        }
       }
       toast.success("保存成功");
       setDialogOpen(false);
