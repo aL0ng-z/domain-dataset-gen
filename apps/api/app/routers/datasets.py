@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.authz import ProjectResourceResolver
@@ -19,6 +19,7 @@ from app.schemas.dataset import (
 )
 from app.schemas.export import ExportRequest, ExportResponse
 from app.services.dataset_service import DatasetService
+from app.services.idempotency import idempotent_create_task
 from app.services.task_service import TaskService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
@@ -161,6 +162,7 @@ async def export_dataset(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
+    idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
 ):
 
     # Verify dataset exists and export profile belongs to the same project
@@ -172,19 +174,30 @@ async def export_dataset(
     # Create task for tracking
     redis = getattr(request.app.state, "redis", None)
     task_service = TaskService(db, redis)
-    task = await task_service.create_task(
-        project_id=pid,
-        task_type="export",
-        entity_type="dataset",
-        entity_id=did,
-        created_by=current_user.id,
-        payload={
-            "dataset_id": str(did),
-            "export_profile_id": str(body.export_profile_id),
-            "created_by": str(current_user.id),
-        },
-        handler="export_dataset",
-    )
+    export_payload = {
+        "dataset_id": str(did),
+        "export_profile_id": str(body.export_profile_id),
+        "created_by": str(current_user.id),
+    }
+    if idempotency_key:
+        task = await idempotent_create_task(
+            db,
+            task_service=task_service,
+            client_key=idempotency_key,
+            project_id=pid,
+            task_type="export",
+            payload_for_digest=export_payload,
+            create=lambda key: task_service.create_task(
+                project_id=pid, task_type="export", entity_type="dataset", entity_id=did,
+                created_by=current_user.id, payload=export_payload, handler="export_dataset",
+                idempotency_key=key,
+            ),
+        )
+    else:
+        task = await task_service.create_task(
+            project_id=pid, task_type="export", entity_type="dataset", entity_id=did,
+            created_by=current_user.id, payload=export_payload, handler="export_dataset",
+        )
     await db.commit()
 
     # Return a placeholder export response — actual export created by runner
