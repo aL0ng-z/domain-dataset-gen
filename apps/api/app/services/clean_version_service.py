@@ -67,6 +67,7 @@ class CleanVersionService:
             )
             .order_by(Section.ordinal, Section.id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
         return list(result.scalars().all())
 
@@ -79,15 +80,16 @@ class CleanVersionService:
     ) -> CleanedDocumentVersion:
         """创建合并版本：冻结 revision/hash、UUID 对象 key、Document 行锁分配版本、幂等发布。
 
-        两阶段设计（任务卡 §4.4）：
+        任务卡 §4.4 顺序：
         - 计算阶段（无锁）：按 ordinal 读取 Section id/revision/正文，生成规范化
-          revision map、合并内容与 hash，预生成 version UUID 并上传唯一 key 对象。
-        - 发布阶段（行锁）：锁定 documents 行并稳定顺序锁定 Sections，仅当 revision
-          向量仍与计算输入一致时，在 Document 锁保护下分配下一 version 并插入版本行。
-          对象 key 为 cleaned/{document_id}/{version_id}.md（create-only），与可竞争的
-          显示版本号解耦；发布失败/来源变化时同步删除孤儿对象。
+          revision map、合并内容与 hash，预生成 version UUID 与对象 key。
+        - 发布阶段（Document 行锁）：锁内幂等复核（同 key 命中直接重放，不上传）、
+          稳定顺序锁定 Sections 复核 revision 向量、分配下一 version、create-only
+          上传唯一 key 对象、插入版本行并更新文档状态。
+        对象 key 为 cleaned/{document_id}/{version_id}.md，与可竞争的显示版本号解耦；
+        来源变化/文档缺失时不发布版本并同步删除已上传的孤儿对象。
         """
-        # 1. 幂等快路径：同 key 已有版本直接返回（发布阶段锁内再复核，见下）。
+        # 1. 幂等快路径：同 key 已有版本直接返回（发布阶段锁内再复核）。
         if idempotency_key is not None:
             existing = await self._find_by_idempotency(document_id, idempotency_key)
             if existing is not None:
@@ -132,35 +134,23 @@ class CleanVersionService:
         version_id = uuid.uuid4()
         artifact_key = f"cleaned/{document_id}/{version_id}.md"
 
-        # 对象写入：唯一 key + create-only 语义；写失败则整个请求失败、不产生版本行。
-        await asyncio.to_thread(
-            self._storage.upload_file,
-            settings.minio_bucket_outputs,
-            artifact_key,
-            merged.encode("utf-8"),
-            "text/markdown",
-        )
-
-        # ---- 发布阶段（行锁）----
+        # ---- 发布阶段（Document 行锁）----
         doc = (
             await self.db.execute(select(Document).where(Document.id == document_id).with_for_update())
         ).scalar_one_or_none()
         if doc is None:
-            await asyncio.to_thread(self._storage.delete_file, settings.minio_bucket_outputs, artifact_key)
             raise ValueError("document not found")
 
-        # 锁内幂等复核：并发同 key 请求在前一个提交后命中已有版本 -> 清理孤儿对象并重放。
+        # 锁内幂等复核：并发同 key 请求在前一个提交后命中已有版本 -> 直接重放，不重复上传。
         if idempotency_key is not None:
             existing = await self._find_by_idempotency(document_id, idempotency_key)
             if existing is not None:
-                await asyncio.to_thread(self._storage.delete_file, settings.minio_bucket_outputs, artifact_key)
                 return existing
 
         # 稳定顺序锁定参与合并的 Sections，并复核 revision 向量是否仍与计算输入一致。
         locked_sections = await self._load_locked_sections(document_id, cleaning_job_id)
         if canonical_revision_map(locked_sections) != rev_map:
-            # 来源在计算与发布之间变化：不发布版本、不改 Document 状态，删除孤儿对象。
-            await asyncio.to_thread(self._storage.delete_file, settings.minio_bucket_outputs, artifact_key)
+            # 来源在计算与发布之间变化：不发布版本、不改 Document 状态。
             raise CleanSourceChangedError("来源 Section 在合并期间已变化")
 
         # Document 锁保护下分配下一 version（无锁 MAX(version)+1 已被行锁取代）。
@@ -172,6 +162,15 @@ class CleanVersionService:
             )
         ).scalar_one()
         version = int(max_version) + 1
+
+        # 对象写入：唯一 key + create-only 语义；写失败则整个请求失败、不产生版本行。
+        await asyncio.to_thread(
+            self._storage.upload_file,
+            settings.minio_bucket_outputs,
+            artifact_key,
+            merged.encode("utf-8"),
+            "text/markdown",
+        )
 
         row = CleanedDocumentVersion(
             id=version_id,
@@ -241,17 +240,20 @@ class CleanVersionService:
                 select(Document).where(Document.id == version.document_id).with_for_update()
             )
         ).scalar_one()
+
         # 再锁目标 Version；行锁串行化并发 accept/reject。
         version = (
             await self.db.execute(
                 select(CleanedDocumentVersion)
                 .where(CleanedDocumentVersion.id == version_id)
                 .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalar_one()
 
         # review_pending CAS：锁内检查状态；只有仍为 review_pending 才允许写入终态。
         # 行锁保证并发 accept/reject 恰有一个成功，失败方得到 review conflict。
+        # populate_existing 强制刷新 identity map，避免读到加锁前缓存的旧状态。
         if version.status != "review_pending":
             raise CleanVersionReviewConflictError("该版本已被其他评审者处理")
 

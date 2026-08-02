@@ -12,8 +12,6 @@ Create Date: 2026-08-02
 """
 from collections.abc import Sequence
 
-from alembic import op
-
 revision: str = "merge_t02_t03_heads"
 down_revision: str | Sequence[str] | None = ("52eb455d64d3", "t03_parse_job_snapshot")
 branch_labels: str | Sequence[str] | None = None

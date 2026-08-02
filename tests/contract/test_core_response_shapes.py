@@ -110,7 +110,19 @@ async def _make_doc_chain(db_session, project_id, uploaded_by):
         )
         parse_job_id = new_id
     else:
-        parse_job = ParseJob(document_id=doc.id, parser_profile_id=parser_profile.id, status="queued")
+        # T03 CHECK(ck_parse_jobs_snapshot_complete)：快照/hash 全部非空才满足约束。
+        parse_job = ParseJob(
+            document_id=doc.id,
+            parser_profile_id=parser_profile.id,
+            status="queued",
+            snapshot_schema_version=1,
+            parser_profile_snapshot={"endpoint_ref": "test"},
+            parser_profile_sha256="0" * 64,
+            endpoint_policy_snapshot={"policy": "test"},
+            endpoint_policy_ref="test-policy",
+            endpoint_policy_version="1",
+            endpoint_policy_sha256="0" * 64,
+        )
         db_session.add(parse_job)
         await db_session.flush()
         await db_session.refresh(parse_job)

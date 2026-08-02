@@ -18,7 +18,7 @@ import os
 import sys
 import uuid
 from collections.abc import AsyncGenerator, Generator
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -99,6 +99,8 @@ async def _prepare_schema(_test_engine) -> AsyncGenerator[None, None]:
 
     Session 开始时清空全部业务表，避免上一次被中断/并发的测试残留数据
     （如其他 worktree 复用同一测试库）导致 org 等 fixture 的用户创建冲突。
+    T03 的 snapshot 触发器/CHECK 由迁移建立；create_all 不覆盖已有表，因此
+    测试库必须保持迁移后的 schema（fixture 已填充 snapshot 字段满足约束）。
     """
     from app import models  # noqa: F401  # 确保所有模型已注册
     from app.database import Base
@@ -384,7 +386,22 @@ class ResourceFactory:
     async def create_parse_job(self, document_id: uuid.UUID, parser_profile_id: uuid.UUID, status: str = "queued"):
         from app.models.parse import ParseJob
 
-        job = ParseJob(document_id=document_id, parser_profile_id=parser_profile_id, status=status)
+        # T03 CHECK(ck_parse_jobs_snapshot_complete)：snapshot_schema_version>=1 时
+        # snapshot/hash/ref/version 必须全部非空。填默认快照，使 fixture 在迁移后
+        # schema（含约束）与 create_all schema 下都合法。
+        job = ParseJob(
+            document_id=document_id,
+            parser_profile_id=parser_profile_id,
+            status=status,
+            snapshot_schema_version=1,
+            parser_profile_snapshot={"endpoint_ref": "test"},
+            parser_profile_sha256="0" * 64,
+            endpoint_policy_snapshot={"policy": "test"},
+            endpoint_policy_ref="test-policy",
+            endpoint_policy_version="1",
+            endpoint_policy_sha256="0" * 64,
+            frozen_at=datetime.now(UTC),
+        )
         self.session.add(job)
         await self.session.flush()
         await self.session.refresh(job)

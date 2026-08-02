@@ -38,14 +38,24 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     status_code = exc.status_code
     code: ErrorCode = STATUS_TO_ERROR_CODE.get(status_code, "INTERNAL_ERROR")
 
+    # 透传 HTTPException 携带的头（如 WWW-Authenticate: Bearer），
+    # 供 401 客户端按规范处理认证流程（任务卡 §4/T04）。
+    headers = dict(exc.headers or {})
+
     # 保持 422 校验结构不变（FastAPI 默认路径会走 RequestValidationError 处理器）。
     if status_code == 422:
         detail_items = exc.detail if isinstance(exc.detail, list) else []
+        # 业务路由显式抛出的 422（如 ParserProfileService 的 invalid_parser_endpoint）
+        # detail 是字符串；保留其消息供前端展示（errors 列表为空）。
+        message = "请求参数校验失败"
+        if not detail_items and isinstance(exc.detail, str):
+            message = exc.detail
         return JSONResponse(
             status_code=status_code,
+            headers=headers,
             content={
                 "code": "VALIDATION_ERROR",
-                "message": "请求参数校验失败",
+                "message": message,
                 "request_id": _request_id(request),
                 "errors": [
                     {"loc": list(e.get("loc", [])), "msg": e.get("msg", ""), "type": e.get("type", "")}
@@ -67,6 +77,7 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
 
     return JSONResponse(
         status_code=status_code,
+        headers=headers,
         content=ErrorResponse(
             code=code,
             message=message,

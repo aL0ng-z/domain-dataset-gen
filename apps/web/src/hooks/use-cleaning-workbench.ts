@@ -128,16 +128,34 @@ export function useCleaningWorkbench() {
     [],
   );
 
-  // 切换 Section：先推进代次并取消旧请求，再加载新 Section。
+  // 释放指定 lease（仅当仍归属当前 hook 时；effect cleanup 只释放捕获的 lease_id）。
+  const releaseLease = useCallback(async (leaseId: string, sectionId: string) => {
+    if (!leaseId) return;
+    try {
+      await api.post("/sections/{sid}/lease/release", { lease_id: leaseId }, {
+        params: { sid: sectionId },
+      });
+    } catch {
+      // 释放失败（网络/已过期）静默：数据库过期保护兜底。
+    }
+  }, []);
+
+  // 切换 Section：先推进代次并取消旧请求，显式释放旧 lease（只释放旧 section 的 lease），
+  // 再加载新 Section。
   const switchSection = useCallback(
     (sectionId: string) => {
+      const previousLease = pendingLeaseRef.current;
       bumpGeneration();
       setLease(null);
       pendingLeaseRef.current = null;
       setSelectedSectionId(sectionId);
+      // 只释放旧 section 捕获的 lease_id；绝不影响新 section 的 lease。
+      if (previousLease) {
+        void releaseLease(previousLease.leaseId, previousLease.sectionId);
+      }
       void loadSection(sectionId);
     },
-    [bumpGeneration, loadSection],
+    [bumpGeneration, loadSection, releaseLease],
   );
 
   // 心跳：只在当前 section + 当前 lease_id 匹配时续期；失败切只读。
@@ -161,18 +179,6 @@ export function useCleaningWorkbench() {
         setLease(null);
         toast.error("编辑租约已失效，已切换为只读");
       }
-    }
-  }, []);
-
-  // 释放指定 lease（仅当仍归属当前 hook 时；effect cleanup 只释放捕获的 lease_id）。
-  const releaseLease = useCallback(async (leaseId: string, sectionId: string) => {
-    if (!leaseId) return;
-    try {
-      await api.post("/sections/{sid}/lease/release", { lease_id: leaseId }, {
-        params: { sid: sectionId },
-      });
-    } catch {
-      // 释放失败（网络/已过期）静默：数据库过期保护兜底。
     }
   }, []);
 
@@ -264,15 +270,17 @@ export function useCleaningWorkbench() {
     return () => window.clearInterval(timer);
   }, [selectedSectionId, heartbeat]);
 
-  // 卸载/切换时：只释放本 hook 捕获的 lease（capture 语义）。
+  // 卸载时：只释放本 hook 当前捕获的 lease（capture 语义）。切换路径由 switchSection 显式释放。
   useEffect(() => {
-    const currentLease = pendingLeaseRef.current;
     return () => {
+      const currentLease = pendingLeaseRef.current;
       if (currentLease) {
         void releaseLease(currentLease.leaseId, currentLease.sectionId);
       }
     };
-  }, [selectedSectionId, releaseLease]);
+    // 仅在卸载时执行一次；cleanup 读取 ref 最新值（即卸载时活跃的 lease）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 标签页恢复/可见性恢复时检查租约是否过期。
   useEffect(() => {

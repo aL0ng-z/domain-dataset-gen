@@ -49,7 +49,7 @@ class SectionService:
     # 租约：数据库为正确性来源，Redis 仅缓存（值携带 lease_id）。
     # ------------------------------------------------------------------
 
-    async def _redis_key(self, section_id: uuid.UUID) -> str:
+    def _redis_key(self, section_id: uuid.UUID) -> str:
         return f"section_lease:{section_id}"
 
     async def _redis_set_lease(self, lease: SectionLease) -> None:
@@ -91,14 +91,16 @@ class SectionService:
         """
         section = (
             await self.db.execute(
-                select(Section).where(Section.id == section_id).with_for_update()
+                select(Section)
+                .where(Section.id == section_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if section is None:
             return None  # type: ignore[return-value]  # 由路由统一 404
 
         now = self._now()
-
         # 2. 过期未释放的租约视为已释放。
         await self.db.execute(
             update(SectionLease)
@@ -111,12 +113,15 @@ class SectionService:
         )
 
         # 3. 同用户有效租约幂等返回；他人租约冲突。
+        # populate_existing 强制刷新 identity map，避免读到加锁前缓存的旧状态。
         result = await self.db.execute(
-            select(SectionLease).where(
+            select(SectionLease)
+            .where(
                 SectionLease.section_id == section_id,
                 SectionLease.released_at.is_(None),
                 SectionLease.expires_at > now,
             )
+            .execution_options(populate_existing=True)
         )
         active = result.scalars().first()
         if active is not None:
@@ -129,7 +134,9 @@ class SectionService:
                 return active
             raise SectionLeaseHeldError("该 Section 已被其他用户锁定")
 
-        # 4. 插入新租约；唯一索引兜底并发插入。
+        # 4. 插入新租约；部分唯一索引作为并发请求的最终保护。
+        # 极端并发下若两个请求都通过第 3 步检查，唯一索引会拒绝第二个 INSERT；
+        # 捕获 IntegrityError 转成 SectionLeaseHeldError，避免泄漏为 500。
         lease = SectionLease(
             section_id=section_id,
             user_id=user_id,
@@ -137,7 +144,15 @@ class SectionService:
             expires_at=now + timedelta(seconds=LEASE_TTL_SECONDS),
         )
         self.db.add(lease)
-        await self.db.flush()
+        try:
+            await self.db.flush()
+        except Exception as exc:  # noqa: BLE001 - 唯一索引兜底并发插入
+            from sqlalchemy.exc import IntegrityError
+
+            if isinstance(exc, IntegrityError):
+                await self.db.rollback()
+                raise SectionLeaseHeldError("该 Section 已被其他用户锁定") from exc
+            raise
         await self._redis_set_lease(lease)
         await self.db.refresh(lease)
         return lease
@@ -228,7 +243,10 @@ class SectionService:
     ) -> Section:
         section = (
             await self.db.execute(
-                select(Section).where(Section.id == section_id).with_for_update()
+                select(Section)
+                .where(Section.id == section_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if section is None:
