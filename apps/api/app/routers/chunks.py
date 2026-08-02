@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.authz import ProjectResourceResolver, authorize_flat_resource
@@ -60,7 +60,6 @@ async def update_chunk(
 async def generate_from_chunk(
     cid: uuid.UUID,
     body: GenerateRequest,
-    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
@@ -89,25 +88,6 @@ async def generate_from_chunk(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
-    # Schedule background generation worker（独立会话，避免复用请求会话）。
-    from app.database import async_session_factory
-    from app.workers.generate_worker import run_generate_single
-
-    async def _run():
-        async with async_session_factory() as session:
-            try:
-                await run_generate_single(
-                    task.id,
-                    cid,
-                    body.prompt_template_id,
-                    body.model_config_id,
-                    pid,
-                    session,
-                    redis=None,
-                )
-                await session.commit()
-            except Exception:
-                await session.rollback()
-
-    background_tasks.add_task(_run)
+    # 业务 job + Task 同一事务提交后由独立 runner 领取（不再调用 background_tasks）。
+    await db.commit()
     return task

@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.authz import ProjectResourceResolver
@@ -159,11 +159,9 @@ async def export_dataset(
     did: uuid.UUID,
     body: ExportRequest,
     request: Request,
-    background_tasks: BackgroundTasks,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    from app.workers.export_worker import run_export_dataset
 
     # Verify dataset exists and export profile belongs to the same project
     resolver = ProjectResourceResolver(db)
@@ -180,20 +178,16 @@ async def export_dataset(
         entity_type="dataset",
         entity_id=did,
         created_by=current_user.id,
+        payload={
+            "dataset_id": str(did),
+            "export_profile_id": str(body.export_profile_id),
+            "created_by": str(current_user.id),
+        },
+        handler="export_dataset",
     )
+    await db.commit()
 
-    background_tasks.add_task(
-        run_export_dataset,
-        task_id=task.id,
-        project_id=pid,
-        dataset_id=did,
-        export_profile_id=body.export_profile_id,
-        created_by=current_user.id,
-        db=db,
-        redis=redis,
-    )
-
-    # Return a placeholder export response — actual export created asynchronously
+    # Return a placeholder export response — actual export created by runner
     from app.schemas.export import ExportResponse
     return ExportResponse(
         id=task.id,

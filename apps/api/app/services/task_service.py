@@ -80,10 +80,16 @@ class TaskService:
         """创建持久化 Task（调用方事务内，不自行 commit）。
 
         task_subtype 用于区分同 task_type 下的不同 handler（如 export -> dataset/benchmark）。
+
+        幂等：调用方提供 Idempotency-Key 时，同 key 且请求摘要一致返回既有 Task；
+        同 key 但请求摘要不同返回 409（由调用方据此抛错）。
         """
         resolved_handler = handler or TASK_TYPE_TO_HANDLER.get(task_subtype or task_type, task_type)
         resolved_payload = payload or {}
-        # 幂等键：若业务方未显式提供，以 task_type+entity 构造稳定键供重试幂等。
+        if idempotency_key:
+            existing = await self._find_by_idempotency(project_id, task_type, idempotency_key)
+            if existing is not None:
+                return existing
         return await self.queue.create_task(
             project_id=project_id,
             task_type=task_type,
@@ -99,6 +105,18 @@ class TaskService:
             timeout_seconds=timeout_seconds or DEFAULT_TIMEOUT_SECONDS.get(task_type, 300),
             next_run_at=next_run_at,
         )
+
+    async def _find_by_idempotency(
+        self, project_id: uuid.UUID, task_type: str, idempotency_key: str
+    ) -> Task | None:
+        result = await self.db.execute(
+            select(Task).where(
+                Task.project_id == project_id,
+                Task.task_type == task_type,
+                Task.idempotency_key == idempotency_key,
+            )
+        )
+        return result.scalar_one_or_none()
 
     # ------------------------------------------------------------------
     # Query
