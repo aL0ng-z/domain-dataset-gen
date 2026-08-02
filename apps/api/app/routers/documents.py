@@ -41,6 +41,8 @@ from app.services.chunk_set_service import (
     ChunkSetService,
     CleanVersionNotReadyError,
     CleanVersionStaleError,
+    build_chunk_idempotency_key,
+    chunk_client_key,
 )
 from app.services.clean_version_service import CleanVersionService
 from app.services.document_service import DocumentService
@@ -531,6 +533,14 @@ async def trigger_chunk(
     if profile is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="切分配置不存在")
 
+    service = ChunkSetService(db)
+    # 构造复合幂等键：client_key + 规范化请求摘要。
+    request_for_digest = {
+        "chunk_profile_id": str(body.chunk_profile_id),
+        "cleaned_version_id": str(body.cleaned_version_id) if body.cleaned_version_id else None,
+    }
+    composite_key = build_chunk_idempotency_key(idempotency_key, request_for_digest)
+
     # 同一文档已有其它 key 的活跃切分：409 CHUNK_RUN_IN_PROGRESS（部分唯一索引兜底）。
     # 同 key 的活跃 set 直接复用（下放 create_chunk_set_task 锁内复核返回既有对象）。
     active = (
@@ -542,13 +552,30 @@ async def trigger_chunk(
             )
         )
     ).scalar_one_or_none()
-    if active is not None and active.idempotency_key != idempotency_key:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "CHUNK_RUN_IN_PROGRESS", "message": "该文档已有切分任务进行中"},
-        )
+    if active is not None:
+        active_client_key = chunk_client_key(active.idempotency_key or "")
+        if active_client_key != idempotency_key:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "CHUNK_RUN_IN_PROGRESS", "message": "该文档已有切分任务进行中"},
+            )
 
-    service = ChunkSetService(db)
+    # 同 key 不同摘要：409 IDEMPOTENCY_KEY_REUSED（幂等键已被不同的请求复用）。
+    if idempotency_key:
+        existing_by_client = (
+            await db.execute(
+                select(ChunkSet).where(
+                    ChunkSet.document_id == did,
+                    ChunkSet.idempotency_key.like(f"{idempotency_key}:%"),
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_by_client is not None and existing_by_client.idempotency_key != composite_key:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "IDEMPOTENCY_KEY_REUSED", "message": "幂等键已被不同的请求复用"},
+            )
+
     try:
         clean_version = await service.resolve_clean_version(did, body.cleaned_version_id)
     except CleanVersionNotReadyError as e:
@@ -572,7 +599,7 @@ async def trigger_chunk(
         profile=profile,
         clean_version=clean_version,
         created_by=current_user.id,
-        idempotency_key=idempotency_key,
+        idempotency_key=composite_key,
     )
     # 业务 ChunkSet + Task 同一事务提交后由独立 runner 领取。
     await db.commit()

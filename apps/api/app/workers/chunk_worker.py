@@ -122,12 +122,15 @@ async def run_chunk_handler(ctx: ExecutionContext) -> None:
     chunk_data_list = chunker.chunk(markdown, "", cfg)
     await ctx.checkpoint()
 
-    # fallback section（保持下游 FK 结构，不伪造批次来源）。
+    # fallback section（保持下游 FK 结构，不伪造批次来源）。若文档无任何 Section
+    # （异常态），整个集合失败而不是写入 NULL section_id。
     fallback_section = (
         await db.execute(
             select(Section.id).where(Section.document_id == document_id).order_by(Section.ordinal).limit(1)
         )
     ).scalar_one_or_none()
+    if fallback_section is None:
+        raise ProjectChainError("文档没有可关联的 Section，无法切分")
 
     staging: list[Chunk] = []
     total_tokens = 0

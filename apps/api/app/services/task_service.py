@@ -178,10 +178,35 @@ class TaskService:
         # 父任务取消传播：向所有非终态子任务请求取消。
         if status in ("cancelled", "cancelling"):
             await self._cancel_children(task_id, cancel_requested_by)
+            # T06：chunk Task queued 取消后，关联 ChunkSet 原子收敛为 cancelled。
+            await self._converge_chunk_set_on_cancel(task_id)
         task = await self.get_task(task_id)
         if task is not None:
             await self._publish_event(task, f"task.{task.status}")
         return task
+
+    async def _converge_chunk_set_on_cancel(self, task_id: uuid.UUID) -> None:
+        """queued chunk Task 取消后把关联 ChunkSet 收敛为 cancelled（不覆盖已完成产物）。"""
+        task = await self.get_task(task_id)
+        if task is None or task.task_type != "chunk":
+            return
+        chunk_set_id = (task.payload or {}).get("chunk_set_id")
+        if not chunk_set_id:
+            return
+        from datetime import UTC, datetime
+
+        from sqlalchemy import update
+
+        from app.models.chunk_set import ChunkSet
+
+        await self.db.execute(
+            update(ChunkSet)
+            .where(
+                ChunkSet.id == uuid.UUID(str(chunk_set_id)),
+                ChunkSet.status.in_(("pending", "processing", "review_pending")),
+            )
+            .values(status="cancelled", error_message="切分任务已取消", completed_at=datetime.now(UTC))
+        )
 
     async def _cancel_children(
         self, parent_task_id: uuid.UUID, cancel_requested_by: uuid.UUID

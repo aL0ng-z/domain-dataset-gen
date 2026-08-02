@@ -247,6 +247,10 @@ class TaskRunner:
                     return
 
                 # 失败/取消：先回滚全部业务写入。
+                # 在 rollback 前捕获 task 关键值（rollback 会 expire，导致 detached
+                # 对象 lazy-load 抛 DetachedInstanceError）。
+                task_id_snapshot = task.id
+                task_state_version_snapshot = task.state_version
                 await session.rollback()
             except Exception:  # noqa: BLE001
                 logger.exception("执行 task %s 时发生未预期异常", task.id)
@@ -255,7 +259,7 @@ class TaskRunner:
 
         # 在全新事务中写入失败/取消状态（业务写入已回滚）。
         await self._apply_terminal_outcome(
-            task.id, run_token, attempt_no, outcome, task.state_version,
+            task_id_snapshot, run_token, attempt_no, outcome, task_state_version_snapshot,
             terminal_hook=terminal_hook,
         )
 

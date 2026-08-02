@@ -9,10 +9,14 @@
 - cleaned_version 校验：省略取 Document.active；显式提供时必须等于 active id；
   没有 active/非 accepted/不属于该文档 -> 409 CLEAN_VERSION_NOT_READY；
   旧于/不同于 active -> 409 CLEAN_VERSION_STALE。
+- idempotency_key 格式 ``<client_key>:<request_digest>``：同 key 同摘要重放返回
+  既有对象；同 key 不同摘要 -> 409 IDEMPOTENCY_KEY_REUSED（由路由映射）。
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 
 from sqlalchemy import select
@@ -40,6 +44,25 @@ class CleanVersionStaleError(Exception):
         super().__init__("目标清洗版本不是当前 active 版本")
         self.target_version = target_version
         self.active_version = active_version
+
+
+class IdempotencyKeyReusedError(Exception):
+    """同 idempotency key 但请求摘要不同。"""
+
+
+def build_chunk_idempotency_key(client_key: str, request: dict) -> str:
+    """构造数据库幂等键：client key + 规范化请求摘要。
+
+    摘要保证同 key 但不同请求（不同 profile/cleaned_version）不会误复用同一 ChunkSet。
+    """
+    canonical = json.dumps(request, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+    return f"{client_key}:{digest}"
+
+
+def chunk_client_key(composite_key: str) -> str:
+    """从复合幂等键还原客户端 key（路由用前缀匹配活跃 set 归属）。"""
+    return composite_key.split(":", 1)[0]
 
 
 def _freeze_config(profile: ChunkProfile) -> dict:
@@ -136,7 +159,8 @@ class ChunkSetService:
             )
         ).scalar_one()
 
-        # 幂等复核（锁内）：同 key 命中直接返回既有 ChunkSet + Task。
+        # 幂等复核（锁内）：同 key 同摘要命中直接返回既有 ChunkSet + Task；
+        # 同 key 不同摘要 -> IDEMPOTENCY_KEY_REUSED（路由映射 409）。
         if idempotency_key:
             existing = (
                 await self.db.execute(
@@ -166,26 +190,9 @@ class ChunkSetService:
         ).scalar_one()
         version = int(max_version) + 1
 
-        chunk_set = ChunkSet(
-            document_id=document_id,
-            cleaned_document_version_id=clean_version.id,
-            chunk_profile_id=profile.id,
-            strategy=profile.strategy,
-            config_json=_freeze_config(profile),
-            status="pending",
-            total_chunks=0,
-            total_tokens=0,
-            version=version,
-            is_legacy=False,
-            idempotency_key=idempotency_key,
-            source_sha256=clean_version.content_sha256,
-            created_by=created_by,
-        )
-        self.db.add(chunk_set)
-        await self.db.flush()
-        await self.db.refresh(chunk_set)
-
-        # 创建 T07 queued Task（handler 固定，payload 明确携带 chunk_set_id）。
+        # 预生成 ChunkSet UUID：Task payload 需要引用它，而 ChunkSet 又需要
+        # task_id 满足非 legacy 必填 CHECK——先建 Task 再建 ChunkSet（同一事务）。
+        chunk_set_id = uuid.uuid4()
         from app.services.task_service import TaskService
 
         task_service = TaskService(self.db)
@@ -193,16 +200,36 @@ class ChunkSetService:
             project_id=project_id,
             task_type="chunk",
             entity_type="chunk_set",
-            entity_id=chunk_set.id,
+            entity_id=chunk_set_id,
             created_by=created_by,
-            payload=_chunk_payload(chunk_set.id, document_id),
+            payload=_chunk_payload(chunk_set_id, document_id),
             handler="chunk_document",
             idempotency_key=idempotency_key,
             timeout_seconds=600,
         )
-        # 回填 task_id（首次派发 Task；retry 通过 retry_of_task_id 链追溯，不覆盖它）。
-        chunk_set.task_id = task.id
+
+        frozen = _freeze_config(profile)
+        chunk_set = ChunkSet(
+            id=chunk_set_id,
+            document_id=document_id,
+            cleaned_document_version_id=clean_version.id,
+            chunk_profile_id=profile.id,
+            strategy=profile.strategy,
+            config_json=frozen,
+            splitter_version=frozen["splitter_version"],
+            status="pending",
+            total_chunks=0,
+            total_tokens=0,
+            version=version,
+            is_legacy=False,
+            idempotency_key=idempotency_key,
+            source_sha256=clean_version.content_sha256,
+            task_id=task.id,
+            created_by=created_by,
+        )
+        self.db.add(chunk_set)
         await self.db.flush()
+        await self.db.refresh(chunk_set)
 
         doc.status = "chunking"
         await self.db.flush()
