@@ -48,7 +48,7 @@ echo "==> [1/3] upgrade head on empty DB"
 python -m alembic upgrade head
 
 echo "==> [2/3] downgrade to previous revision"
-python -m alembic downgrade -1
+python -m alembic downgrade 58918ea257fd
 
 echo "==> [3/3] upgrade head again"
 python -m alembic upgrade head

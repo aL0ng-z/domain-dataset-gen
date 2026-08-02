@@ -80,7 +80,7 @@ Write-Host "==> [1/3] upgrade head on empty DB"
 Invoke-Alembic @("upgrade", "head")
 
 Write-Host "==> [2/3] downgrade to previous revision"
-Invoke-Alembic @("downgrade", "-1")
+Invoke-Alembic @("downgrade", "58918ea257fd")
 
 Write-Host "==> [3/3] upgrade head again"
 Invoke-Alembic @("upgrade", "head")
