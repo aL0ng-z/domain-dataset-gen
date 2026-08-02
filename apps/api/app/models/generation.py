@@ -49,7 +49,8 @@ class GenerationRun(Base):
             "provenance_status IN ('verified', 'legacy_unavailable', 'invalid')",
             name="ck_generation_runs_provenance_status_valid",
         ),
-        # T08：verified Run 必须关联 batch 且已渲染 prompt + hash。
+        # T08：verified Run 必须关联 batch 且已渲染 prompt + hash
+        # （无论是否 legacy，provenance=verified 时都强制）。
         CheckConstraint(
             "provenance_status != 'verified' OR ("
             "generation_batch_id IS NOT NULL "
@@ -58,18 +59,20 @@ class GenerationRun(Base):
             ")",
             name="ck_generation_runs_verified_has_input",
         ),
-        # 终态必须设置 completed_at。
+        # 终态必须设置 completed_at；失败必须有 error_message，成功必须有 raw_output。
+        # （legacy 迁移前行由迁移回填诚实标记，不强制新格式字段。）
         CheckConstraint(
-            "status IN ('completed', 'failed', 'cancelled') = (completed_at IS NOT NULL)",
+            "is_legacy = true OR ("
+            "status IN ('completed', 'failed', 'cancelled') = (completed_at IS NOT NULL)"
+            ")",
             name="ck_generation_runs_terminal_completed_at",
         ),
-        # 失败必须有 error_message，成功必须有 raw_output。
         CheckConstraint(
-            "status != 'failed' OR error_message IS NOT NULL",
+            "is_legacy = true OR (status != 'failed' OR error_message IS NOT NULL)",
             name="ck_generation_runs_failed_has_error",
         ),
         CheckConstraint(
-            "status != 'completed' OR raw_output IS NOT NULL",
+            "is_legacy = true OR (status != 'completed' OR raw_output IS NOT NULL)",
             name="ck_generation_runs_completed_has_output",
         ),
     )

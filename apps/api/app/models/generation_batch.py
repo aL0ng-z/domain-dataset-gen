@@ -39,16 +39,26 @@ class GenerationBatch(Base):
             "retry_of_generation_batch_id",
             name="uq_generation_batches_single_retry_successor",
         ),
-        # T08：计数与选择集一致。
+        # T08：计数与选择集一致（legacy 历史行无 selected_chunk_ids 则豁免）。
         CheckConstraint(
             "total_chunks >= 0 AND completed_chunks >= 0 "
             "AND completed_chunks <= total_chunks",
             name="ck_generation_batches_chunk_counts",
         ),
         CheckConstraint(
+            "is_legacy = true OR ("
             "selected_chunk_ids IS NOT NULL "
-            "AND jsonb_array_length(selected_chunk_ids) = total_chunks",
+            "AND jsonb_array_length(selected_chunk_ids) = total_chunks"
+            ")",
             name="ck_generation_batches_total_matches_selected",
+        ),
+        # 非 legacy 新写批次必须带齐归属字段。
+        CheckConstraint(
+            "is_legacy = true OR ("
+            "chunk_set_id IS NOT NULL AND model_config_id IS NOT NULL "
+            "AND prompt_template_id IS NOT NULL AND selected_chunk_ids IS NOT NULL"
+            ")",
+            name="ck_generation_batches_required_not_legacy",
         ),
         # provenance 约束（任务卡 §4）：
         # - is_legacy=false -> provenance_status='verified'
@@ -78,9 +88,11 @@ class GenerationBatch(Base):
             "provenance_status IN ('verified', 'legacy_unavailable', 'invalid')",
             name="ck_generation_batches_provenance_status_valid",
         ),
-        # 终态必须设置 completed_at。
+        # 终态必须设置 completed_at（legacy 迁移前行由迁移回填诚实标记，不强制）。
         CheckConstraint(
-            "status IN ('completed', 'failed', 'cancelled') = (completed_at IS NOT NULL)",
+            "is_legacy = true OR ("
+            "status IN ('completed', 'failed', 'cancelled') = (completed_at IS NOT NULL)"
+            ")",
             name="ck_generation_batches_terminal_completed_at",
         ),
         Index(
@@ -92,10 +104,12 @@ class GenerationBatch(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
-    chunk_set_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("chunk_sets.id"), nullable=False)
-    model_config_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("model_configs.id"), nullable=False)
-    prompt_template_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("prompt_templates.id"), nullable=False)
-    selected_chunk_ids: Mapped[list | None] = mapped_column(JSONB, nullable=False)
+    # 迁移前 legacy 行允许缺 chunk_set/model_config/prompt_template/selected_chunk_ids；
+    # 非 legacy 新写必填由 CHECK ck_generation_batches_required_not_legacy 强制。
+    chunk_set_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("chunk_sets.id"), nullable=True)
+    model_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("model_configs.id"), nullable=True)
+    prompt_template_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("prompt_templates.id"), nullable=True)
+    selected_chunk_ids: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(generation_batch_status_enum, nullable=False, default="pending")
     total_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     completed_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
