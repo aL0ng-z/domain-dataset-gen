@@ -34,10 +34,12 @@
 ### 验证状态
 
 - 后端 T05 专项集成测试 12 项通过（并发 acquire/revision/合并幂等/终审单调）。
-- 前端 hook 测试 6 项 + 全量 50 项通过；`npm run lint`、`npm exec tsc -- --noEmit`、`npm run api:check`、`npm run build` 通过。
+- 前端 hook 测试 6 项 + 全量 56 项通过；`npm run lint`、`npm exec tsc -- --noEmit`、`npm run api:check`、`npm run build` 通过。
 - 迁移往返 `upgrade head → downgrade -1 → upgrade head` 通过；重复租约预检清理审计计数输出。
 - 审计脚本 `scripts/clean_version_audit.py` 无重复版本/artifact key/hash 字段缺失。
-- 全量 pytest 在共享测试库受并行 worktree 干扰时部分测试受 schema 竞争影响；按门禁要求以单会话干净环境为准。
+- 全量 `python -m pytest -q` 210 项通过（在 T05 迁移 head 的干净测试库上；并行 worktree 会将测试库迁移到 T07 等后续 head，导致 `tasks.next_run_at` 等列缺失而破坏 `create_task`，属跨 worktree schema 污染而非本卡缺陷）。
+- 顺带修复两个预存问题：`parser_profile` GET 跨项目可读（补项目作用域校验 404）；`CuratedItemUpdate` 拒绝 `revision_note`（服务端已支持，schema 补字段）。
+- `python -m ruff check apps/api libs tests scripts` 通过；`python scripts/export_openapi.py --check` 通过。
 
 ---
 
