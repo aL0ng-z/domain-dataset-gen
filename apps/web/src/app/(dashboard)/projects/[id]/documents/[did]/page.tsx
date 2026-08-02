@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { DataTable, type ColumnDef } from "@/components/data-table";
-import { api } from "@/lib/api";
+import { api, ApiErrorException } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
 import { useWs } from "@/hooks/use-ws";
 import {
@@ -54,6 +54,9 @@ export default function DocumentDetailPage() {
   const [showCleanPicker, setShowCleanPicker] = useState(false);
   const [selectedCleanJobId, setSelectedCleanJobId] = useState<string>("");
   const initialLoadDone = useRef(false);
+  // T06 §6：切分 idempotency key 由一次用户操作生成并复用，网络重试不换 key。
+  const chunkIdempotencyRef = useRef<string | null>(null);
+  const [chunkSets, setChunkSets] = useState<components["schemas"]["ChunkSetSummary"][]>([]);
 
   // Fetch all data; silent=true skips the loading spinner (used for WS refreshes)
   const fetchData = useCallback((silent = false) => {
@@ -79,13 +82,20 @@ export default function DocumentDetailPage() {
           query: { page: 1, page_size: 50 },
         })
         .catch(() => ({ items: [] as ProfileOption[] })),
+      api
+        .get("/projects/{pid}/documents/{did}/chunk-sets", {
+          params: base,
+          query: { page: 1, page_size: 20 },
+        })
+        .catch(() => ({ items: [] as components["schemas"]["ChunkSetSummary"][], total: 0, page: 1, page_size: 20 })),
     ])
-      .then(([docData, jobsData, cleanJobsData, parserData, chunkData]) => {
+      .then(([docData, jobsData, cleanJobsData, parserData, chunkData, chunkSetData]) => {
         setDoc(docData);
         setParseJobs(jobsData);
         setCleaningJobs(cleanJobsData);
         setParserProfiles(parserData.items);
         setChunkProfiles(chunkData.items);
+        setChunkSets(chunkSetData.items);
         initialLoadDone.current = true;
       })
       .catch(() => toast.error("加载文档详情失败"))
@@ -147,15 +157,23 @@ export default function DocumentDetailPage() {
       return;
     }
     setActionLoading("chunk");
+    // T06 §6：一次用户操作生成并复用一个 idempotency key；网络重试不得换 key。
+    const idemKey = chunkIdempotencyRef.current ?? crypto.randomUUID();
+    chunkIdempotencyRef.current = idemKey;
     try {
-      await api.post("/projects/{pid}/documents/{did}/chunk", {
+      const result = await api.post("/projects/{pid}/documents/{did}/chunk", {
         chunk_profile_id: profile.id,
       }, {
         params: { pid: projectId, did: docId },
+        headers: { "Idempotency-Key": idemKey },
       });
-      toast.success("切分任务已发起");
+      toast.success(result.reused ? "复用既有切分任务" : "切分任务已发起");
       fetchData(true);
-    } catch {
+    } catch (e) {
+      // 409 后刷新服务端状态（版本/活跃 set/失败原因）。
+      if (e instanceof ApiErrorException && e.apiError.status === 409) {
+        fetchData(true);
+      }
       toast.error("发起切分失败");
     } finally {
       setActionLoading(null);
@@ -443,13 +461,27 @@ export default function DocumentDetailPage() {
             <Button
               variant="outline"
               onClick={handleChunk}
-              disabled={actionLoading !== null || !["cleaning", "cleaned"].includes(doc.status)}
+              disabled={
+                actionLoading !== null ||
+                !["cleaning", "cleaned"].includes(doc.status) ||
+                chunkSets.some((cs) => cs.status === "pending" || cs.status === "processing")
+              }
+              title={
+                chunkSets.some((cs) => cs.status === "pending" || cs.status === "processing")
+                  ? "该文档已有切分任务进行中"
+                  : undefined
+              }
             >
               {actionLoading === "chunk" && (
                 <Loader2Icon className="size-4 animate-spin" />
               )}
               执行切分
-              {chunkProfiles.length > 0 && (
+              {chunkSets.some((cs) => cs.status === "pending" || cs.status === "processing") && (
+                <span className="text-xs opacity-70 ml-1">
+                  (切分中)
+                </span>
+              )}
+              {chunkProfiles.length > 0 && !chunkSets.some((cs) => cs.status === "pending" || cs.status === "processing") && (
                 <span className="text-xs opacity-70 ml-1">
                   ({getDefaultProfile(chunkProfiles)?.name})
                 </span>

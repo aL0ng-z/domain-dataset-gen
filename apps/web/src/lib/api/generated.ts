@@ -408,6 +408,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/chunk-sets/{csid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Chunk Set
+         * @description 返回单个切分集合的冻结配置与汇总（对象归属遵循 T02）。
+         */
+        get: operations["chunk_set_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/clone-config-from/{source_pid}": {
         parameters: {
             query?: never;
@@ -698,8 +718,36 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Trigger Chunk */
+        /**
+         * Trigger Chunk
+         * @description T06 版本化切分：ChunkSet + T07 Task 同一事务创建；幂等/并发 409 语义。
+         *
+         *     - 请求头必须含 Idempotency-Key（缺失/超长 -> 422）。
+         *     - cleaned_version_id 省略取 Document.active；显式必须等于 active，否则 409。
+         *     - 相同 key/相同规范请求重放返回同一对象（reused:true）；摘要不同 409
+         *       IDEMPOTENCY_KEY_REUSED；另一个不同 key 切分进行中 409 CHUNK_RUN_IN_PROGRESS。
+         */
         post: operations["document_trigger_chunk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/documents/{did}/chunk-sets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Chunk Sets
+         * @description 分页返回文档的切分版本历史（新版本优先）。
+         */
+        get: operations["document_list_chunk_sets"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -713,7 +761,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Chunks */
+        /**
+         * List Chunks
+         * @description Chunk 列表：默认限定 active_chunk_set_id；可显式传 chunk_set_id 查看历史。
+         */
         get: operations["document_list_chunks"];
         put?: never;
         post?: never;
@@ -2085,9 +2136,18 @@ export interface components {
              * Format: uuid
              */
             chunk_profile_id: string;
+            /** Cleaned Version Id */
+            cleaned_version_id?: string | null;
         };
         /** ChunkResponse */
         ChunkResponse: {
+            /**
+             * Chunk Set Id
+             * Format: uuid
+             */
+            chunk_set_id: string;
+            /** Chunk Set Version */
+            chunk_set_version?: number | null;
             /** Content */
             content: string;
             /**
@@ -2127,6 +2187,162 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * ChunkSetDetailResponse
+         * @description 单个集合详情：冻结配置与汇总。
+         */
+        ChunkSetDetailResponse: {
+            /** Chunk Profile Id */
+            chunk_profile_id: string | null;
+            /** Cleaned Document Version Id */
+            cleaned_document_version_id: string | null;
+            /** Completed At */
+            completed_at: string | null;
+            /** Config Json */
+            config_json: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Error Message */
+            error_message: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /** Is Legacy */
+            is_legacy: boolean;
+            /** Output Sha256 */
+            output_sha256: string | null;
+            /** Source Sha256 */
+            source_sha256: string | null;
+            /** Splitter Version */
+            splitter_version: string | null;
+            /** Status */
+            status: string;
+            /** Strategy */
+            strategy: string | null;
+            /** Task Id */
+            task_id: string | null;
+            /** Total Chunks */
+            total_chunks: number;
+            /** Total Tokens */
+            total_tokens: number;
+            /** Version */
+            version: number;
+        };
+        /**
+         * ChunkSetListResponse
+         * @description 分页版本历史（T06 §5 GET chunk-sets）。
+         */
+        ChunkSetListResponse: {
+            /** Items */
+            items: components["schemas"]["ChunkSetSummary"][];
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Total */
+            total: number;
+        };
+        /**
+         * ChunkSetSummary
+         * @description 切分集合汇总：冻结配置、来源、hash 与统计（T06 §5）。
+         */
+        ChunkSetSummary: {
+            /** Chunk Profile Id */
+            chunk_profile_id: string | null;
+            /** Chunk Profile Name */
+            chunk_profile_name?: string | null;
+            /** Cleaned Document Version */
+            cleaned_document_version?: number | null;
+            /** Cleaned Document Version Id */
+            cleaned_document_version_id: string | null;
+            /** Completed At */
+            completed_at: string | null;
+            /** Config Json */
+            config_json: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Error Message */
+            error_message: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Is Active
+             * @default false
+             */
+            is_active: boolean;
+            /** Is Legacy */
+            is_legacy: boolean;
+            /** Output Sha256 */
+            output_sha256: string | null;
+            /** Source Sha256 */
+            source_sha256: string | null;
+            /** Splitter Version */
+            splitter_version: string | null;
+            /** Status */
+            status: string;
+            /** Strategy */
+            strategy: string | null;
+            /** Task Id */
+            task_id: string | null;
+            /** Total Chunks */
+            total_chunks: number;
+            /** Total Tokens */
+            total_tokens: number;
+            /** Version */
+            version: number;
+        };
+        /**
+         * ChunkTriggerResponse
+         * @description 202 切分已接受：task/chunk_set/幂等重放语义。
+         */
+        ChunkTriggerResponse: {
+            /**
+             * Chunk Set Id
+             * Format: uuid
+             */
+            chunk_set_id: string;
+            /** Message */
+            message: string;
+            /** Reused */
+            reused: boolean;
+            /** Status */
+            status: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
         };
         /** ChunkUpdate */
         ChunkUpdate: {
@@ -2527,7 +2743,7 @@ export interface components {
              * @description 稳定大写 snake case 业务错误码，前端按 code 分支
              * @enum {string}
              */
-            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE";
+            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE" | "IDEMPOTENCY_KEY_REUSED" | "CHUNK_RUN_IN_PROGRESS" | "CHUNK_SET_IMMUTABLE";
             /**
              * Context
              * @description 仅含经 schema 声明的非敏感结构；允许为 null
@@ -6167,6 +6383,65 @@ export interface operations {
             };
         };
     };
+    chunk_set_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                csid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChunkSetDetailResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     project_clone_config: {
         parameters: {
             query?: never;
@@ -7636,7 +7911,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AsyncTaskAcceptedResponse"];
+                    "application/json": components["schemas"]["ChunkTriggerResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -7677,12 +7952,85 @@ export interface operations {
             };
         };
     };
+    document_list_chunk_sets: {
+        parameters: {
+            query?: {
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path: {
+                pid: string;
+                did: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChunkSetListResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     document_list_chunks: {
         parameters: {
             query?: {
                 page?: number;
                 page_size?: number;
                 status?: string | null;
+                chunk_set_id?: string | null;
+                section_id?: string | null;
             };
             header?: never;
             path: {

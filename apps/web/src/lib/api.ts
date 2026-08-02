@@ -329,7 +329,6 @@ export function parseJsonObject(value: string): Record<string, unknown> {
 export interface RequestInitTyped {
   params?: Record<string, string | number>;
   query?: Record<string, string | number | boolean | undefined | null>;
-  headers?: Record<string, string>;
   signal?: AbortSignal;
   timeout?: number;
   /** 附加请求头（如 Idempotency-Key）。与 Authorization 合并，不覆盖既有头。 */

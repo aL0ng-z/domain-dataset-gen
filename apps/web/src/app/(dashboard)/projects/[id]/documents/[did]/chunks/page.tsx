@@ -13,7 +13,7 @@ import type { components } from "@/lib/api/generated";
 import { ArrowLeftIcon } from "lucide-react";
 
 type Chunk = components["schemas"]["ChunkResponse"];
-type Section = components["schemas"]["SectionResponse"];
+type ChunkSet = components["schemas"]["ChunkSetSummary"];
 
 export default function ChunksPage() {
   const params = useParams<{ id: string; did: string }>();
@@ -23,17 +23,23 @@ export default function ChunksPage() {
   const [chunks, setChunks] = useState<Chunk[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [sections, setSections] = useState<Section[]>([]);
-  const [sectionFilter, setSectionFilter] = useState<string>("all");
+  const [chunkSets, setChunkSets] = useState<ChunkSet[]>([]);
+  const [selectedSetId, setSelectedSetId] = useState<string>("active");
+  const [activeSet, setActiveSet] = useState<ChunkSet | null>(null);
 
+  // 加载版本历史，确定 active set。
   useEffect(() => {
     api
-      .get("/projects/{pid}/documents/{did}/sections", {
+      .get("/projects/{pid}/documents/{did}/chunk-sets", {
         params: { pid: projectId, did: docId },
-        query: { page: 1, page_size: 100 },
+        query: { page: 1, page_size: 50 },
       })
-      .then((data) => setSections(data.items))
-      .catch(() => {});
+      .then((data) => {
+        setChunkSets(data.items);
+        const active = data.items.find((cs) => cs.is_active) ?? null;
+        setActiveSet(active);
+      })
+      .catch(() => toast.error("加载切分版本失败"));
   }, [projectId, docId]);
 
   const fetchChunks = useCallback(() => {
@@ -44,7 +50,7 @@ export default function ChunksPage() {
         query: {
           page,
           page_size: pageSize,
-          section_id: sectionFilter !== "all" ? sectionFilter : undefined,
+          chunk_set_id: selectedSetId !== "active" ? selectedSetId : undefined,
         },
       })
       .then((data) => {
@@ -53,23 +59,13 @@ export default function ChunksPage() {
       })
       .catch(() => toast.error("加载分块列表失败"))
       .finally(() => setLoading(false));
-  }, [projectId, docId, page, pageSize, sectionFilter]);
+  }, [projectId, docId, page, pageSize, selectedSetId]);
 
   useEffect(() => {
-
-
     // 延迟到下一事件循环再触发请求，避免在 effect 内同步 setState
-
-
     // （react-hooks/set-state-in-effect），并通过 cleanup 取消未完成的调度。
-
-
     const timer = setTimeout(fetchChunks, 0);
-
-
     return () => clearTimeout(timer);
-
-
   }, [fetchChunks]);
 
   const columns: ColumnDef<Chunk>[] = [
@@ -121,6 +117,12 @@ export default function ChunksPage() {
     },
   ];
 
+  const selectedSet = selectedSetId === "active" ? activeSet : chunkSets.find((cs) => cs.id === selectedSetId);
+  // 最新版本失败时展示失败原因（旧 active set 仍保留并可查看）。
+  const newestFailed = [...chunkSets].sort((a, b) => b.version - a.version).find(
+    (cs) => cs.status === "failed" || cs.status === "cancelled",
+  );
+
   return (
     <div className="p-6">
       <div className="mb-6">
@@ -138,25 +140,66 @@ export default function ChunksPage() {
               共 {total} 个分块
             </p>
           </div>
-          <div>
+          <div className="flex items-center gap-2">
+            {/* T06 §6：切换历史 set 只读查看；不得把多个 set 的同 ordinal Chunk 混在一张表。 */}
             <select
               className="rounded border px-3 py-1.5 text-sm bg-transparent"
-              value={sectionFilter}
+              value={selectedSetId}
               onChange={(e) => {
-                setSectionFilter(e.target.value);
+                setSelectedSetId(e.target.value);
                 setPage(1);
               }}
             >
-              <option value="all">全部章节</option>
-              {sections.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.ordinal + 1}. {s.heading_path || "无标题"}
-                </option>
-              ))}
+              <option value="active">
+                {activeSet ? `Active 版本 v${activeSet.version}` : "Active 版本（无）"}
+              </option>
+              {chunkSets
+                .filter((cs) => cs.id !== activeSet?.id)
+                .map((cs) => (
+                  <option key={cs.id} value={cs.id}>
+                    v{cs.version} {cs.status === "failed" ? "（失败）" : cs.status === "cancelled" ? "（已取消）" : cs.is_legacy ? "（历史）" : ""}
+                  </option>
+                ))}
             </select>
           </div>
         </div>
       </div>
+
+      {/* 页头：显示 set 版本、来源 clean version、配置快照、数量、总 token 和 hash（T06 §6）。 */}
+      {newestFailed && (
+        <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <span>最新版本 v{newestFailed.version} 切分{newestFailed.status === "failed" ? "失败" : "已取消"}</span>
+            {newestFailed.error_message && <span>失败原因：{newestFailed.error_message}</span>}
+            <span>旧 active 版本仍保留，可继续查看。</span>
+          </div>
+        </div>
+      )}
+      {selectedSet && (
+        <div className="mb-4 rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            <span>版本：v{selectedSet.version}</span>
+            {selectedSet.cleaned_document_version !== null &&
+              selectedSet.cleaned_document_version !== undefined && (
+                <span>来源清洗版本：v{selectedSet.cleaned_document_version}</span>
+              )}
+            {selectedSet.chunk_profile_name && (
+              <span>配置：{selectedSet.chunk_profile_name}</span>
+            )}
+            <span>数量：{selectedSet.total_chunks}</span>
+            <span>总 token：{selectedSet.total_tokens}</span>
+            {selectedSet.output_sha256 && (
+              <span className="font-mono">hash：{selectedSet.output_sha256.slice(0, 12)}…</span>
+            )}
+            {selectedSet.status === "failed" && selectedSet.error_message && (
+              <span className="text-destructive">失败原因：{selectedSet.error_message}</span>
+            )}
+            {selectedSet.status === "failed" && (
+              <span className="text-destructive">切分失败，旧 active 版本仍保留。</span>
+            )}
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="py-12 text-center text-sm text-muted-foreground">

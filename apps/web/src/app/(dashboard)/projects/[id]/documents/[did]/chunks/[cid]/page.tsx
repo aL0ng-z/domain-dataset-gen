@@ -118,12 +118,22 @@ export default function ChunkDetailPage() {
           <span className="text-sm text-muted-foreground">
             Token: {chunk.token_count}
           </span>
+          {chunk.chunk_set_version !== null && chunk.chunk_set_version !== undefined && (
+            <span className="text-sm text-muted-foreground">
+              切分版本: v{chunk.chunk_set_version}
+            </span>
+          )}
           {chunk.heading_path && (
             <span className="text-sm text-muted-foreground">
               路径: {chunk.heading_path}
             </span>
           )}
         </div>
+        {chunk.chunk_set_version !== null && chunk.chunk_set_version !== undefined && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            切分版本不可变，历史集合不可原地编辑。
+          </p>
+        )}
       </div>
 
       {/* Chunk content */}
