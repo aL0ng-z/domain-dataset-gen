@@ -67,6 +67,7 @@ services:
         mc alias set local http://minio:9000 $${TEST_MINIO_ACCESS_KEY} $${TEST_MINIO_SECRET_KEY} &&
         mc mb --ignore-existing local/$${TEST_MINIO_BUCKET_DOCUMENTS} &&
         mc mb --ignore-existing local/$${TEST_MINIO_BUCKET_OUTPUTS} &&
+        mc version enable local/$${TEST_MINIO_BUCKET_OUTPUTS} &&
         echo "Test buckets created successfully"
 
 volumes:

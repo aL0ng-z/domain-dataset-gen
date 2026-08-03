@@ -62,6 +62,7 @@ services:
         mc alias set local http://minio:9000 $${MINIO_ACCESS_KEY} $${MINIO_SECRET_KEY} &&
         mc mb --ignore-existing local/$${MINIO_BUCKET_DOCUMENTS} &&
         mc mb --ignore-existing local/$${MINIO_BUCKET_OUTPUTS} &&
+        mc version enable local/$${MINIO_BUCKET_OUTPUTS} &&
         echo "Buckets created successfully"
 
   # T07: 独立任务 runner（持久 PostgreSQL 队列消费者）。
