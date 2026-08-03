@@ -16,8 +16,9 @@ type CuratedItem = components["schemas"]["CuratedItemResponse"];
 const STATUS_OPTIONS = [
   { value: "all", label: "全部状态" },
   { value: "draft", label: "草稿" },
-  { value: "active", label: "活跃" },
-  { value: "archived", label: "已归档" },
+  { value: "approved", label: "已批准" },
+  { value: "exported", label: "已导出" },
+  { value: "deprecated", label: "已废弃" },
 ];
 
 const TYPE_OPTIONS = [

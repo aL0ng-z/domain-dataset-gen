@@ -14,13 +14,20 @@ import {
 } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { Textarea } from "@/components/ui/textarea";
-import { api, formatJsonPreview, parseJsonObject } from "@/lib/api";
+import {
+  api,
+  formatJsonPreview,
+  parseJsonObject,
+  type ApiErrorException,
+} from "@/lib/api";
 import type { components } from "@/lib/api/generated";
 import {
   ArrowLeftIcon,
   SaveIcon,
   Loader2Icon,
   HistoryIcon,
+  CheckCircleIcon,
+  RotateCcwIcon,
 } from "lucide-react";
 
 type CuratedItemDetail = components["schemas"]["CuratedItemResponse"];
@@ -34,24 +41,44 @@ export default function CuratedItemDetailPage() {
 
   const [item, setItem] = useState<CuratedItemDetail | null>(null);
   const [editContent, setEditContent] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
   const [evidenceLinks, setEvidenceLinks] = useState<EvidenceLink[]>([]);
   const [revisions, setRevisions] = useState<CuratedRevision[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [serverRevision, setServerRevision] = useState<number | null>(null);
+  const [isReviewer, setIsReviewer] = useState(false);
 
   const fetchItem = useCallback(() => {
     const pid = { pid: projectId, iid: itemId };
     Promise.all([
       api.get("/projects/{pid}/curated-items/{iid}", { params: pid }),
-      api.get("/projects/{pid}/curated-items/{iid}/evidence-links", { params: pid }).catch(() => [] as EvidenceLink[]),
-      api.get("/projects/{pid}/curated-items/{iid}/revisions", { params: pid }).catch(() => [] as CuratedRevision[]),
+      api
+        .get("/projects/{pid}/curated-items/{iid}/evidence", {
+          params: pid,
+          query: { page: 1, page_size: 20 },
+        })
+        .catch(() => ({ items: [] as EvidenceLink[], total: 0 })),
+      api
+        .get("/projects/{pid}/curated-items/{iid}/revisions", {
+          params: pid,
+          query: { page: 1, page_size: 20 },
+        })
+        .catch(() => ({ items: [] as CuratedRevision[], total: 0 })),
+      api
+        .get("/auth/me")
+        .then((u) => (u as { role?: string }).role)
+        .catch(() => undefined),
     ])
-      .then(([data, links, revs]) => {
+      .then(([data, links, revs, globalRole]) => {
         setItem(data);
         setEditContent(formatJsonPreview(data.content));
-        setEvidenceLinks(links);
-        setRevisions(revs);
+        setServerRevision(data.current_revision);
+        setEvidenceLinks(links.items);
+        setRevisions(revs.items);
+        // reviewer 以上（全局角色）可见审批控件；editor 不展示（后端仍权威）。
+        setIsReviewer(globalRole === "reviewer" || globalRole === "admin");
       })
       .catch(() => toast.error("加载知识资产详情失败"))
       .finally(() => setLoading(false));
@@ -66,23 +93,100 @@ export default function CuratedItemDetailPage() {
   }, [fetchItem]);
 
   const handleSave = useCallback(async () => {
+    if (!item) return;
     setSaving(true);
     try {
       // 请求前解析校验：确认编辑内容为 JSON object。
       const parsed = parseJsonObject(editContent);
       await api.patch(
         "/projects/{pid}/curated-items/{iid}",
-        { content: parsed },
+        {
+          content: parsed,
+          revision_note: "修正文案",
+          expected_revision: item.current_revision,
+        },
         { params: { pid: projectId, iid: itemId } },
       );
       toast.success("保存成功");
       fetchItem();
-    } catch {
-      toast.error("保存失败（内容必须是 JSON 对象）");
+    } catch (err) {
+      const e = err as ApiErrorException;
+      if (e?.apiError?.code === "CURATED_REVISION_CONFLICT") {
+        // 409 并发冲突：保留本地草稿、展示服务端当前 revision，提供重新加载。
+        const current =
+          (e.apiError.context as { current_revision?: number } | undefined)
+            ?.current_revision;
+        setServerRevision(current ?? null);
+        toast.error(
+          `版本冲突：服务端当前为 v${current ?? "?"}，已保留本地草稿`,
+        );
+      } else if (e?.apiError?.code === "CURATED_REVIEW_STATE_CONFLICT") {
+        toast.error("仅草稿条目可编辑；审批状态请先退审");
+      } else if (e?.apiError?.kind === "validation") {
+        toast.error("内容必须是 JSON 对象");
+      } else {
+        toast.error("保存失败");
+      }
     } finally {
       setSaving(false);
     }
-  }, [projectId, itemId, editContent, fetchItem]);
+  }, [projectId, itemId, editContent, item, fetchItem]);
+
+  const handleApprove = useCallback(async () => {
+    if (!item) return;
+    try {
+      await api.post(
+        "/projects/{pid}/curated-items/{iid}/review",
+        {
+          action: "approve",
+          reason: null,
+          expected_revision: item.current_revision,
+        },
+        { params: { pid: projectId, iid: itemId } },
+      );
+      toast.success("已批准");
+      fetchItem();
+    } catch (err) {
+      const e = err as ApiErrorException;
+      if (e?.apiError?.code === "CURATED_APPROVAL_GATE_FAILED") {
+        toast.error("审批门禁不满足（证据/源候选/内容）");
+      } else if (e?.apiError?.code === "CURATED_REVISION_CONFLICT") {
+        toast.error("版本冲突，请重新加载");
+      } else if (e?.apiError?.code === "CURATED_REVIEW_STATE_CONFLICT") {
+        toast.error("当前状态不允许批准");
+      } else {
+        toast.error("审批失败");
+      }
+    }
+  }, [projectId, itemId, item, fetchItem]);
+
+  const handleNeedsRevision = useCallback(async () => {
+    if (!item) return;
+    const reason = window.prompt("请输入退审原因：");
+    if (!reason) return;
+    try {
+      await api.post(
+        "/projects/{pid}/curated-items/{iid}/review",
+        {
+          action: "needs_revision",
+          reason,
+          expected_revision: item.current_revision,
+        },
+        { params: { pid: projectId, iid: itemId } },
+      );
+      toast.success("已退回草稿");
+      fetchItem();
+    } catch (err) {
+      const e = err as ApiErrorException;
+      if (e?.apiError?.code === "CURATED_REVISION_CONFLICT") {
+        toast.error("版本冲突，请重新加载");
+      } else if (e?.apiError?.code === "CURATED_REVIEW_STATE_CONFLICT") {
+        toast.error("仅已批准条目可退审");
+      } else {
+        toast.error("退审失败");
+      }
+    }
+  }, [projectId, itemId, item, fetchItem]);
 
   if (loading) {
     return (
@@ -122,6 +226,15 @@ export default function CuratedItemDetailPage() {
               <span className="text-sm text-muted-foreground">
                 {item.item_type}
               </span>
+              <span className="text-sm text-muted-foreground">
+                v{item.current_revision}
+              </span>
+              {serverRevision !== null &&
+                serverRevision !== item.current_revision && (
+                  <span className="text-xs text-destructive">
+                    服务端已更新到 v{serverRevision}
+                  </span>
+                )}
             </div>
           </div>
           <div className="flex gap-2">
@@ -132,14 +245,28 @@ export default function CuratedItemDetailPage() {
               <HistoryIcon className="size-4" />
               修订历史
             </Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving ? (
-                <Loader2Icon className="size-4 animate-spin" />
-              ) : (
-                <SaveIcon className="size-4" />
-              )}
-              保存
-            </Button>
+            {item.status === "draft" && (
+              <Button onClick={handleSave} disabled={saving}>
+                {saving ? (
+                  <Loader2Icon className="size-4 animate-spin" />
+                ) : (
+                  <SaveIcon className="size-4" />
+                )}
+                保存
+              </Button>
+            )}
+            {isReviewer && item.status === "draft" && (
+              <Button onClick={handleApprove}>
+                <CheckCircleIcon className="size-4" />
+                批准
+              </Button>
+            )}
+            {isReviewer && item.status === "approved" && (
+              <Button variant="destructive" onClick={handleNeedsRevision}>
+                <RotateCcwIcon className="size-4" />
+                退审
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -150,13 +277,35 @@ export default function CuratedItemDetailPage() {
           <Card>
             <CardHeader>
               <CardTitle>内容 (JSON)</CardTitle>
+              <CardDescription>
+                {item.status === "approved"
+                  ? "已批准条目不可编辑；如需修改请先退审"
+                  : "修改保存将生成新 revision（v" +
+                    (item.current_revision + 1) +
+                    "）"}
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <Textarea
                 value={editContent}
-                onChange={(e) => setEditContent(e.target.value)}
+                onChange={(e) => {
+                  setEditContent(e.target.value);
+                  try {
+                    parseJsonObject(e.target.value);
+                    setEditError(null);
+                  } catch (err) {
+                    setEditError(
+                      err instanceof Error ? err.message : "JSON 解析失败",
+                    );
+                  }
+                }}
+                readOnly={item.status === "approved"}
                 className="min-h-64 font-mono text-sm"
+                data-testid="curated-json-editor"
               />
+              {editError && (
+                <div className="mt-1 text-xs text-destructive">{editError}</div>
+              )}
             </CardContent>
           </Card>
 
@@ -165,7 +314,7 @@ export default function CuratedItemDetailPage() {
             <CardHeader>
               <CardTitle>证据链接</CardTitle>
               <CardDescription>
-                追溯到原始文档、分块和页面的证据
+                追溯到原始文档、分块、精确字符范围与 quote 的证据
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -191,6 +340,12 @@ export default function CuratedItemDetailPage() {
                         </div>
                         <div>
                           <span className="text-muted-foreground">
+                            字符范围:{" "}
+                          </span>
+                          [{link.start_char},{link.end_char})
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">
                             标题路径:{" "}
                           </span>
                           {link.heading_path || "-"}
@@ -199,7 +354,9 @@ export default function CuratedItemDetailPage() {
                           <span className="text-muted-foreground">
                             页码:{" "}
                           </span>
-                          {link.source_pages ? formatJsonPreview(link.source_pages) : "-"}
+                          {link.source_pages
+                            ? formatJsonPreview(link.source_pages)
+                            : "-"}
                         </div>
                       </div>
                       {link.quote_text && (
@@ -212,6 +369,11 @@ export default function CuratedItemDetailPage() {
                       )}
                     </div>
                   ))}
+                  {evidenceLinks.length >= 20 && (
+                    <div className="text-xs text-muted-foreground">
+                      证据较多，仅显示第一页
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="text-sm text-muted-foreground">
@@ -222,7 +384,7 @@ export default function CuratedItemDetailPage() {
           </Card>
         </div>
 
-        {/* Sidebar: revision history */}
+        {/* Sidebar: revision history + approval info */}
         <div>
           {showHistory && (
             <Card>
@@ -235,23 +397,30 @@ export default function CuratedItemDetailPage() {
                     {revisions.map((rev) => (
                       <div
                         key={rev.id}
-                        className="border rounded p-2 text-xs"
+                        className={`border rounded p-2 text-xs ${
+                          item.approved_revision_id === rev.id
+                            ? "border-green-500"
+                            : ""
+                        }`}
                       >
                         <div className="flex items-center justify-between">
-                          <span className="font-mono">
-                            {rev.id.slice(0, 8)}
-                          </span>
+                          <span className="font-mono">v{rev.version}</span>
                           <span className="text-muted-foreground">
                             {new Date(rev.created_at).toLocaleString("zh-CN")}
                           </span>
                         </div>
+                        {item.approved_revision_id === rev.id && (
+                          <div className="text-xs text-green-600">
+                            当前已批准修订
+                          </div>
+                        )}
                         {rev.revision_note && (
                           <div className="text-muted-foreground mt-0.5">
                             备注: {rev.revision_note}
                           </div>
                         )}
-                        <div className="mt-1 truncate">
-                          {formatJsonPreview(rev.content)}
+                        <div className="mt-1 font-mono text-[10px] truncate">
+                          sha256: {rev.content_sha256?.slice(0, 16)}…
                         </div>
                       </div>
                     ))}
@@ -267,24 +436,34 @@ export default function CuratedItemDetailPage() {
 
           <Card className={showHistory ? "mt-4" : ""}>
             <CardHeader>
-              <CardTitle>元信息</CardTitle>
+              <CardTitle>审批信息</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
               <div>
                 <span className="text-muted-foreground">状态: </span>
-                {item.status}
+                <StatusBadge status={item.status} />
               </div>
+              <div>
+                <span className="text-muted-foreground">当前版本: </span>
+                v{item.current_revision}
+              </div>
+              {item.approved_revision_id && (
+                <div>
+                  <span className="text-muted-foreground">已批准修订: </span>
+                  <span className="font-mono text-xs">
+                    {item.approved_revision_id.slice(0, 8)}
+                  </span>
+                </div>
+              )}
+              {item.approved_at && (
+                <div>
+                  <span className="text-muted-foreground">批准时间: </span>
+                  {new Date(item.approved_at).toLocaleString("zh-CN")}
+                </div>
+              )}
               <div>
                 <span className="text-muted-foreground">候选 ID: </span>
                 <span className="font-mono text-xs">{item.candidate_id}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">创建时间: </span>
-                {new Date(item.created_at).toLocaleString("zh-CN")}
-              </div>
-              <div>
-                <span className="text-muted-foreground">更新时间: </span>
-                {new Date(item.updated_at).toLocaleString("zh-CN")}
               </div>
             </CardContent>
           </Card>
