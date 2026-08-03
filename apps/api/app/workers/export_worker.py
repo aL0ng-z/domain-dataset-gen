@@ -219,26 +219,21 @@ async def _mark_export_processing(db: AsyncSession, export_id: uuid.UUID, task_i
     )
 
 
-async def _make_export_terminal_hook(export_id: uuid.UUID):
-    """导出终态钩子：任务失败/取消时把 Export 收敛为 failed（不覆盖已完成产物）。"""
+async def _make_export_terminal_hook(export_id: uuid.UUID, task_id: uuid.UUID):
+    """导出终态钩子：任务失败/取消时把 Export 收敛为 failed（不覆盖已完成产物）。
+
+    错误码从 Task.error_code 读取（runner 已落库），保证 PROVENANCE_SNAPSHOT_MISSING
+    等稳定错误码正确传播到 Export。
+    """
 
     async def _hook(db: AsyncSession, status: str, error_message: str | None) -> None:
+        from app.models.task import Task
+
+        task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
+        error_code = (task.error_code if task else None) or "BUSINESS_ERROR"
         if status == "cancelled":
-            await db.execute(
-                update(Export)
-                .where(
-                    Export.id == export_id,
-                    Export.is_legacy.is_(False),
-                    Export.status.in_(("queued", "processing")),
-                )
-                .values(
-                    status="failed",
-                    error_code="TASK_CANCELLED",
-                    error_message="导出任务已取消",
-                    updated_at=datetime.now(UTC),
-                )
-            )
-            return
+            error_code = "TASK_CANCELLED"
+            error_message = error_message or "导出任务已取消"
         await db.execute(
             update(Export)
             .where(
@@ -248,7 +243,7 @@ async def _make_export_terminal_hook(export_id: uuid.UUID):
             )
             .values(
                 status="failed",
-                error_code="BUSINESS_ERROR",
+                error_code=error_code,
                 error_message=error_message or "导出失败",
                 updated_at=datetime.now(UTC),
             )
@@ -275,7 +270,7 @@ async def _export_common(
     )
 
     # 注册业务终态钩子：失败/取消时把 Export 收敛为 failed。
-    ctx.set_terminal_hook(await _make_export_terminal_hook(export_id))
+    ctx.set_terminal_hook(await _make_export_terminal_hook(export_id, ctx.task_id))
 
     # 1. 校验 Export 存在且 queued/processing，标记 processing。
     export = (
@@ -410,12 +405,12 @@ async def _export_common(
 async def run_export_dataset_handler(ctx: ExecutionContext) -> None:
     """export_dataset:v1 handler。
 
-    payload: {"export_id": UUID, "dataset_id": UUID, "export_profile_id": UUID,
-              "created_by": UUID}
+    payload: {"export_id": UUID, "source_type": "dataset", "source_id": UUID,
+              "export_profile_id": UUID, "created_by": UUID}
     """
     payload = ctx.payload
     export_id = uuid.UUID(str(payload["export_id"]))
-    dataset_id = uuid.UUID(str(payload["dataset_id"]))
+    source_id = uuid.UUID(str(payload["source_id"]))
     export_profile_id = uuid.UUID(str(payload["export_profile_id"]))
     created_by = uuid.UUID(str(payload["created_by"]))
 
@@ -423,7 +418,7 @@ async def run_export_dataset_handler(ctx: ExecutionContext) -> None:
         ctx,
         export_id=export_id,
         source_type="dataset",
-        source_id=dataset_id,
+        source_id=source_id,
         export_profile_id=export_profile_id,
         created_by=created_by,
     )
@@ -432,12 +427,12 @@ async def run_export_dataset_handler(ctx: ExecutionContext) -> None:
 async def run_export_benchmark_handler(ctx: ExecutionContext) -> None:
     """export_benchmark:v1 handler。
 
-    payload: {"export_id": UUID, "benchmark_id": UUID, "export_profile_id": UUID,
-              "created_by": UUID}
+    payload: {"export_id": UUID, "source_type": "benchmark", "source_id": UUID,
+              "export_profile_id": UUID, "created_by": UUID}
     """
     payload = ctx.payload
     export_id = uuid.UUID(str(payload["export_id"]))
-    benchmark_id = uuid.UUID(str(payload["benchmark_id"]))
+    source_id = uuid.UUID(str(payload["source_id"]))
     export_profile_id = uuid.UUID(str(payload["export_profile_id"]))
     created_by = uuid.UUID(str(payload["created_by"]))
 
@@ -445,7 +440,7 @@ async def run_export_benchmark_handler(ctx: ExecutionContext) -> None:
         ctx,
         export_id=export_id,
         source_type="benchmark",
-        source_id=benchmark_id,
+        source_id=source_id,
         export_profile_id=export_profile_id,
         created_by=created_by,
     )

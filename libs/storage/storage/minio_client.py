@@ -79,13 +79,14 @@ class StorageClient:
                 return existing.version_id or ""
         except Exception:  # noqa: BLE001 - 对象不存在/不可读时正常 PUT
             pass
+        # MinIO 用户自定义 metadata 必须以 x-amz-meta- 前缀，否则签名计算失败。
         response = self.client.put_object(
             bucket,
             key,
             BytesIO(data),
             length=len(data),
             content_type=content_type,
-            metadata={"sha256": digest, "x-amz-meta-sha256": digest},
+            metadata={"x-amz-meta-sha256": digest},
         )
         version_id = getattr(response, "version_id", None) or ""
         return str(version_id)
@@ -140,3 +141,9 @@ def get_storage_client(endpoint: str, access_key: str, secret_key: str, secure: 
     if _storage_instance is None:
         _storage_instance = StorageClient(endpoint, access_key, secret_key, secure)
     return _storage_instance
+
+
+def reset_storage_client() -> None:
+    """Reset the singleton（测试隔离：避免跨测试复用错误凭据的客户端）。"""
+    global _storage_instance
+    _storage_instance = None
