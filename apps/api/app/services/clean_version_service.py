@@ -12,6 +12,7 @@ from app.models.cleaned_document_version import CleanedDocumentVersion
 from app.models.document import Document
 from app.models.review_record import ReviewRecord
 from app.models.section import CleaningJob, Section
+from app.storage_keys import build_storage_key
 from storage import get_storage_client
 
 
@@ -133,7 +134,7 @@ class CleanVersionService:
         merged_sha = content_sha256(merged)
 
         version_id = uuid.uuid4()
-        artifact_key = f"cleaned/{document_id}/{version_id}.md"
+        artifact_key = build_storage_key("cleaned", document_id, f"{version_id}.md")
 
         # ---- 发布阶段（Document 行锁）----
         doc = (

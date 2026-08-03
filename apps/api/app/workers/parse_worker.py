@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.models.document import Document
 from app.models.parse import ParseJob
+from app.storage_keys import build_storage_key
 from app.workers.execution import ExecutionContext
 from parsing import get_parser
 from storage import get_storage_client
@@ -93,7 +94,7 @@ async def run_parse_handler(ctx: ExecutionContext) -> None:
     await ctx.checkpoint()
 
     # Upload results (sync IO → thread pool)
-    md_key = f"{doc.project_id}/{document_id}/parsed/{parse_job.id}/raw.md"
+    md_key = build_storage_key(doc.project_id, document_id, "parsed", parse_job.id, "raw.md")
     await asyncio.to_thread(
         storage.upload_file,
         settings.minio_bucket_outputs,
@@ -102,7 +103,9 @@ async def run_parse_handler(ctx: ExecutionContext) -> None:
         "text/markdown",
     )
 
-    json_key = f"{doc.project_id}/{document_id}/parsed/{parse_job.id}/structured.json"
+    json_key = build_storage_key(
+        doc.project_id, document_id, "parsed", parse_job.id, "structured.json"
+    )
     await asyncio.to_thread(
         storage.upload_file,
         settings.minio_bucket_outputs,

@@ -51,7 +51,8 @@ os.environ.setdefault("MINIO_SECRET_KEY", "testminioadmin123")
 os.environ.setdefault("MINIO_BUCKET_DOCUMENTS", "documents-test")
 os.environ.setdefault("MINIO_BUCKET_OUTPUTS", "outputs-test")
 os.environ.setdefault("TEST_MINIO_PREFIX", "tests/")
-os.environ.setdefault("TEST_RUN_ID", uuid.uuid4().hex[:8])
+_test_run_id = os.environ.setdefault("TEST_RUN_ID", uuid.uuid4().hex[:8])
+os.environ.setdefault("MINIO_KEY_PREFIX", f"tests/{_test_run_id}/")
 
 from app.config import settings  # noqa: E402
 from tests import safety  # noqa: E402
@@ -59,15 +60,49 @@ from tests import safety  # noqa: E402
 if safety.is_testing() and settings.postgres_db not in safety.ALLOWED_TEST_DATABASE_NAMES:
     raise RuntimeError(f"POSTGRES_DB={settings.postgres_db!r} 不是测试数据库；拒绝运行测试。")
 
+_test_db_host = "127.0.0.1" if settings.postgres_host == "localhost" else settings.postgres_host
 TEST_DB_URL = (
     f"postgresql+asyncpg://{settings.postgres_user}:{settings.postgres_password}"
-    f"@{settings.postgres_host}:{settings.postgres_port}/{settings.postgres_db}"
+    f"@{_test_db_host}:{settings.postgres_port}/{settings.postgres_db}"
 )
 # 禁用 asyncpg 语句缓存：每次测试结束会 TRUNCATE 全表（涉及 catalog 锁），
 # 而 PREPARE 语句与 TRUNCATE 会竞争 AccessExclusiveLock，导致间歇性
 # DeadlockDetectedError。statement_cache_size=0 关闭 PREPARE，从根上消除该竞态。
 TEST_ENGINE_OPTIONS = {"connect_args": {"statement_cache_size": 0}}
 TEST_REDIS_URL = f"redis://{settings.redis_host}:{settings.redis_port}"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _cleanup_test_minio_versions() -> Generator[None, None, None]:
+    """删除本次 run 前缀下的精确对象版本和 delete marker。
+
+    绝不清空整个 bucket；测试前缀由随机 TEST_RUN_ID 隔离，适用于并发测试进程。
+    """
+    safety.assert_test_environment_ready(require_db=False, require_redis=False, require_minio=True)
+    if not settings.minio_bucket_documents.endswith("-test"):
+        raise RuntimeError("MINIO_BUCKET_DOCUMENTS 必须是 *-test，拒绝清理")
+    if not settings.minio_bucket_outputs.endswith("-test"):
+        raise RuntimeError("MINIO_BUCKET_OUTPUTS 必须是 *-test，拒绝清理")
+    prefix = settings.minio_key_prefix.strip("/") + "/"
+    safety.assert_minio_key_safe(prefix)
+    yield
+
+    from storage import get_storage_client, reset_storage_client
+
+    reset_storage_client()
+    client = get_storage_client(
+        settings.minio_endpoint,
+        settings.minio_access_key,
+        settings.minio_secret_key,
+        settings.minio_secure,
+    )
+    for bucket in (settings.minio_bucket_documents, settings.minio_bucket_outputs):
+        for item in client.list_object_versions(bucket, prefix):
+            client.delete_object_version(bucket, item["key"], item["version_id"])
+        remaining = client.list_object_versions(bucket, prefix)
+        if remaining:
+            raise AssertionError(f"测试 MinIO 清理后仍有残留: bucket={bucket} count={len(remaining)}")
+    reset_storage_client()
 
 
 @pytest.fixture(autouse=True)
@@ -210,6 +245,42 @@ async def _redis() -> AsyncGenerator[aioredis.Redis, None]:
         yield client
     finally:
         await client.aclose()
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def _assert_test_residue_empty(
+    _test_engine: AsyncEngine,
+    _prepare_schema,
+    _redis: aioredis.Redis,
+) -> AsyncGenerator[None, None]:
+    """全套测试结束后复核 PostgreSQL 业务表与测试 Redis 前缀无残留。"""
+    yield
+
+    residual_tables: dict[str, int] = {}
+    async with _test_engine.begin() as conn:
+        table_rows = await conn.execute(
+            text(
+                "SELECT tablename FROM pg_tables "
+                "WHERE schemaname='public' AND tablename <> 'alembic_version' "
+                "ORDER BY tablename"
+            )
+        )
+        for (table_name,) in table_rows:
+            count = (
+                await conn.execute(text(f'SELECT count(*) FROM "{table_name}"'))
+            ).scalar_one()
+            if count:
+                residual_tables[table_name] = count
+        if residual_tables:
+            await conn.execute(text(_TRUNCATE_ALL_SQL))
+
+    redis_prefix = os.environ.get("TEST_REDIS_PREFIX", "tests:")
+    redis_keys = [key async for key in _redis.scan_iter(match=f"{redis_prefix}*")]
+    if redis_keys:
+        await _redis.delete(*redis_keys)
+
+    assert not residual_tables, f"测试结束后 PostgreSQL 仍有残留: {residual_tables}"
+    assert not redis_keys, f"测试结束后 Redis 仍有残留: {redis_keys}"
 
 
 @pytest.fixture

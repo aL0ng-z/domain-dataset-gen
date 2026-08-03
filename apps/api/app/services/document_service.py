@@ -12,6 +12,7 @@ from app.config import settings
 from app.models.document import Document
 from app.models.parse import ParseJob
 from app.models.section import CleaningJob
+from app.storage_keys import build_storage_key
 from storage import get_storage_client
 
 
@@ -75,7 +76,7 @@ class DocumentService:
 
         # Upload to MinIO in thread pool
         doc_id = uuid.uuid4()
-        minio_key = f"{project_id}/{doc_id}/{filename}"
+        minio_key = build_storage_key(project_id, doc_id, filename)
         await asyncio.to_thread(
             self._storage.upload_file,
             settings.minio_bucket_documents, minio_key, file_data, "application/pdf",
