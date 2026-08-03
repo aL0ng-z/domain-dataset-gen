@@ -386,18 +386,20 @@ class TaskQueue:
         payload_version: int,
         max_attempts: int,
         timeout_seconds: int,
-    ) -> Task | None:
+    ) -> tuple[Task | None, bool]:
         """人工 retry：创建 retry_of_task_id=source 的新 queued Task。
 
         同一源任务最多一个非终态人工重试后继（约束在应用层 + 唯一覆盖索引）。
-        返回新 Task；若已存在非终态后继返回 None（调用方返回 409 或幂等复用）。
+        返回 ``(Task, created)``；若已有非终态后继则返回该后继与 ``False``。
         """
         # 检查源任务必须为 failed（调用方已校验，这里再确认）。
         source = (
-            await self.db.execute(select(Task).where(Task.id == source_task_id))
+            await self.db.execute(
+                select(Task).where(Task.id == source_task_id).with_for_update()
+            )
         ).scalar_one_or_none()
-        if source is None:
-            return None
+        if source is None or source.status != "failed":
+            return None, False
         # 检查是否已有非终态人工 retry 后继。
         existing = (
             await self.db.execute(
@@ -408,7 +410,7 @@ class TaskQueue:
             )
         ).scalars().first()
         if existing is not None:
-            return existing
+            return existing, False
 
         new_task = await self.create_task(
             project_id=project_id,
@@ -426,7 +428,7 @@ class TaskQueue:
         # 绑定后继链。
         new_task.retry_of_task_id = source_task_id
         await self.db.flush()
-        return new_task
+        return new_task, True
 
     # ------------------------------------------------------------------
     # Reaper

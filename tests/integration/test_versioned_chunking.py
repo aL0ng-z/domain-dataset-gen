@@ -239,10 +239,14 @@ async def test_failed_set_retry_reuses_same_frozen_set(
     # 标记失败。
     chunk_set.status = "failed"
     chunk_set.error_message = "boom"
+    task.status = "failed"
+    task.error_code = "BUSINESS_ERROR"
+    task.error_message = "boom"
+    task.completed_at = datetime.now(UTC)
     await db_session.commit()
 
     # 人工 retry：创建 retry_of_task_id 后继（payload 复用同一 chunk_set_id）。
-    new_task = await TaskQueue(db_session).create_retry(
+    new_task, created = await TaskQueue(db_session).create_retry(
         source_task_id=task.id,
         idempotency_key=f"retry-{uuid.uuid4()}:d",
         project_id=task.project_id,
@@ -258,6 +262,7 @@ async def test_failed_set_retry_reuses_same_frozen_set(
     )
     await db_session.commit()
     assert new_task is not None
+    assert created is True
     assert new_task.retry_of_task_id == task.id
     assert new_task.payload["chunk_set_id"] == str(chunk_set.id)
 

@@ -295,7 +295,7 @@ async def test_manual_retry_creates_new_task(db_session: AsyncSession, org):
     )
     await db_session.commit()
 
-    new_task = await q.create_retry(
+    new_task, created = await q.create_retry(
         source_task_id=source.id,
         idempotency_key="retry-abc:digest",
         project_id=source.project_id,
@@ -312,6 +312,7 @@ async def test_manual_retry_creates_new_task(db_session: AsyncSession, org):
     await db_session.commit()
 
     assert new_task is not None
+    assert created is True
     assert new_task.id != source.id
     assert new_task.retry_of_task_id == source.id
     assert new_task.status == "queued"
@@ -320,7 +321,7 @@ async def test_manual_retry_creates_new_task(db_session: AsyncSession, org):
     assert src.status == "failed"
 
     # 同 key 再次 retry：返回既有后继，不重复创建。
-    again = await q.create_retry(
+    again, created_again = await q.create_retry(
         source_task_id=source.id,
         idempotency_key="retry-abc:digest",
         project_id=source.project_id,
@@ -335,6 +336,7 @@ async def test_manual_retry_creates_new_task(db_session: AsyncSession, org):
         timeout_seconds=source.timeout_seconds,
     )
     await db_session.commit()
+    assert created_again is False
     assert again.id == new_task.id
     # 只有唯一一个后继。
     successors = (

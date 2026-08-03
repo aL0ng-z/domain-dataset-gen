@@ -8,15 +8,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.models.project import Project
 from app.models.task import Task, TaskAttempt
-from app.workers.execution import ExecutionContext
+from app.workers.execution import ExecutionContext, HandlerRegistry
 from app.workers.queue import TaskQueue
 from app.workers.runner import TaskRunner
 
@@ -188,3 +190,175 @@ async def test_reaper_cancels_task_with_cancel_request(
     fresh = (await db_session.execute(select(Task).where(Task.id == task.id))).scalar_one()
     assert fresh.status == "cancelled"
     assert stats["cancelled"] == 1
+
+
+async def test_cancel_is_not_blocked_by_running_handler_and_rolls_back_business_write(
+    db_session: AsyncSession,
+    org,
+    _test_session_factory: async_sessionmaker[AsyncSession],
+):
+    """handler 期间不持有 Task 行锁；取消可提交且 checkpoint 阻止业务发布。"""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    published: list[uuid.UUID] = []
+    project = org["projects"]["a"]
+    original_description = project.description
+
+    async def blocking_handler(ctx: ExecutionContext) -> None:
+        await ctx.db.execute(
+            update(Project)
+            .where(Project.id == ctx.project_id)
+            .values(description="不得发布的临时业务写入")
+        )
+        entered.set()
+        await release.wait()
+        await ctx.checkpoint()
+        published.append(ctx.task_id)
+
+    registry = HandlerRegistry()
+    registry.register("test:cancel-unblocked", 1)(blocking_handler)
+    await db_session.commit()
+    task = await _make_task(
+        db_session,
+        handler="test:cancel-unblocked",
+        project_id=project.id,
+        created_by=org["users"]["admin"].id,
+    )
+    runner = TaskRunner(_test_session_factory, registry, worker_id="test-cancel-runner")
+    # 预先签出第二条连接，避免 Windows/localhost 新建连接延迟干扰“行锁不阻塞”断言。
+    async with _test_session_factory() as cancel_db:
+        await cancel_db.execute(select(Task.id).where(Task.id == task.id))
+        runner_call = asyncio.create_task(runner._claim_and_execute())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        try:
+            ok, status = await asyncio.wait_for(
+                TaskQueue(cancel_db).request_cancel(
+                    task_id=task.id,
+                    cancel_requested_by=org["users"]["admin"].id,
+                ),
+                timeout=2,
+            )
+            await cancel_db.commit()
+            assert ok is True
+            assert status == "cancelling"
+        finally:
+            release.set()
+        await asyncio.wait_for(runner_call, timeout=5)
+
+    async with _test_session_factory() as verify_db:
+        fresh_task = (
+            await verify_db.execute(select(Task).where(Task.id == task.id))
+        ).scalar_one()
+        fresh_project = (
+            await verify_db.execute(select(Project).where(Project.id == project.id))
+        ).scalar_one()
+        assert fresh_task.status == "cancelled"
+        assert fresh_project.description == original_description
+    assert published == []
+
+
+async def test_heartbeat_and_lease_refresh_are_visible_to_other_sessions(
+    db_session: AsyncSession,
+    org,
+    _test_session_factory: async_sessionmaker[AsyncSession],
+):
+    """心跳和按需 lease 刷新使用独立事务并立即对其他连接可见。"""
+    await db_session.commit()
+    task = await _make_task(
+        db_session,
+        handler="test:heartbeat",
+        project_id=org["projects"]["a"].id,
+        created_by=org["users"]["admin"].id,
+    )
+    claimed = await TaskQueue(db_session).claim_due(worker_id="heartbeat-worker", batch=1)
+    await db_session.commit()
+    task = claimed[0]
+    old = datetime.now(UTC) - timedelta(minutes=5)
+    async with _test_session_factory() as setup_db:
+        await setup_db.execute(
+            update(Task)
+            .where(Task.id == task.id)
+            .values(heartbeat_at=old, lease_expires_at=old)
+        )
+        await setup_db.commit()
+
+    ctx = ExecutionContext(
+        task_id=task.id,
+        run_token=task.run_token,
+        project_id=task.project_id,
+        attempt_no=task.attempt_count,
+        worker_id="heartbeat-worker",
+        payload={},
+        payload_version=1,
+        db=db_session,
+        queue=TaskQueue(db_session),
+        state_version=task.state_version,
+        control_session_factory=_test_session_factory,
+    )
+    assert await ctx.heartbeat() is True
+    async with _test_session_factory() as observer:
+        after_heartbeat = (
+            await observer.execute(select(Task).where(Task.id == task.id))
+        ).scalar_one()
+        assert after_heartbeat.heartbeat_at > old
+        assert after_heartbeat.lease_expires_at > datetime.now(UTC)
+
+    before_refresh = datetime.now(UTC)
+    assert await ctx.refresh_lease(17) is True
+    async with _test_session_factory() as observer:
+        after_refresh = (
+            await observer.execute(select(Task).where(Task.id == task.id))
+        ).scalar_one()
+        assert after_refresh.lease_expires_at >= before_refresh + timedelta(seconds=16)
+
+
+async def test_retryable_failure_runs_terminal_hook_only_after_attempts_exhausted(
+    db_session: AsyncSession,
+    org,
+    _test_session_factory: async_sessionmaker[AsyncSession],
+):
+    """自动回队不是业务终态；只有额度耗尽后才运行 terminal hook。"""
+    hook_statuses: list[str] = []
+
+    async def failing_handler(ctx: ExecutionContext) -> None:
+        async def terminal_hook(_db: AsyncSession, status: str, _message: str | None) -> None:
+            hook_statuses.append(status)
+
+        ctx.set_terminal_hook(terminal_hook)
+        raise TimeoutError("transient")
+
+    registry = HandlerRegistry()
+    registry.register("test:retry-terminal", 1)(failing_handler)
+    await db_session.commit()
+    task = await _make_task(
+        db_session,
+        handler="test:retry-terminal",
+        project_id=org["projects"]["a"].id,
+        created_by=org["users"]["admin"].id,
+        max_attempts=2,
+    )
+    runner = TaskRunner(_test_session_factory, registry, worker_id="test-retry-runner")
+
+    await runner._claim_and_execute()
+    async with _test_session_factory() as verify_db:
+        first = (
+            await verify_db.execute(select(Task).where(Task.id == task.id))
+        ).scalar_one()
+        assert first.status == "queued"
+        assert first.attempt_count == 1
+    assert hook_statuses == []
+
+    async with _test_session_factory() as due_db:
+        await due_db.execute(
+            update(Task).where(Task.id == task.id).values(next_run_at=datetime.now(UTC))
+        )
+        await due_db.commit()
+    await runner._claim_and_execute()
+
+    async with _test_session_factory() as verify_db:
+        exhausted = (
+            await verify_db.execute(select(Task).where(Task.id == task.id))
+        ).scalar_one()
+        assert exhausted.status == "failed"
+        assert exhausted.attempt_count == 2
+    assert hook_statuses == ["failed"]

@@ -150,7 +150,8 @@ class TaskRunner:
         async with self.session_factory() as session:
             queue = TaskQueue(session)
             try:
-                # 加锁读取（claim 已提交，可能被 reaper 改动）。
+                # 短事务加锁校验 claim；handler 启动前立即提交释放 Task 行锁。
+                # 业务事务不得在整个 handler 期间阻塞 cancel/heartbeat/reaper。
                 fresh = (
                     await session.execute(select(Task).where(Task.id == task.id).with_for_update())
                 ).scalar_one_or_none()
@@ -168,6 +169,11 @@ class TaskRunner:
                     await session.commit()
                     return
 
+                # 保存发布 CAS 所需的 claim 版本，然后释放控制面行锁。后续业务写入
+                # 仍使用当前 session 的新事务，并与 completed 转换原子提交。
+                task_state_version = task.state_version
+                await session.commit()
+
                 ctx = ExecutionContext(
                     task_id=task.id,
                     run_token=run_token,
@@ -178,6 +184,8 @@ class TaskRunner:
                     payload_version=task.payload_version or 1,
                     db=session,
                     queue=queue,
+                    state_version=task_state_version,
+                    control_session_factory=self.session_factory,
                     deadline=_now() + timedelta(seconds=max(1, task.timeout_seconds)),
                 )
 
@@ -219,7 +227,7 @@ class TaskRunner:
                     ok = await queue.transition(
                         task_id=task.id, run_token=run_token,
                         from_status="processing", to_status="completed",
-                        expected_state_version=task.state_version,
+                        expected_state_version=task_state_version,
                     )
                     if ok:
                         await queue.finish_attempt(
@@ -238,7 +246,7 @@ class TaskRunner:
                     ok = await queue.transition(
                         task_id=task.id, run_token=run_token,
                         from_status="processing", to_status="queued",
-                        expected_state_version=task.state_version,
+                        expected_state_version=task_state_version,
                         next_run_at=_now() + timedelta(seconds=delay),
                     )
                     if ok:
@@ -255,7 +263,7 @@ class TaskRunner:
                 # 在 rollback 前捕获 task 关键值（rollback 会 expire，导致 detached
                 # 对象 lazy-load 抛 DetachedInstanceError）。
                 task_id_snapshot = task.id
-                task_state_version_snapshot = task.state_version
+                task_state_version_snapshot = task_state_version
                 await session.rollback()
             except Exception:  # noqa: BLE001
                 logger.exception("执行 task %s 时发生未预期异常", task.id)
@@ -311,13 +319,16 @@ class TaskRunner:
                         error_message="任务已请求取消",
                     )
                 else:
-                    await self._handle_failure(
+                    failure_outcome = await self._handle_failure(
                         queue, current, run_token, attempt_no,
                         outcome.error_code, outcome.error, retriable=outcome.retriable,
                     )
                 # handler 注册的业务终态钩子（如 ChunkSet failed/cancelled 收敛）。
                 # 钩子内部用 CAS 收敛，且不覆盖已完成产物。
-                if terminal_hook is not None:
+                should_run_terminal_hook = outcome.status == "cancelled" or (
+                    outcome.status == "failed" and failure_outcome == "failed"
+                )
+                if terminal_hook is not None and should_run_terminal_hook:
                     try:
                         await terminal_hook(
                             session,
@@ -349,7 +360,7 @@ class TaskRunner:
     async def _handle_failure(
         self, queue: TaskQueue, task: Task, run_token: uuid.UUID, attempt_no: int,
         error_code: TaskErrorCode, message: str, *, retriable: bool,
-    ) -> None:
+    ) -> str:
         """按错误分类决定：可重试且有额度 -> 回 queued 退避；否则 failed。"""
         if retriable and task.attempt_count < task.max_attempts:
             from app.workers.queue import _backoff_delay
@@ -362,6 +373,7 @@ class TaskRunner:
                 error_message=message, error_code=error_code.value,
                 next_run_at=_now() + timedelta(seconds=delay),
             )
+            next_status = "requeued"
         else:
             ok = await queue.transition(
                 task_id=task.id, run_token=run_token,
@@ -369,6 +381,7 @@ class TaskRunner:
                 expected_state_version=task.state_version,
                 error_message=message, error_code=error_code.value,
             )
+            next_status = "failed"
 
         if ok:
             await queue.finish_attempt(
@@ -382,6 +395,8 @@ class TaskRunner:
                 task_id=task.id, run_token=run_token, attempt_no=attempt_no,
                 status="abandoned", error_code=error_code.value, error_message=message,
             )
+            return "abandoned"
+        return next_status
 
     async def _reap(self) -> None:
         async with self.session_factory() as session:

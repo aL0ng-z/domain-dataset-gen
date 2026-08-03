@@ -9,7 +9,7 @@ from app.database import get_db
 from app.dependencies import require_project_member
 from app.models.user import User
 from app.schemas.task import TaskAttemptResponse, TaskCancelResponse, TaskResponse
-from app.services.task_service import TaskService
+from app.services.task_service import RetryPreparationError, TaskService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
 
@@ -113,9 +113,15 @@ async def retry_task(
         )
 
     service = TaskService(db)
-    new_task, newly_created = await service.retry_task(
-        task, idempotency_key=idempotency_key, created_by=current_user.id
-    )
+    try:
+        new_task, newly_created = await service.retry_task(
+            task, idempotency_key=idempotency_key, created_by=current_user.id
+        )
+    except RetryPreparationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
     if new_task is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="任务重试创建失败")
     return _task_response(new_task)

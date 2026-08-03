@@ -23,7 +23,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.task import Task
 from app.workers.queue import TaskQueue
@@ -56,6 +56,12 @@ class ExecutionContext:
     payload_version: int
     db: AsyncSession
     queue: TaskQueue
+    # claim 时的 Task.state_version。业务发布必须使用该版本做 CAS，不能用
+    # attempt_no 代替（两者没有等价关系）。
+    state_version: int = 0
+    # 控制面读写使用独立短事务，避免 handler 的业务事务/行锁阻塞 cancel、
+    # heartbeat 与 reaper。测试中的轻量 context 可留空并回退到当前 session。
+    control_session_factory: async_sessionmaker[AsyncSession] | None = None
     deadline: datetime = field(default_factory=lambda: datetime.now(UTC) + timedelta(seconds=300))
     # 父任务聚合：handler 设置后 runner 将任务回队退避轮询（不标 completed）。
     requeue_after: int | None = field(default=None, init=False)
@@ -92,9 +98,19 @@ class ExecutionContext:
             raise TaskTimeoutError("任务执行超时")
 
         if refresh:
-            task = (
-                await self.db.execute(select(Task).where(Task.id == self.task_id))
-            ).scalar_one_or_none()
+            if self.control_session_factory is None:
+                task = (
+                    await self.db.execute(
+                        select(Task)
+                        .where(Task.id == self.task_id)
+                        .execution_options(populate_existing=True)
+                    )
+                ).scalar_one_or_none()
+            else:
+                async with self.control_session_factory() as control_db:
+                    task = (
+                        await control_db.execute(select(Task).where(Task.id == self.task_id))
+                    ).scalar_one_or_none()
             if task is None:
                 raise TaskProtocolError("任务不存在")
             if task.run_token != self.run_token:
@@ -102,13 +118,44 @@ class ExecutionContext:
             if task.status == "cancelling" or task.cancel_requested_at is not None:
                 self._cancelled = True
                 raise TaskCancelledError("任务已请求取消")
-            if task.status == "queued":
-                # 已被 reaper 回队（竞态）：本 attempt 作废。
-                raise TaskProtocolError("任务已回队，当前 attempt 作废")
+            if task.status != "processing":
+                raise TaskProtocolError(f"任务状态已变为 {task.status}，当前 attempt 作废")
+            if task.lease_expires_at is not None and task.lease_expires_at <= datetime.now(UTC):
+                raise TaskProtocolError("任务 lease 已过期，当前 attempt 作废")
 
-    def heartbeat(self) -> Awaitable[bool]:
-        """刷新 lease（长时间外部调用期间）。"""
-        return self.queue.heartbeat(task_id=self.task_id, run_token=self.run_token)
+    async def heartbeat(self) -> bool:
+        """在独立短事务中刷新 lease，使其他会话和 reaper 立即可见。"""
+        if self.control_session_factory is None:
+            return await self.queue.heartbeat(task_id=self.task_id, run_token=self.run_token)
+        async with self.control_session_factory() as control_db:
+            control_queue = TaskQueue(control_db)
+            ok = await control_queue.heartbeat(task_id=self.task_id, run_token=self.run_token)
+            if ok:
+                await control_db.commit()
+            else:
+                await control_db.rollback()
+            return ok
+
+    async def refresh_lease(self, timeout_seconds: int) -> bool:
+        """在长时间外部调用前用独立短事务按需延长 lease。"""
+        if self.control_session_factory is None:
+            return await self.queue.refresh_lease(
+                task_id=self.task_id,
+                run_token=self.run_token,
+                timeout_seconds=timeout_seconds,
+            )
+        async with self.control_session_factory() as control_db:
+            control_queue = TaskQueue(control_db)
+            ok = await control_queue.refresh_lease(
+                task_id=self.task_id,
+                run_token=self.run_token,
+                timeout_seconds=timeout_seconds,
+            )
+            if ok:
+                await control_db.commit()
+            else:
+                await control_db.rollback()
+            return ok
 
     # ------------------------------------------------------------------
     # 业务写辅助

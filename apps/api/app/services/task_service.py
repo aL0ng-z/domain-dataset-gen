@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
 import redis.asyncio as aioredis
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.task import Task, TaskAttempt
@@ -53,6 +54,82 @@ TASK_TYPE_TO_HANDLER: dict[str, str] = {
 TASK_TYPE_TO_PAYLOAD_VERSION: dict[str, int] = {
     "chunk": 2,
 }
+
+
+class RetryPreparationError(Exception):
+    """业务实体无法与人工 retry 原子衔接。"""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+RetryPreparer = Callable[[AsyncSession, Task, Task], Awaitable[None]]
+
+
+class RetryPreparationRegistry:
+    """handler/version -> 业务对象 retry 准备钩子。"""
+
+    def __init__(self) -> None:
+        self._preparers: dict[tuple[str, int], RetryPreparer] = {}
+
+    def register(self, handler: str, version: int, preparer: RetryPreparer) -> None:
+        self._preparers[(handler, version)] = preparer
+
+    def resolve(self, handler: str, version: int) -> RetryPreparer | None:
+        return self._preparers.get((handler, version))
+
+
+retry_preparation_registry = RetryPreparationRegistry()
+
+
+async def _prepare_export_retry(db: AsyncSession, source_task: Task, new_task: Task) -> None:
+    """让同一 Export 原子指向新 Task；已封存 snapshot 保持不变。"""
+    from app.models.export import Export
+
+    raw_export_id = (source_task.payload or {}).get("export_id")
+    if raw_export_id is None:
+        raise RetryPreparationError("EXPORT_RETRY_INVALID", "导出任务缺少 export_id")
+    try:
+        export_id = uuid.UUID(str(raw_export_id))
+    except ValueError as exc:
+        raise RetryPreparationError("EXPORT_RETRY_INVALID", "导出任务 export_id 非法") from exc
+
+    export = (
+        await db.execute(select(Export).where(Export.id == export_id).with_for_update())
+    ).scalar_one_or_none()
+    if export is None or export.project_id != source_task.project_id:
+        raise RetryPreparationError("EXPORT_NOT_FOUND", "导出记录不存在")
+    if export.status == "completed":
+        raise RetryPreparationError("EXPORT_IMMUTABLE", "已完成导出不可重试")
+    if export.status != "failed" or export.task_id != source_task.id:
+        raise RetryPreparationError("EXPORT_NOT_RETRYABLE", "导出记录不处于可重试状态")
+
+    now = datetime.now(UTC)
+    result = await db.execute(
+        update(Export)
+        .where(
+            Export.id == export.id,
+            Export.status == "failed",
+            Export.task_id == source_task.id,
+        )
+        .values(
+            status="queued",
+            task_id=new_task.id,
+            retry_count=Export.retry_count + 1,
+            error_code=None,
+            error_message=None,
+            completed_at=None,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        raise RetryPreparationError("EXPORT_RETRY_CONFLICT", "导出重试发生并发冲突")
+
+
+for _export_handler in ("export_dataset", "export_benchmark"):
+    retry_preparation_registry.register(_export_handler, 1, _prepare_export_retry)
 
 
 class TaskService:
@@ -243,7 +320,7 @@ class TaskService:
         返回 (新 Task, 是否新建)。若已存在非终态后继返回 (已存在后继, False)，
         调用方决定 200/409 幂等语义。
         """
-        new_task = await self.queue.create_retry(
+        new_task, newly_created = await self.queue.create_retry(
             source_task_id=source_task.id,
             idempotency_key=idempotency_key,
             project_id=source_task.project_id,
@@ -259,11 +336,20 @@ class TaskService:
         )
         if new_task is None:
             return None, False
-        # 判断是否新建（新任务 id 非源任务既有后继）。
-        newly_created = new_task.id is not None and new_task.retry_of_task_id == source_task.id
-        if new_task.status == "queued" and newly_created:
+        if not newly_created:
+            # 同一个 Idempotency-Key 是安全重放；不同 key 命中既有活跃后继则冲突。
+            if new_task.idempotency_key != idempotency_key:
+                return None, False
+            return new_task, False
+
+        preparer = retry_preparation_registry.resolve(
+            source_task.handler, source_task.payload_version or 1
+        )
+        if preparer is not None:
+            await preparer(self.db, source_task, new_task)
+        if new_task.status == "queued":
             await self._publish_event(new_task, "task.created")
-        return new_task, newly_created
+        return new_task, True
 
     # ------------------------------------------------------------------
     # 事件发布（版本化，仅提示刷新；REST 是真源）
