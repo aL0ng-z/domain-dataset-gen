@@ -5,7 +5,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.curated import CuratedItem, CuratedRevision, EvidenceLink
-from app.models.dataset import BenchmarkCase, DatasetItem
 from app.models.review_record import ReviewRecord
 from domain.canonical import (
     CURATED_APPROVAL_CJSON_VERSION,
@@ -358,55 +357,3 @@ class CuratedItemService:
             .limit(page_size)
         )
         return list(result.scalars().all()), total
-
-    async def add_to_dataset(
-        self, item_id: uuid.UUID, dataset_id: uuid.UUID
-    ) -> DatasetItem:
-        """Add a curated item to a dataset. Auto-assigns ordinal."""
-        item = await self.get(item_id)
-        if item is None:
-            raise ValueError("知识条目不存在")
-
-        # Get max ordinal in dataset
-        max_ord_result = await self.db.execute(
-            select(func.max(DatasetItem.ordinal)).where(
-                DatasetItem.dataset_id == dataset_id
-            )
-        )
-        max_ord = max_ord_result.scalar() or 0
-
-        dataset_item = DatasetItem(
-            dataset_id=dataset_id,
-            curated_item_id=item_id,
-            ordinal=max_ord + 1,
-        )
-        self.db.add(dataset_item)
-        await self.db.flush()
-        await self.db.refresh(dataset_item)
-        return dataset_item
-
-    async def add_to_benchmark(
-        self, item_id: uuid.UUID, benchmark_id: uuid.UUID
-    ) -> BenchmarkCase:
-        """Add a curated item to a benchmark. Auto-assigns ordinal."""
-        item = await self.get(item_id)
-        if item is None:
-            raise ValueError("知识条目不存在")
-
-        # Get max ordinal in benchmark
-        max_ord_result = await self.db.execute(
-            select(func.max(BenchmarkCase.ordinal)).where(
-                BenchmarkCase.benchmark_id == benchmark_id
-            )
-        )
-        max_ord = max_ord_result.scalar() or 0
-
-        benchmark_case = BenchmarkCase(
-            benchmark_id=benchmark_id,
-            curated_item_id=item_id,
-            ordinal=max_ord + 1,
-        )
-        self.db.add(benchmark_case)
-        await self.db.flush()
-        await self.db.refresh(benchmark_case)
-        return benchmark_case
