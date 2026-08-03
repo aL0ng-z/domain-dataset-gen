@@ -173,6 +173,19 @@ class TestErrorEnvelope:
         assert "NOT_FOUND" in code["enum"]
         assert "VALIDATION_ERROR" in code["enum"]
 
+    def test_t10_composition_codes_in_union(self, openapi_spec):
+        """T10：COMPOSITION_* 六个领域 code 必须在 ErrorResponse.code 联合中登记。"""
+        code = openapi_spec["components"]["schemas"]["ErrorResponse"]["properties"]["code"]
+        for expected in (
+            "COMPOSITION_NOT_DRAFT",
+            "COMPOSITION_ITEM_INELIGIBLE",
+            "COMPOSITION_MEMBER_EXISTS",
+            "COMPOSITION_REVISION_CONFLICT",
+            "COMPOSITION_FINALIZE_GATE_FAILED",
+            "COMPOSITION_HASH_INVALID",
+        ):
+            assert expected in code["enum"], f"ErrorResponse.code 缺少 {expected}"
+
     def test_protected_routes_document_401_403(self, openapi_spec):
         for path, method, op in _all_operations(openapi_spec):
             if op.get("security") and method == "get":

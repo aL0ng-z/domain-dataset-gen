@@ -4,9 +4,43 @@
 
 ---
 
-## T09 Candidate/CuratedItem 证据与审批（2026-08-03）
+## T10 Dataset/Benchmark 编组（2026-08-03）
 
 ### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `libs/domain/domain/composition.py` | `composition-cjson-v1` 版本化 canonical JSON/SHA-256：UTF-8/NFC/key 排序/紧凑空白；按 `(ordinal, membership_id)` 稳定排序；只含固定 revision/approval hash，排除可变字段；空集合也有确定 hash，供后端/迁移/T11 独立重算 | 已完成 |
+| `scripts/composition_audit.py` | 加约束前只读审计：重复 membership/ordinal、跨项目、非 approved、Benchmark 非 supported、无 EvidenceLink，任何命中触发停止条件 | 已完成 |
+| `apps/api/app/models/dataset.py` | membership 增加 `created_at`、固定批准绑定列（curated_revision_id/sha256、approval_record_id/evidence_sha256）与唯一约束 `(container, curated_item_id)` / `(container, ordinal)`、ordinal 正整数 CHECK、FK RESTRICT；容器增加 composition_revision/sha256/canonicalization_version 与 finalized_* 字段及 CHECK | 已完成 |
+| `apps/api/migrations/versions/t10_dataset_composition.py` | 预检后加列、诚实回填固定 revision/hash 与 composition hash、唯一约束/FK/CHECK、deferred consistency trigger 与 finalized 不可变 trigger（父记录 + membership 双重门禁）、downgrade 预检停止 | 已完成 |
+| `apps/api/app/services/composition_policy.py` | 共享资格 policy：approved + 审批指针 + 证据快照非空；Benchmark 额外要求 source Candidate `supported`；eligible 查询与 `assert_item_eligible` 共用 | 已完成 |
+| `apps/api/app/services/composition_service.py` | 父行 `FOR UPDATE` 锁内 append/remove + `MAX(ordinal)+1`，每次原子递增 composition_revision 并重算 hash；expected-revision finalize + 全量资格复核 + 原子写 finalized + 幂等；eligible 分页查询（LIKE 转义搜索） | 已完成 |
+| `apps/api/app/routers/datasets.py` / `benchmarks.py` | 详情返回 item_count/case_count 与 composition/finalized 摘要；items/cases 分页返回固定字段 + pinned_content 嵌套摘要；eligible-items；add/remove/finalize 的稳定 409 code 映射 | 已完成 |
+| `apps/api/app/routers/curated_items.py` / `schemas/curated.py` | 删除 `add-to-dataset` / `add-to-benchmark` 重复添加入口，所有编组收敛到 composition service | 已完成 |
+| `apps/api/app/workers/export_worker.py` | 导出内容改为读取固定 `CuratedRevision.content`，不跟随当前 CuratedItem 漂移 | 已完成 |
+| `apps/api/app/schemas/dataset.py` | DatasetDetailResponse/BenchmarkDetailResponse/DatasetItemDetailResponse/BenchmarkCaseDetailResponse/CuratedItemSummaryResponse/finalize 请求 schema | 已完成 |
+| `apps/api/app/openapi.py` | 注入 T10 六 mutation 操作 409；重新导出 openapi.json；`domain/schemas.py` 注册 6 个 `COMPOSITION_*` code | 已完成 |
+| `apps/web` | 重生成 API 类型；Dataset/Benchmark 详情页集成 items/cases 分页 + 添加对话框 + 移除确认（删空回退一页）+ reviewer 冻结（expected revision/hash 确认框、409 刷新重确认、hash 异常禁止）+ viewer/finalized 只读；共享 EligibleItemPicker | 已完成 |
+| 测试 | `test_dataset_benchmark_composition.py`（26 项）+ `test_dataset_composition_migration.py`（5 项）+ 前端 Dataset 详情 6 项 / Benchmark 详情 4 项 / EligibleItemPicker 5 项 + 既有合同/授权适配 | 已完成 |
+
+### 设计决策
+
+- **单一权威编组入口**：eligible 查询、add mutation、finalize 复核共用同一资格 policy；Dataset 与 Benchmark 的差异只有 `supported` 门禁一个配置位，杜绝两套 service 复制漂移。旧 `curated-items/{iid}/add-to-dataset|add-to-benchmark` 入口直接删除。
+- **父行锁 + 唯一约束双保险**：add/remove 在 `SELECT parent FOR UPDATE` 内验证 draft、写 membership、递增 revision、重算 hash，同一事务原子提交；`(container, curated_item_id)` 与 `(container, ordinal)` 唯一约束兜底并发。`MAX(ordinal)+1` 在锁内计算，移除后留空洞不自动重排。
+- **固定批准 revision 不漂移**：membership 保存加入时 T09 的 `approved_revision_id`/`approval_record_id` 与两个保存 hash（复制不可变源记录）；deferred trigger 只校验固定绑定真实属于同一条目，**不依赖当前 approved 指针**——退审只清空当前指针，历史 revision/approval record 与已固定 membership 保持不可变；预览/导出始终读固定 revision content。
+- **finalize 线性化边界**：在父行锁下比较 expected revision/hash，重验全部固定 approval/evidence/source verdict 及保存 hash，然后原子写 finalized 状态/revision/hash/canonicalization version/审核人/时间；CHECK 保证 finalized 字段齐全且等于当时 composition 值；数据库 trigger 双重禁止 finalized 容器原地修改；重复相同 finalize 幂等返回当前结果。
+- **composition hash 只含固定输入**：`composition-cjson-v1` 按 `(ordinal, membership_id)` 排序，只含 schema/version、容器 id/type、membership id、ordinal、CuratedItem id、固定 CuratedRevision id/content SHA-256、approval record id/evidence SHA-256；明确排除当前 item 状态、显示名、更新时间等可变字段；T11 可不读当前 CuratedItem 独立重算。
+- **诚实回填与停止条件**：迁移先只读审计（重复/跨项目/非 approved/非 supported/无证据/指针不一致），任何命中即触发停止条件，不猜测保留哪条；回填只复制被引用不可变记录的对应值；存量容器按当前 membership 重算 composition hash（空集合也有确定 hash）。
+
+### 验证状态
+
+- 后端 T10 专项 26 项 + 迁移 5 项通过；`python -m pytest -q` 全量 **374** 项通过（T09 基线 343 + 新增 31）。
+- `python -m ruff check apps/api libs tests scripts` 通过；`python scripts/export_openapi.py --check` 通过；`tests/contract/test_openapi.py`、`test_core_response_shapes.py` 通过。
+- 迁移往返 `upgrade head → downgrade t09 → upgrade head` 通过；`scripts/composition_audit.py` 通过。
+- 前端 `npm run lint`、`npm exec tsc -- --noEmit`、`npm run api:check`、`npm test -- --run`（**86** 项）、`npm run build` 全部通过。
+
+---
 
 | 模块 | 内容 | 状态 |
 |------|------|------|
