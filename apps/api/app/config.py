@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadmin123"
     minio_bucket_documents: str = "documents"
     minio_bucket_outputs: str = "outputs"
+    # 新对象的可选统一 key 前缀；生产留空，测试使用 tests/{run_id}/。
+    minio_key_prefix: str = ""
     minio_secure: bool = False
 
     # JWT

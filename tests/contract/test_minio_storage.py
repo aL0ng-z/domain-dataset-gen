@@ -10,6 +10,8 @@
 不发出任何真实网络请求。
 """
 
+import hashlib
+
 import pytest
 
 from storage.minio_client import StorageClient
@@ -118,9 +120,16 @@ class _StatResult:
 class _FakeResponse:
     def __init__(self, data: bytes):
         self._data = data
+        self._offset = 0
 
-    def read(self) -> bytes:
-        return self._data
+    def read(self, amount: int | None = None) -> bytes:
+        if self._offset >= len(self._data):
+            return b""
+        if amount is None or amount < 0:
+            amount = len(self._data) - self._offset
+        result = self._data[self._offset:self._offset + amount]
+        self._offset += len(result)
+        return result
 
     def close(self) -> None:
         pass
@@ -219,11 +228,25 @@ def test_put_object_versioned_returns_version_id(fake_minio):
 
 def test_put_object_versioned_reuses_same_hash(fake_minio):
     client, fake = fake_minio
-    v1 = client.put_object_versioned("outputs", "p/k.json", b"hello", "application/json", sha256="a" * 64)
-    v2 = client.put_object_versioned("outputs", "p/k.json", b"hello", "application/json", sha256="a" * 64)
+    digest = hashlib.sha256(b"hello").hexdigest()
+    v1 = client.put_object_versioned("outputs", "p/k.json", b"hello", "application/json", sha256=digest)
+    v2 = client.put_object_versioned("outputs", "p/k.json", b"hello", "application/json", sha256=digest)
     # 相同 bytes/hash 复用，不产生新版本。
     assert v1 == v2
     assert len(fake.versions["outputs"]["p/k.json"]) == 1
+
+
+def test_put_object_versioned_does_not_trust_spoofed_metadata(fake_minio):
+    client, fake = fake_minio
+    digest = hashlib.sha256(b"expected").hexdigest()
+    first = client.put_object_versioned(
+        "outputs", "p/k.json", b"tampered", "application/json", sha256=digest
+    )
+    second = client.put_object_versioned(
+        "outputs", "p/k.json", b"expected", "application/json", sha256=digest
+    )
+    assert first != second
+    assert len(fake.versions["outputs"]["p/k.json"]) == 2
 
 
 def test_put_object_versioned_new_bytes_creates_new_version(fake_minio):

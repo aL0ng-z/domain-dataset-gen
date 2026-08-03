@@ -25,9 +25,11 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
+from io import BytesIO
+from urllib.parse import parse_qs, urlparse
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from app.models.chunk import Chunk
@@ -42,7 +44,7 @@ from app.models.parse import ParseJob
 from app.models.prompt_template import PromptTemplate
 from app.models.review_record import ReviewRecord
 from app.models.section import CleaningJob, Section
-from domain.manifest import manifest_sha256
+from domain.manifest import manifest_cjson, manifest_sha256
 
 PASSWORD = "password-123"
 _OUTPUTS = "outputs-test"
@@ -417,7 +419,14 @@ class TestExportTrigger:
 
 
 class TestExportPipeline:
-    async def test_full_pipeline_completes(self, client, db_session, org, _test_session_factory):
+    async def test_full_pipeline_completes(
+        self,
+        client,
+        db_session,
+        org,
+        _test_session_factory,
+        monkeypatch,
+    ):
         """完整导出：queued -> worker -> completed；验证 payload hash 可重渲染。"""
         from app.workers.export_worker import render_payload_from_manifest, render_payload_sha256
 
@@ -469,6 +478,21 @@ class TestExportPipeline:
         assert render_payload_sha256(payload) == export.output_sha256
         # manifest hash 与 DB 记录一致。
         assert manifest_row.manifest_sha256 == manifest_sha256(manifest_row.manifest)
+        from app.config import settings
+        from storage import get_storage_client
+
+        storage = get_storage_client(
+            settings.minio_endpoint,
+            settings.minio_access_key,
+            settings.minio_secret_key,
+            settings.minio_secure,
+        )
+        manifest_bytes = storage.download_object_version(
+            settings.minio_bucket_outputs,
+            export.manifest_key,
+            export.manifest_object_version_id,
+        )
+        assert manifest_bytes == manifest_cjson(manifest_row.manifest).encode("utf-8")
 
         # 下载（绑定 version）可获取原 bytes。
         dl = await client.get(
@@ -476,6 +500,88 @@ class TestExportPipeline:
         )
         assert dl.status_code == 307, dl.text
         assert "location" in dl.headers
+        assert parse_qs(urlparse(dl.headers["location"]).query)["versionId"] == [
+            export.object_version_id
+        ]
+
+        # Bearer 认证短链：300 秒、no-store；跨项目与未认证均不得签发。
+        link = await client.post(
+            f"/api/projects/{pid}/exports/{export.id}/download-link",
+            headers=headers,
+        )
+        assert link.status_code == 200, link.text
+        assert link.headers["cache-control"] == "no-store"
+        assert link.json()["filename"].endswith(".json")
+        assert parse_qs(urlparse(link.json()["url"]).query)["versionId"] == [
+            export.object_version_id
+        ]
+        unauthenticated = await client.post(
+            f"/api/projects/{pid}/exports/{export.id}/download-link"
+        )
+        assert unauthenticated.status_code == 401
+        admin_headers = await _login(client, "admin_user")
+        cross_project = await client.post(
+            f"/api/projects/{org['projects']['b'].id}/exports/{export.id}/download-link",
+            headers=admin_headers,
+        )
+        assert cross_project.status_code == 404
+
+        # POST 是主验证合同；deep 同时重算 payload、对象 manifest 与 DB canonical manifest。
+        reviewer_headers = await _login(client, "reviewer_user")
+        verified = await client.post(
+            f"/api/projects/{pid}/exports/{export.id}/verify?deep=true",
+            headers=reviewer_headers,
+        )
+        assert verified.status_code == 200, verified.text
+        verify_body = verified.json()
+        assert verify_body["status"] == "verified"
+        assert verify_body["shallow"] == {
+            "db_fields_present": True,
+            "version_id_present": True,
+            "metadata_ok": True,
+        }
+        assert {item["item"] for item in verify_body["deep"]} == {
+            "payload_sha256",
+            "manifest_sha256",
+            "manifest_canonical_sha256",
+        }
+
+        # metadata 被外部伪造/破坏时拒绝签发；deep 以真实流式 bytes hash 为准。
+        original_stat = storage.stat_object_version
+
+        def mismatched_stat(bucket, key, version_id):
+            stat = original_stat(bucket, key, version_id)
+            if key == export.minio_key:
+                stat["sha256"] = "f" * 64
+            return stat
+
+        monkeypatch.setattr(storage, "stat_object_version", mismatched_stat)
+        integrity_error = await client.post(
+            f"/api/projects/{pid}/exports/{export.id}/download-link",
+            headers=headers,
+        )
+        assert integrity_error.status_code == 409
+        assert integrity_error.json()["code"] == "EXPORT_INTEGRITY_ERROR"
+        monkeypatch.setattr(storage, "stat_object_version", original_stat)
+
+        original_sha256 = storage.sha256_object_version
+
+        def mismatched_payload_hash(bucket, key, version_id):
+            if key == export.minio_key:
+                return "f" * 64
+            return original_sha256(bucket, key, version_id)
+
+        monkeypatch.setattr(storage, "sha256_object_version", mismatched_payload_hash)
+        deep_mismatch = await client.post(
+            f"/api/projects/{pid}/exports/{export.id}/verify?deep=true",
+            headers=reviewer_headers,
+        )
+        assert deep_mismatch.status_code == 200
+        assert deep_mismatch.json()["status"] == "failed"
+        assert next(
+            item for item in deep_mismatch.json()["deep"]
+            if item["item"] == "payload_sha256"
+        )["ok"] is False
 
     async def test_two_exports_distinct_and_stable(self, client, db_session, org, _test_session_factory):
         """同一 Dataset 连续导出两次：不同 id/key/version；第一次下载 bytes 不变。"""
@@ -483,13 +589,16 @@ class TestExportPipeline:
         pid = org["projects"]["a"].id
         ds = await _make_finalized_dataset(client, db_session, pid)
         dataset = ds["dataset"]
-        profile = ExportProfile(project_id=pid, name="EP", format="qa_json")
-        db_session.add(profile)
+        profiles = [
+            ExportProfile(project_id=pid, name="QA", format="qa_json"),
+            ExportProfile(project_id=pid, name="Messages", format="messages"),
+        ]
+        db_session.add_all(profiles)
         await db_session.flush()
         await db_session.commit()
 
         ids = []
-        for _ in range(2):
+        for profile in profiles:
             res = await client.post(
                 f"/api/projects/{pid}/datasets/{dataset.id}/export",
                 headers=headers,
@@ -513,8 +622,286 @@ class TestExportPipeline:
         # 两次导出 key 不同（内容寻址，即使内容相同也因 export_id 不同而不同）。
         assert e1.minio_key != e2.minio_key
         assert e1.object_version_id != e2.object_version_id
-        # 同内容 payload hash 相同（确定性）。
-        assert e1.output_sha256 == e2.output_sha256
+        # 不同 format 即使同为 .json 扩展名，也必须各自渲染并使用独立对象坐标。
+        assert {e1.format, e2.format} == {"qa_json", "messages"}
+        assert e1.minio_key.endswith(".json") and e2.minio_key.endswith(".json")
+        assert e1.output_sha256 != e2.output_sha256
+
+        # 外部同 key 写入新版本不得改变旧 Export 的固定版本下载。
+        from app.config import settings
+        from storage import get_storage_client
+
+        storage = get_storage_client(
+            settings.minio_endpoint,
+            settings.minio_access_key,
+            settings.minio_secret_key,
+            settings.minio_secure,
+        )
+        old_bytes = storage.download_object_version(
+            settings.minio_bucket_outputs, e1.minio_key, e1.object_version_id
+        )
+        overwritten = storage.client.put_object(
+            settings.minio_bucket_outputs,
+            e1.minio_key,
+            BytesIO(b"external-overwrite"),
+            length=len(b"external-overwrite"),
+            content_type="application/json",
+        )
+        assert overwritten.version_id != e1.object_version_id
+        assert storage.download_object_version(
+            settings.minio_bucket_outputs, e1.minio_key, e1.object_version_id
+        ) == old_bytes
+        fixed_download = await client.get(
+            f"/api/projects/{pid}/exports/{e1.id}/download",
+            headers=headers,
+            follow_redirects=False,
+        )
+        assert parse_qs(urlparse(fixed_download.headers["location"]).query)["versionId"] == [
+            e1.object_version_id
+        ]
+
+
+# ---------------------------------------------------------------------------
+# 验收 8：快照后失败/取消恢复，已有 manifest 的 retry 不重读可变来源
+# ---------------------------------------------------------------------------
+
+
+class TestExportFailureRecovery:
+    async def test_upload_failure_auto_retry_reuses_snapshot(
+        self,
+        client,
+        db_session,
+        org,
+        _test_session_factory,
+        monkeypatch,
+    ):
+        """快照提交后上传失败先自动回队；重试复用 manifest，不读取已修改 Profile。"""
+        from app.models.export import Export, SnapshotManifest
+        from app.models.task import Task
+        from storage import StorageClient
+
+        headers = await _login(client, "editor_user")
+        pid = org["projects"]["a"].id
+        dataset = (await _make_finalized_dataset(client, db_session, pid))["dataset"]
+        profile = ExportProfile(project_id=pid, name="EP", format="qa_json")
+        db_session.add(profile)
+        await db_session.commit()
+        profile_id = profile.id
+        response = await client.post(
+            f"/api/projects/{pid}/datasets/{dataset.id}/export",
+            headers=headers,
+            json={
+                "export_profile_id": str(profile.id),
+                "expected_source_revision": dataset.composition_revision,
+                "expected_source_sha256": dataset.composition_sha256,
+            },
+        )
+        body = response.json()
+        original_put = StorageClient.put_object_versioned
+
+        def fail_upload(*_args, **_kwargs):
+            raise OSError("injected upload failure")
+
+        monkeypatch.setattr(StorageClient, "put_object_versioned", fail_upload)
+        await _run_export_worker(_test_session_factory, uuid.UUID(body["task_id"]))
+
+        db_session.expire_all()
+        first_task = (
+            await db_session.execute(select(Task).where(Task.id == uuid.UUID(body["task_id"])))
+        ).scalar_one()
+        first_export = (
+            await db_session.execute(
+                select(Export).where(Export.id == uuid.UUID(body["export_id"]))
+            )
+        ).scalar_one()
+        snapshot_id = first_export.snapshot_manifest_id
+        assert first_task.status == "queued"
+        assert first_export.status == "processing"
+        assert snapshot_id is not None
+        assert (
+            await db_session.execute(
+                select(SnapshotManifest).where(SnapshotManifest.id == snapshot_id)
+            )
+        ).scalar_one().manifest["profile"]["format"] == "qa_json"
+
+        # 修改当前 Profile；retry 必须继续使用 Export.profile_snapshot/manifest 的旧格式。
+        await db_session.execute(
+            update(ExportProfile)
+            .where(ExportProfile.id == profile_id)
+            .values(format="messages", version=ExportProfile.version + 1)
+        )
+        first_task.next_run_at = datetime.now(UTC)
+        await db_session.commit()
+        monkeypatch.setattr(StorageClient, "put_object_versioned", original_put)
+        await _run_export_worker(_test_session_factory, first_task.id)
+
+        db_session.expire_all()
+        completed = (
+            await db_session.execute(
+                select(Export).where(Export.id == uuid.UUID(body["export_id"]))
+            )
+        ).scalar_one()
+        assert completed.status == "completed"
+        assert completed.format == "qa_json"
+        assert completed.snapshot_manifest_id == snapshot_id
+
+    async def test_finalize_failure_manual_retry_updates_same_export(
+        self,
+        client,
+        db_session,
+        org,
+        _test_session_factory,
+        monkeypatch,
+    ):
+        """上传后 finalize 回滚时人工 retry 原子切换 Task，并复用同一快照/Export。"""
+        from app.models.export import Export, ExportArtifactSeal
+        from app.services.export_service import ExportService
+
+        headers = await _login(client, "editor_user")
+        pid = org["projects"]["a"].id
+        dataset = (await _make_finalized_dataset(client, db_session, pid))["dataset"]
+        profile = ExportProfile(project_id=pid, name="EP", format="qa_json")
+        db_session.add(profile)
+        await db_session.commit()
+        profile_id = profile.id
+        response = await client.post(
+            f"/api/projects/{pid}/datasets/{dataset.id}/export",
+            headers=headers,
+            json={
+                "export_profile_id": str(profile.id),
+                "expected_source_revision": dataset.composition_revision,
+                "expected_source_sha256": dataset.composition_sha256,
+            },
+        )
+        body = response.json()
+        original_finalize = ExportService.finalize_completed
+
+        async def reject_finalize(*_args, **_kwargs) -> bool:
+            return False
+
+        monkeypatch.setattr(ExportService, "finalize_completed", reject_finalize)
+        await _run_export_worker(_test_session_factory, uuid.UUID(body["task_id"]))
+        db_session.expire_all()
+        failed = (
+            await db_session.execute(
+                select(Export).where(Export.id == uuid.UUID(body["export_id"]))
+            )
+        ).scalar_one()
+        snapshot_id = failed.snapshot_manifest_id
+        assert failed.status == "failed"
+        assert snapshot_id is not None
+        assert (
+            await db_session.execute(
+                select(ExportArtifactSeal).where(ExportArtifactSeal.export_id == failed.id)
+            )
+        ).scalar_one_or_none() is None
+
+        await db_session.execute(
+            update(ExportProfile)
+            .where(ExportProfile.id == profile_id)
+            .values(format="messages", version=ExportProfile.version + 1)
+        )
+        await db_session.commit()
+        db_session.expire_all()
+        retry = await client.post(
+            f"/api/projects/{pid}/tasks/{body['task_id']}/retry",
+            headers={**headers, "Idempotency-Key": "export-finalize-retry"},
+        )
+        assert retry.status_code == 201, retry.text
+        retry_task_id = retry.json()["id"]
+        await db_session.commit()
+        # 同 key 安全重放只返回同一后继；不同 key 不得再创建第二个活跃后继。
+        replay = await client.post(
+            f"/api/projects/{pid}/tasks/{body['task_id']}/retry",
+            headers={**headers, "Idempotency-Key": "export-finalize-retry"},
+        )
+        assert replay.status_code == 201
+        assert replay.json()["id"] == retry_task_id
+        conflict = await client.post(
+            f"/api/projects/{pid}/tasks/{body['task_id']}/retry",
+            headers={**headers, "Idempotency-Key": "another-retry"},
+        )
+        assert conflict.status_code == 409
+        await db_session.commit()
+
+        monkeypatch.setattr(ExportService, "finalize_completed", original_finalize)
+        await _run_export_worker(_test_session_factory, uuid.UUID(retry_task_id))
+        db_session.expire_all()
+        completed = (
+            await db_session.execute(
+                select(Export).where(Export.id == uuid.UUID(body["export_id"]))
+            )
+        ).scalar_one()
+        assert completed.status == "completed"
+        assert completed.task_id == uuid.UUID(retry_task_id)
+        assert completed.retry_count == 1
+        assert completed.snapshot_manifest_id == snapshot_id
+        assert completed.format == "qa_json"
+
+    async def test_cancel_after_upload_rolls_back_seal_and_finalize(
+        self,
+        client,
+        db_session,
+        org,
+        _test_session_factory,
+        monkeypatch,
+    ):
+        """两个对象上传后取消：Task/Export 收敛，seal 与 completed 发布整笔回滚。"""
+        from app.models.export import Export, ExportArtifactSeal
+        from app.models.task import Task
+        from app.services.export_service import ExportService
+        from app.workers.queue import TaskQueue
+
+        headers = await _login(client, "editor_user")
+        pid = org["projects"]["a"].id
+        dataset = (await _make_finalized_dataset(client, db_session, pid))["dataset"]
+        profile = ExportProfile(project_id=pid, name="EP", format="qa_json")
+        db_session.add(profile)
+        await db_session.commit()
+        response = await client.post(
+            f"/api/projects/{pid}/datasets/{dataset.id}/export",
+            headers=headers,
+            json={
+                "export_profile_id": str(profile.id),
+                "expected_source_revision": dataset.composition_revision,
+                "expected_source_sha256": dataset.composition_sha256,
+            },
+        )
+        body = response.json()
+        task_id = uuid.UUID(body["task_id"])
+        original_insert = ExportService.insert_artifact_seal
+
+        async def insert_then_cancel(service, **kwargs):
+            seal = await original_insert(service, **kwargs)
+            async with _test_session_factory() as cancel_db:
+                ok, status = await TaskQueue(cancel_db).request_cancel(
+                    task_id=task_id,
+                    cancel_requested_by=org["users"]["editor"].id,
+                )
+                assert ok and status == "cancelling"
+                await cancel_db.commit()
+            return seal
+
+        monkeypatch.setattr(ExportService, "insert_artifact_seal", insert_then_cancel)
+        await _run_export_worker(_test_session_factory, task_id)
+        db_session.expire_all()
+        task = (
+            await db_session.execute(select(Task).where(Task.id == task_id))
+        ).scalar_one()
+        export = (
+            await db_session.execute(
+                select(Export).where(Export.id == uuid.UUID(body["export_id"]))
+            )
+        ).scalar_one()
+        assert task.status == "cancelled"
+        assert export.status == "failed"
+        assert export.snapshot_manifest_id is not None
+        assert export.artifact_seal_id is None
+        assert (
+            await db_session.execute(
+                select(ExportArtifactSeal).where(ExportArtifactSeal.export_id == export.id)
+            )
+        ).scalar_one_or_none() is None
 
 
 # ---------------------------------------------------------------------------

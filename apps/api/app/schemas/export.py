@@ -73,15 +73,6 @@ class SnapshotManifestResponse(BaseSchema):
     created_at: datetime
 
 
-class ExportVerifyResponse(BaseSchema):
-    """T11：深度验证结果（逐项）。"""
-
-    export_id: uuid.UUID
-    status: str
-    shallow: dict
-    deep: dict | None = None
-
-
 class VerifyShallowResult(BaseSchema):
     db_fields_present: bool
     version_id_present: bool
@@ -92,3 +83,20 @@ class VerifyDeepItem(BaseSchema):
     item: str
     ok: bool
     detail: str | None = None
+
+
+class ExportVerifyResponse(BaseSchema):
+    """T11：浅验证与可选深度验证结果。"""
+
+    export_id: uuid.UUID
+    status: str
+    shallow: VerifyShallowResult
+    deep: list[VerifyDeepItem] | None = None
+
+
+class ExportDownloadLinkResponse(BaseSchema):
+    """经鉴权即时签发的短期对象版本下载链接。"""
+
+    url: str
+    expires_at: datetime
+    filename: str

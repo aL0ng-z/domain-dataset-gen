@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import Chunk
 from app.models.chunk_set import ChunkSet
-from app.models.config import ExportProfile
 from app.models.curated import CuratedItem, CuratedRevision
 from app.models.dataset import Benchmark, Dataset
 from app.models.document import Document
@@ -211,7 +210,9 @@ async def build_export_manifest(
     requested_by: uuid.UUID,
     container: Dataset | Benchmark,
     memberships: list,
-    export_profile: ExportProfile,
+    export_profile_id: uuid.UUID,
+    export_profile_version: int,
+    export_format: str,
     profile_snapshot: dict,
     profile_snapshot_hash: str,
 ) -> tuple[dict, str]:
@@ -307,9 +308,9 @@ async def build_export_manifest(
             "composition_canonicalization_version": container.composition_canonicalization_version,
         },
         "profile": {
-            "export_profile_id": str(export_profile.id),
-            "version": export_profile.version,
-            "format": export_profile.format,
+            "export_profile_id": str(export_profile_id),
+            "version": export_profile_version,
+            "format": export_format,
             "snapshot": profile_snapshot,
             "sha256": profile_snapshot_hash,
         },

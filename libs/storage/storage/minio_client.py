@@ -75,8 +75,17 @@ class StorageClient:
         digest = sha256 or hashlib.sha256(data).hexdigest()
         try:
             existing = self.client.stat_object(bucket, key)
-            if existing.size == len(data) and existing.metadata.get("x-amz-meta-sha256") == digest:
-                return existing.version_id or ""
+            existing_version = str(getattr(existing, "version_id", None) or "")
+            if (
+                existing_version
+                and existing.size == len(data)
+                and existing.metadata.get("x-amz-meta-sha256") == digest
+            ):
+                # metadata 不是字节真实性证明。仅当指定 version 的真实 bytes/hash
+                # 均一致时复用，防止外部写入伪造 metadata 后被误认。
+                existing_bytes = self.download_object_version(bucket, key, existing_version)
+                if existing_bytes == data and hashlib.sha256(existing_bytes).hexdigest() == digest:
+                    return existing_version
         except Exception:  # noqa: BLE001 - 对象不存在/不可读时正常 PUT
             pass
         # MinIO 用户自定义 metadata 必须以 x-amz-meta- 前缀，否则签名计算失败。
@@ -110,6 +119,41 @@ class StorageClient:
         finally:
             response.close()
             response.release_conn()
+
+    def sha256_object_version(self, bucket: str, key: str, version_id: str) -> str:
+        """流式计算指定对象版本的 SHA-256，避免深度校验一次载入全部内容。"""
+        response = self.client.get_object(bucket, key, version_id=version_id)
+        digest = hashlib.sha256()
+        try:
+            while chunk := response.read(1024 * 1024):
+                digest.update(chunk)
+            return digest.hexdigest()
+        finally:
+            response.close()
+            response.release_conn()
+
+    def list_object_versions(self, bucket: str, prefix: str = "") -> list[dict]:
+        """列出精确对象版本和 delete marker，供测试/运维安全清理。"""
+        versions: list[dict] = []
+        for item in self.client.list_objects(
+            bucket, prefix=prefix, recursive=True, include_version=True
+        ):
+            versions.append(
+                {
+                    "key": item.object_name,
+                    "version_id": str(getattr(item, "version_id", None) or ""),
+                    "is_delete_marker": bool(getattr(item, "is_delete_marker", False)),
+                    "last_modified": getattr(item, "last_modified", None),
+                    "size": int(getattr(item, "size", 0) or 0),
+                }
+            )
+        return versions
+
+    def delete_object_version(self, bucket: str, key: str, version_id: str) -> None:
+        """删除精确 version；禁止用此方法做无 version_id 的宽泛删除。"""
+        if not version_id:
+            raise ValueError("删除对象版本必须提供 version_id")
+        self.client.remove_object(bucket, key, version_id=version_id)
 
     def presign_object_version(self, bucket: str, key: str, version_id: str, expires: int = 3600) -> str:
         """按 version_id 签发短时 GET URL（下载固定到记录的对象版本）。"""

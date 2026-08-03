@@ -15,11 +15,12 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.config import ExportProfile
 from app.models.export import Export, ExportArtifactSeal, SnapshotManifest
+from app.models.task import Task
 from domain.manifest import EXPORTER_VERSION, seal_sha256
 
 #: 导出状态。
@@ -261,6 +262,14 @@ class ExportService:
                 Export.is_legacy.is_(False),
                 Export.status == EXPORT_PROCESSING,
                 Export.task_id == task_id,
+                exists(
+                    select(Task.id).where(
+                        Task.id == task_id,
+                        Task.run_token == run_token,
+                        Task.status == "processing",
+                        Task.state_version == expected_state_version,
+                    )
+                ),
             )
             .values(
                 status=EXPORT_COMPLETED,

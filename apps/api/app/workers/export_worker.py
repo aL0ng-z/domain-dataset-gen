@@ -23,13 +23,12 @@ import logging
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.config import ExportProfile
 from app.models.dataset import Benchmark, BenchmarkCase, Dataset, DatasetItem
-from app.models.export import Export
+from app.models.export import Export, SnapshotManifest
 from app.services.export_manifest import (
     ProvenanceSnapshotMissingError,
     build_export_manifest,
@@ -38,8 +37,10 @@ from app.services.export_service import (
     EXPORT_PROCESSING,
     ExportService,
 )
+from app.storage_keys import build_storage_key
 from app.workers.errors import TaskError, TaskErrorCode
 from app.workers.execution import ExecutionContext
+from domain.manifest import manifest_cjson, manifest_sha256
 from storage import get_storage_client
 
 logger = logging.getLogger(__name__)
@@ -239,12 +240,14 @@ async def _make_export_terminal_hook(export_id: uuid.UUID, task_id: uuid.UUID):
             .where(
                 Export.id == export_id,
                 Export.is_legacy.is_(False),
+                Export.task_id == task_id,
                 Export.status.in_(("queued", "processing")),
             )
             .values(
                 status="failed",
                 error_code=error_code,
                 error_message=error_message or "导出失败",
+                completed_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
             )
         )
@@ -272,7 +275,12 @@ async def _export_common(
     # 注册业务终态钩子：失败/取消时把 Export 收敛为 failed。
     ctx.set_terminal_hook(await _make_export_terminal_hook(export_id, ctx.task_id))
 
-    # 1. 校验 Export 存在且 queued/processing，标记 processing。
+    # 快照阶段必须从新事务的第一条语句开始使用 REPEATABLE READ。runner 已在
+    # handler 启动前提交 claim 校验事务，因此这里不会与 Task 行锁混用。
+    await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+    await ctx.checkpoint()
+
+    # 1. 校验 Export 存在且属于当前 Task，标记 processing。
     export = (
         await db.execute(select(Export).where(Export.id == export_id))
     ).scalar_one_or_none()
@@ -280,64 +288,109 @@ async def _export_common(
         raise RuntimeError(f"导出记录不存在: {export_id}")
     if export.project_id != ctx.project_id:
         raise RuntimeError("导出记录与任务项目不一致")
+    if export.task_id != ctx.task_id:
+        raise RuntimeError("导出记录已关联其他重试任务")
     if export.status not in ("queued", "processing"):
         raise RuntimeError(f"导出状态非法: {export.status}")
     await _mark_export_processing(db, export_id, ctx.task_id)
 
-    # 2. 读取 T10 finalized container + membership。
-    if source_type == "dataset":
-        container = (await db.execute(select(Dataset).where(Dataset.id == source_id))).scalar_one_or_none()
+    # 2. 已有 snapshot 的 retry 直接复用，禁止读取任何当前业务配置；首次 attempt
+    # 才从 finalized composition 与各依赖卡的冻结引用构建 manifest。
+    if export.snapshot_manifest_id is not None:
+        snapshot = (
+            await db.execute(
+                select(SnapshotManifest).where(
+                    SnapshotManifest.id == export.snapshot_manifest_id,
+                    SnapshotManifest.export_id == export_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if snapshot is None or snapshot.is_legacy or not snapshot.manifest_sha256:
+            raise TaskError(
+                TaskErrorCode.PROVENANCE_SNAPSHOT_MISSING,
+                "导出已关联的不可变快照不存在或不可验证",
+            )
+        manifest = snapshot.manifest
+        manifest_hash = snapshot.manifest_sha256
+        if manifest_sha256(manifest) != manifest_hash:
+            raise TaskError(
+                TaskErrorCode.PROVENANCE_SNAPSHOT_MISSING,
+                "导出快照 canonical hash 不匹配",
+            )
+        fmt = str((manifest.get("profile") or {}).get("format") or "")
     else:
-        container = (await db.execute(select(Benchmark).where(Benchmark.id == source_id))).scalar_one_or_none()
-    if container is None:
-        raise RuntimeError(f"{source_type} 不存在: {source_id}")
-    if container.status != "finalized":
-        raise RuntimeError("source 未 finalize，禁止导出")
-    memberships = await _load_memberships(db, source_type, source_id)
-    if not memberships:
-        raise RuntimeError("没有可导出的条目")
-    await ctx.checkpoint()
+        profile_snapshot = export.profile_snapshot or {}
+        if profile_snapshot.get("export_profile_id") != str(export_profile_id):
+            raise TaskError(
+                TaskErrorCode.PROVENANCE_SNAPSHOT_MISSING,
+                "ExportProfile 冻结快照与任务不匹配",
+            )
+        fmt = str(profile_snapshot.get("format") or "")
+        try:
+            profile_version = int(profile_snapshot["version"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TaskError(
+                TaskErrorCode.PROVENANCE_SNAPSHOT_MISSING,
+                "ExportProfile 冻结版本缺失",
+            ) from exc
+        profile_hash = export_service.profile_snapshot_sha256(profile_snapshot)
 
-    # 3. ExportProfile + 非敏感快照。
-    profile = (
-        await db.execute(select(ExportProfile).where(ExportProfile.id == export_profile_id))
-    ).scalar_one_or_none()
-    if profile is None:
-        raise RuntimeError("导出配置不存在")
-    profile_snapshot = export_service.build_profile_snapshot(profile)
-    profile_hash = export_service.profile_snapshot_sha256(profile_snapshot)
-    fmt = profile.format
-    if fmt not in FORMAT_HANDLERS:
-        raise RuntimeError(f"不支持的导出格式: {fmt}")
-    await ctx.checkpoint()
+        if source_type == "dataset":
+            container = (
+                await db.execute(select(Dataset).where(Dataset.id == source_id))
+            ).scalar_one_or_none()
+        else:
+            container = (
+                await db.execute(select(Benchmark).where(Benchmark.id == source_id))
+            ).scalar_one_or_none()
+        if container is None:
+            raise RuntimeError(f"{source_type} 不存在: {source_id}")
+        if container.status != "finalized":
+            raise RuntimeError("source 未 finalize，禁止导出")
+        memberships = await _load_memberships(db, source_type, source_id)
+        if not memberships:
+            raise RuntimeError("没有可导出的条目")
+        await ctx.checkpoint()
 
-    # 4. 构建完整 manifest（只消费冻结引用；缺失即抛 ProvenanceSnapshotMissingError）。
-    try:
-        manifest, manifest_hash = await build_export_manifest(
-            db,
+        try:
+            manifest, manifest_hash = await build_export_manifest(
+                db,
+                export_id=export_id,
+                project_id=ctx.project_id,
+                requested_by=created_by,
+                container=container,
+                memberships=memberships,
+                export_profile_id=export_profile_id,
+                export_profile_version=profile_version,
+                export_format=fmt,
+                profile_snapshot=profile_snapshot,
+                profile_snapshot_hash=profile_hash,
+            )
+        except ProvenanceSnapshotMissingError as exc:
+            raise TaskError(TaskErrorCode.PROVENANCE_SNAPSHOT_MISSING, str(exc)) from exc
+        await ctx.checkpoint()
+
+        snapshot = await export_service.insert_snapshot_manifest(
             export_id=export_id,
             project_id=ctx.project_id,
-            requested_by=created_by,
-            container=container,
-            memberships=memberships,
-            export_profile=profile,
-            profile_snapshot=profile_snapshot,
-            profile_snapshot_hash=profile_hash,
+            manifest=manifest,
+            manifest_hash=manifest_hash,
         )
-    except ProvenanceSnapshotMissingError as exc:
-        raise TaskError(TaskErrorCode.PROVENANCE_SNAPSHOT_MISSING, str(exc)) from exc
+        await db.execute(
+            update(Export).where(Export.id == export_id).values(format=fmt)
+        )
+        await db.flush()
+
+    if fmt not in FORMAT_HANDLERS:
+        raise RuntimeError(f"不支持的导出格式: {fmt}")
+
+    # 3. 快照封存是刻意的 durable boundary。之后失败/取消只回滚发布事务，
+    # retry 始终从 SnapshotManifest 恢复，不重新快照。
+    await ctx.checkpoint()
+    await db.commit()
     await ctx.checkpoint()
 
-    # 5. 插入 SnapshotManifest（不可变）。
-    snapshot = await export_service.insert_snapshot_manifest(
-        export_id=export_id,
-        project_id=ctx.project_id,
-        manifest=manifest,
-        manifest_hash=manifest_hash,
-    )
-    await db.flush()
-
-    # 6. 只读 manifest 渲染 payload。
+    # 4. 只读 manifest 渲染 payload。
     output_text = render_payload_from_manifest(manifest, fmt)
     payload_sha256 = render_payload_sha256(output_text)
     payload_bytes = output_text.encode("utf-8")
@@ -345,15 +398,15 @@ async def _export_common(
     content_type = FORMAT_CONTENT_TYPES.get(fmt, "application/json")
     await ctx.checkpoint()
 
-    # 7. versioned 上传：内容寻址 key（每次 Export 唯一，同扩展名不同格式不共享 key）。
-    base_key = f"{ctx.project_id}/exports/{export_id}"
+    # 5. versioned 上传：内容寻址 key（每次 Export 唯一，同扩展名不同格式不共享 key）。
+    base_key = build_storage_key(ctx.project_id, "exports", export_id)
     output_key = f"{base_key}/payload-{payload_sha256}.{ext}"
     output_version_id = storage.put_object_versioned(
         settings.minio_bucket_outputs, output_key, payload_bytes, content_type, sha256=payload_sha256,
     )
     if not output_version_id:
         raise RuntimeError("output 上传未返回 version_id")
-    manifest_bytes = json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    manifest_bytes = manifest_cjson(manifest).encode("utf-8")
     manifest_key = f"{base_key}/manifest-{manifest_hash}.json"
     manifest_version_id = storage.put_object_versioned(
         settings.minio_bucket_outputs, manifest_key, manifest_bytes, "application/json", sha256=manifest_hash,
@@ -362,7 +415,8 @@ async def _export_common(
         raise RuntimeError("manifest 上传未返回 version_id")
     await ctx.checkpoint()
 
-    # 8. 同一事务：INSERT seal（trigger 复算） + fenced finalize。
+    # 6. 同一事务：INSERT seal + fenced Export finalize；runner 随后在同一事务
+    # 完成 Task CAS。任一 CAS 失败都会回滚 seal 与 Export completed。
     seal = await export_service.insert_artifact_seal(
         export_id=export_id,
         snapshot_manifest_id=snapshot.id,
@@ -382,7 +436,7 @@ async def _export_common(
     ok = await export_service.finalize_completed(
         export_id=export_id,
         run_token=ctx.run_token,
-        expected_state_version=ctx.attempt_no,
+        expected_state_version=ctx.state_version,
         artifact_seal_id=seal.id,
         snapshot_manifest_id=snapshot.id,
         output_bucket=settings.minio_bucket_outputs,
@@ -395,10 +449,13 @@ async def _export_common(
         manifest_object_version_id=manifest_version_id,
         manifest_sha256=manifest_hash,
         format=fmt,
-        item_count=len(memberships),
+        item_count=int(manifest.get("member_count") or len(manifest.get("members") or [])),
         task_id=ctx.task_id,
     )
     if not ok:
+        # CAS 失败最常见的竞态是上传后收到取消或 lease/run token 已失效。
+        # 先让控制面门禁把它分类为取消/abandoned，避免误记成业务失败。
+        await ctx.checkpoint()
         raise RuntimeError("Export finalize CAS 失败")
 
 
