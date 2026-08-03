@@ -264,7 +264,14 @@ def _add_finalized_columns(container_tbl: str) -> None:
 
 
 def _create_membership_consistency_triggers(conn) -> None:
-    """deferred constraint trigger：membership 固定 revision/approval/hash 与 CuratedItem 一致。"""
+    """deferred constraint trigger：membership 固定 revision/approval/hash 属于同一 CuratedItem。
+
+    只校验“加入时固定的绑定”真实且属于同一条目：pinned revision 是当前 item 的
+    revision、pinned approval record 是当前 item 的 approve 记录且绑定同一 revision、
+    两个保存 hash 与不可变源记录一致。退审（needs_revision）只清空当前批准指针，
+    不改变历史 revision/approval record 与已固定 membership（任务卡 §4/§12），
+    因此 trigger 不要求 CuratedItem 当前仍 approved。
+    """
     for tbl, container_col, container_tbl in _MEMBERSHIP_TABLES:
         fn = f"trg_{tbl}_consistency"
         conn.execute(
@@ -280,8 +287,6 @@ def _create_membership_consistency_triggers(conn) -> None:
                         JOIN {container_tbl} c ON c.id = NEW.{container_col}
                         WHERE ci.id = NEW.curated_item_id
                           AND c.project_id = ci.project_id
-                          AND ci.approved_revision_id = NEW.curated_revision_id
-                          AND ci.approval_record_id = NEW.approval_record_id
                           AND r.curated_item_id = ci.id
                           AND r.content_sha256 = NEW.curated_revision_sha256
                           AND rr.entity_type = 'curated_item'

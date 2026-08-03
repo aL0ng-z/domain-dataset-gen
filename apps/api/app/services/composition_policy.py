@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import Select, exists, or_, select
+from sqlalchemy import Select, exists, func, or_, select
 
 from app.models.curated import CuratedItem, CuratedRevision
 from app.models.dataset import BenchmarkCase, DatasetItem
@@ -42,7 +42,11 @@ class CompositionGateError(Exception):
 
 
 def _approval_ok_clause() -> exists:
-    """CuratedItem 的审批指针指向一条带非空证据快照的 approve ReviewRecord。"""
+    """CuratedItem 的审批指针指向一条带非空证据快照的 approve ReviewRecord。
+
+    证据快照必须包含至少一个 EvidenceLink（任务卡 §5.2：`含至少一个有效
+    EvidenceLink snapshot`）；空 ``evidence_links`` 列表视为无证据，不可编组。
+    """
     return exists(
         select(ReviewRecord.id).where(
             ReviewRecord.id == CuratedItem.approval_record_id,
@@ -51,6 +55,7 @@ def _approval_ok_clause() -> exists:
             ReviewRecord.action == "approve",
             ReviewRecord.evidence_snapshot.is_not(None),
             ReviewRecord.evidence_sha256.is_not(None),
+            func.jsonb_array_length(ReviewRecord.evidence_snapshot["evidence_links"]) > 0,
         )
     )
 
@@ -146,6 +151,9 @@ def assert_item_eligible(
         raise CompositionGateError("COMPOSITION_ITEM_INELIGIBLE", "条目缺少批准 revision/审批记录")
     if approval_record is None or approval_record.evidence_snapshot is None or approval_record.evidence_sha256 is None:
         raise CompositionGateError("COMPOSITION_ITEM_INELIGIBLE", "批准记录缺少证据快照")
+    evidence_links = (approval_record.evidence_snapshot or {}).get("evidence_links") or []
+    if not evidence_links:
+        raise CompositionGateError("COMPOSITION_ITEM_INELIGIBLE", "批准记录证据快照为空")
     if require_supported and (source_candidate is None or source_candidate.review_verdict != REQUIRED_SOURCE_VERDICT):
         raise CompositionGateError(
             "COMPOSITION_ITEM_INELIGIBLE", "source Candidate 评审结论必须为 supported"
