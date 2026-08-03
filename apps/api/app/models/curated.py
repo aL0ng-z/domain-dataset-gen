@@ -11,6 +11,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ENUM, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -55,7 +56,7 @@ class CuratedItem(Base):
     status: Mapped[str] = mapped_column(curated_item_status_enum, nullable=False, default="draft")
     promoted_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     # T09：乐观修订 + 审批指针。
-    current_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    current_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
     approved_revision_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("curated_revisions.id", ondelete="RESTRICT"), nullable=True
     )
