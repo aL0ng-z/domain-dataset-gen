@@ -4,6 +4,43 @@
 
 ---
 
+## T09 Candidate/CuratedItem 证据与审批（2026-08-03）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `libs/domain/domain/canonical.py` | `curated-content-cjson-v1` / `curated-approval-cjson-v1` 版本化 canonical JSON 与 SHA-256（UTF-8、Unicode NFC、key 排序、紧凑空白、证据链接稳定排序、`build_evidence_snapshot`），供后端/迁移/T10 独立重算 | 已完成 |
+| `libs/domain/domain/schemas.py` | 注册 T09 六个 ErrorResponse 领域 code（CANDIDATE_REVIEW_STATE_CONFLICT / CANDIDATE_EVIDENCE_REQUIRED / CANDIDATE_ALREADY_PROMOTED / CURATED_REVISION_CONFLICT / CURATED_APPROVAL_GATE_FAILED / CURATED_REVIEW_STATE_CONFLICT） | 已完成 |
+| `apps/api/app/models/generation.py` | 移除冗余 `review_status` 列；`Candidate.status` 成为唯一审核状态源 | 已完成 |
+| `apps/api/app/models/curated.py` | CuratedItem 增加 current_revision/approved_revision_id/approval_record_id/approved_by/approved_at 与 approved 完整性 CHECK；CuratedRevision 增加 version/content_sha256/canonicalization_version 与 (item, version) 唯一；EvidenceLink 增加 start_char/end_char 与坐标唯一 | 已完成 |
+| `apps/api/app/models/review_record.py` | CuratedItem 审批绑定列（entity_revision_id/revision_content_sha256/evidence_snapshot/evidence_sha256/canonicalization_version）与 CHECK | 已完成 |
+| `apps/api/migrations/versions/t09_curated_evidence_approval.py` | 预检后删除 review_status；candidate_id 唯一约束；revision/evidence 扩展列 + 诚实回填（历史 revision 分配 version+hash、无证据 evidence 删除、无审批 approved 退回 draft）；不可变 trigger（revision/approve record）+ deferred 一致性 trigger；downgrade 预检 | 已完成 |
+| `apps/api/app/services/candidate_service.py` | 审核状态机 + 证据 span 精确校验（Unicode code point、跨项目 Chunk -> 422）+ 幂等提升物化 EvidenceLink（服务端派生）+ 同事务 ReviewRecord | 已完成 |
+| `apps/api/app/services/curated_item_service.py` | 乐观修订 CAS（expected_revision 条件 UPDATE）+ approve/needs_revision（绑定 revision id/content hash + 证据快照/审批 hash 写不可变记录）+ 分页查询 | 已完成 |
+| `apps/api/app/routers/*` | candidates review/promote 与 curated-items update/review 的 409 领域 code 映射；evidence/revisions 分页端点；openapi 注入 T09 操作 409 | 已完成 |
+| `apps/web` | 候选 JSON 编辑器 + 证据选择器（选中原文生成 code point span）+ 判定/拒绝原因；CuratedItem 详情分别加载 item/evidence/revisions、reviewer 审批/退审控件、409 冲突保留草稿；组件测试 6 项 | 已完成 |
+| 测试 | `test_curated_evidence_approval.py`（33 项）+ `test_curated_migration.py`（3 项）+ 既有 62 项合同/授权适配 | 已完成 |
+
+### 设计决策
+
+- **单一审核状态源**：`Candidate.status`（ai_generated→human_edited→approved|rejected）是唯一事实源；删除重复 `review_status` 列前预检，任何非默认值即触发停止条件，绝不猜测历史审核结论。
+- **证据精确到 Unicode code point**：span 以 `chunk.content[start:end] == quote_text`（NFC 比较）校验，offset 左闭右开、UTF-16 surrogate pair 按 code point 计数；前端用 DOM selection 显式换算，后端仍是权威。
+- **提升幂等 + 服务端派生**：提升物化 1 CuratedItem + v1 revision + 去重 span 对应 EvidenceLink；document/页码/标题/quote 全从 Chunk 派生，客户端不能覆盖；`candidate_id` 唯一约束兜底并发重复提升。
+- **审批绑定不可变**：approve 在同一事务绑定当前 revision 的 id/content hash 与稳定排序证据快照/审批 hash；ReviewRecord 与 CuratedRevision 由数据库 trigger 禁止 UPDATE/DELETE；deferred trigger 校验 approved 的 revision/record 同属当前 item 且 hash 一致、canonicalization version 已知。
+- **乐观修订 CAS**：PATCH 用 `expected_revision + status=draft` 条件 UPDATE 原子递增版本，并发保存最多一个成功；revision (item, version) 唯一兜底，版本连续不覆写。
+- **诚实回填**：迁移只对可精确回填的数据补 version/hash；无 quote 无法定位 offset 的证据链接删除（不伪造 quote）；无审批记录的 approved 历史条目一律退回 draft（绝不自动设 approved）。
+- **退审不清历史**：needs_revision 只清空当前批准指针/人/时间；历史 revision、approval record、evidence snapshot 与已固定 membership 保持不可变。
+
+### 验证状态
+
+- 迁移往返 `upgrade head → downgrade t08 → upgrade head` 通过；三类回填计数输出。
+- 全量 `python -m pytest -q` 342 项通过（T09 36 项 + 既有回归）；`python -m ruff check apps/api libs tests scripts` 通过。
+- `python scripts/export_openapi.py --check` 通过；`tests/contract/test_openapi.py` 14 项通过。
+- 前端 `npm run lint`、`npm exec tsc -- --noEmit`、`npm test -- --run`（70 项）、`npm run api:check`、`npm run build` 全部通过。
+
+---
+
 ## T08 生成链路修复（2026-08-03）
 
 ### 本轮总览
