@@ -92,6 +92,15 @@ class CompositionService:
             for m in memberships
         ]
 
+    @staticmethod
+    def _membership_sha256(container_type: str, container_id: uuid.UUID, memberships: list) -> str:
+        """用给定 membership 行计算 composition hash（供测试/回填复用）。"""
+        return composition_sha256(
+            container_id=container_id,
+            container_type=container_type,
+            memberships=CompositionService._membership_hash_rows(memberships),
+        )
+
     async def _recompute_hash(self, container: Dataset | Benchmark) -> str:
         container_type = "dataset" if isinstance(container, Dataset) else "benchmark"
         memberships = await self._load_membership_rows(container_type, container.id)
@@ -318,7 +327,7 @@ class CompositionService:
                 "curated_item_id": curated_item_id,
                 "ordinal": next_ordinal,
                 "curated_revision_id": curated.approved_revision_id,
-                "curated_revision_sha256": self._revision_content_sha256(curated.approved_revision_id),
+                "curated_revision_sha256": await self._revision_content_sha256(curated.approved_revision_id),
                 "approval_record_id": curated.approval_record_id,
                 "approval_evidence_sha256": approval_record.evidence_sha256,
             }
@@ -442,7 +451,7 @@ class CompositionService:
             if (
                 curated.approved_revision_id != m.curated_revision_id
                 or curated.approval_record_id != m.approval_record_id
-                or m.curated_revision_sha256 != self._revision_content_sha256(m.curated_revision_id)
+                or m.curated_revision_sha256 != await self._revision_content_sha256(m.curated_revision_id)
                 or approval_record is None
                 or m.approval_evidence_sha256 != approval_record.evidence_sha256
             ):
