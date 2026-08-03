@@ -14,11 +14,41 @@ import { DataTable, type ColumnDef } from "@/components/data-table";
 import { usePagination } from "@/hooks/use-pagination";
 import { api, formatJsonPreview } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
-import { EyeIcon, XIcon } from "lucide-react";
+import {
+  DownloadIcon,
+  EyeIcon,
+  RotateCwIcon,
+  ShieldCheckIcon,
+  XIcon,
+} from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
 type ExportRecord = components["schemas"]["ExportResponse"];
 type SnapshotManifest = components["schemas"]["SnapshotManifestResponse"];
+
+const STATUS_LABEL: Record<string, string> = {
+  queued: "排队中",
+  processing: "处理中",
+  completed: "已完成",
+  failed: "失败",
+};
+
+function StatusBadge({ status, integrity }: { status: string; integrity: string }) {
+  const color =
+    status === "completed"
+      ? "bg-green-100 text-green-800"
+      : status === "failed"
+        ? "bg-red-100 text-red-800"
+        : "bg-yellow-100 text-yellow-800";
+  return (
+    <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${color}`}>
+      {STATUS_LABEL[status] ?? status}
+      {integrity === "unverified_legacy" && (
+        <span className="ml-1 rounded bg-orange-200 px-1 text-[10px] text-orange-900">历史不可验证</span>
+      )}
+    </span>
+  );
+}
 
 export default function ExportsPage() {
   const params = useParams<{ id: string }>();
@@ -28,6 +58,7 @@ export default function ExportsPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [selectedManifest, setSelectedManifest] = useState<SnapshotManifest | null>(null);
+  const [verifying, setVerifying] = useState<Record<string, boolean>>({});
 
   const fetchExports = useCallback(() => {
     setLoading(true);
@@ -45,20 +76,8 @@ export default function ExportsPage() {
   }, [projectId, page, pageSize]);
 
   useEffect(() => {
-
-
-    // 延迟到下一事件循环再触发请求，避免在 effect 内同步 setState
-
-
-    // （react-hooks/set-state-in-effect），并通过 cleanup 取消未完成的调度。
-
-
     const timer = setTimeout(fetchExports, 0);
-
-
     return () => clearTimeout(timer);
-
-
   }, [fetchExports]);
 
   const loadManifest = useCallback(
@@ -75,42 +94,131 @@ export default function ExportsPage() {
     [projectId],
   );
 
+  const handleDownload = useCallback(
+    async (row: ExportRecord) => {
+      // 链接始终指向后端 download endpoint（签发绑定 version 的 307），不缓存预签名 URL。
+      window.open(`/api/projects/${projectId}/exports/${row.id}/download`, "_blank");
+    },
+    [projectId],
+  );
+
+  const handleVerify = useCallback(
+    async (row: ExportRecord, deep: boolean) => {
+      setVerifying((s) => ({ ...s, [row.id]: true }));
+      try {
+        const result = await api.get("/projects/{pid}/exports/{eid}/verify", {
+          params: { pid: projectId, eid: row.id },
+          query: deep ? { deep: "true" } : {},
+        });
+        if (result.status === "verified") {
+          toast.success("完整性验证通过");
+        } else {
+          toast.error(`完整性验证失败：${result.status}`);
+        }
+      } catch {
+        toast.error("验证失败");
+      } finally {
+        setVerifying((s) => ({ ...s, [row.id]: false }));
+      }
+    },
+    [projectId],
+  );
+
+  const handleRetry = useCallback(async (row: ExportRecord) => {
+    // T11：failed Export 通过 T07 retry 复用同一 export id（completed 返回 409 EXPORT_IMMUTABLE）。
+    if (row.status === "completed") {
+      toast.error("已完成的导出不可重跑");
+      return;
+    }
+    if (!row.task_id) {
+      toast.error("无关联任务，无法重试");
+      return;
+    }
+    try {
+      await api.post("/projects/{pid}/tasks/{tid}/retry", undefined, {
+        params: { pid: projectId, tid: row.task_id },
+        headers: { "Idempotency-Key": `retry-${row.task_id}-${Date.now()}` },
+      });
+      toast.success("已发起重试");
+      setTimeout(fetchExports, 1000);
+    } catch {
+      toast.error("重试失败");
+    }
+  }, [projectId, fetchExports]);
+
   const columns: ColumnDef<ExportRecord>[] = [
+    {
+      key: "source_type",
+      header: "来源",
+      render: (row) => (row.source_type === "benchmark" ? "基准集" : "数据集"),
+    },
     {
       key: "format",
       header: "格式",
       render: (row) => row.format,
     },
     {
-      key: "dataset_id",
-      header: "来源",
-      render: (row) =>
-        row.dataset_id ? "数据集" : row.benchmark_id ? "基准集" : "-",
+      key: "status",
+      header: "状态",
+      render: (row) => <StatusBadge status={row.status} integrity={row.integrity_status} />,
     },
     {
       key: "item_count",
       header: "条目数",
-      render: (row) => row.item_count,
+      render: (row) => row.item_count ?? "-",
+    },
+    {
+      key: "output_sha256",
+      header: "Hash",
+      render: (row) => (row.output_sha256 ? row.output_sha256.slice(0, 10) : "-"),
+    },
+    {
+      key: "file_size",
+      header: "大小",
+      render: (row) => (row.file_size != null ? `${row.file_size} B` : "-"),
     },
     {
       key: "created_at",
       header: "创建时间",
-      render: (row) =>
-        new Date(row.created_at).toLocaleString("zh-CN"),
+      render: (row) => new Date(row.created_at).toLocaleString("zh-CN"),
+    },
+    {
+      key: "completed_at",
+      header: "完成时间",
+      render: (row) => (row.completed_at ? new Date(row.completed_at).toLocaleString("zh-CN") : "-"),
     },
     {
       key: "actions",
       header: "操作",
       render: (row) => (
         <div className="flex gap-1">
-          <Button
-            variant="ghost"
-            size="xs"
-            onClick={() => loadManifest(row)}
-          >
+          {row.status === "completed" && row.integrity_status !== "unverified_legacy" ? (
+            <Button variant="ghost" size="xs" onClick={() => handleDownload(row)}>
+              <DownloadIcon className="size-3" />
+              下载
+            </Button>
+          ) : null}
+          <Button variant="ghost" size="xs" onClick={() => loadManifest(row)}>
             <EyeIcon className="size-3" />
             快照
           </Button>
+          {row.status === "completed" ? (
+            <Button
+              variant="ghost"
+              size="xs"
+              disabled={verifying[row.id]}
+              onClick={() => handleVerify(row, false)}
+            >
+              <ShieldCheckIcon className="size-3" />
+              {verifying[row.id] ? "验证中" : "验证"}
+            </Button>
+          ) : null}
+          {row.status === "failed" ? (
+            <Button variant="ghost" size="xs" onClick={() => handleRetry(row)}>
+              <RotateCwIcon className="size-3" />
+              重试
+            </Button>
+          ) : null}
         </div>
       ),
     },
@@ -122,7 +230,7 @@ export default function ExportsPage() {
         <div>
           <h1 className="text-2xl font-semibold">导出历史</h1>
           <p className="text-sm text-muted-foreground mt-1">
-            查看所有导出记录和快照清单
+            查看导出记录、快照清单、验证与重试
           </p>
         </div>
       </div>
@@ -148,7 +256,14 @@ export default function ExportsPage() {
         <Card className="mt-6">
           <CardHeader>
             <div className="flex items-center justify-between">
-              <CardTitle>SnapshotManifest</CardTitle>
+              <CardTitle>
+                SnapshotManifest
+                {selectedManifest.integrity_status === "unverified_legacy" && (
+                  <span className="ml-2 rounded bg-orange-200 px-2 py-0.5 text-xs text-orange-900">
+                    历史不可验证
+                  </span>
+                )}
+              </CardTitle>
               <Button
                 variant="ghost"
                 size="icon-xs"

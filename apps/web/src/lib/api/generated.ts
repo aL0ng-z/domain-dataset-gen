@@ -1157,7 +1157,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Download Export */
+        /**
+         * Download Export
+         * @description 仅 completed 且完整性非失败时返回绑定 object_version_id 的短时 307。
+         *
+         *     签发前 HEAD 校验 size/hash metadata；不符返回 409 EXPORT_INTEGRITY_ERROR。
+         */
         get: operations["export_download"];
         put?: never;
         post?: never;
@@ -1176,6 +1181,29 @@ export interface paths {
         };
         /** Get Manifest */
         get: operations["export_get_manifest"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/exports/{eid}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Verify Export
+         * @description 导出完整性验证。
+         *
+         *     - 浅验证：核对 DB 产物字段、version id 与对象 metadata。
+         *     - ``deep=true``：流式重算 payload 与 manifest hash，返回逐项结果。
+         */
+        get: operations["export_verify"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3094,7 +3122,7 @@ export interface components {
              * @description 稳定大写 snake case 业务错误码，前端按 code 分支
              * @enum {string}
              */
-            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_NOT_READY" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE" | "IDEMPOTENCY_KEY_REUSED" | "CHUNK_RUN_IN_PROGRESS" | "CHUNK_SET_IMMUTABLE" | "GENERATION_CONFIG_NOT_FOUND" | "GENERATION_SOURCE_NOT_FOUND" | "GENERATION_CONFIG_UNAVAILABLE" | "GENERATION_SNAPSHOT_UNSAFE" | "GENERATION_RENDERER_UNAVAILABLE" | "GENERATION_SOURCE_NOT_READY" | "GENERATION_IN_PROGRESS" | "GENERATION_NOT_RETRYABLE" | "GENERATION_RETRY_EXISTS" | "GENERATION_PROVENANCE_INVALID" | "CANDIDATE_REVIEW_STATE_CONFLICT" | "CANDIDATE_EVIDENCE_REQUIRED" | "CANDIDATE_ALREADY_PROMOTED" | "CURATED_REVISION_CONFLICT" | "CURATED_APPROVAL_GATE_FAILED" | "CURATED_REVIEW_STATE_CONFLICT" | "COMPOSITION_NOT_DRAFT" | "COMPOSITION_ITEM_INELIGIBLE" | "COMPOSITION_MEMBER_EXISTS" | "COMPOSITION_REVISION_CONFLICT" | "COMPOSITION_FINALIZE_GATE_FAILED" | "COMPOSITION_HASH_INVALID";
+            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_NOT_READY" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE" | "IDEMPOTENCY_KEY_REUSED" | "CHUNK_RUN_IN_PROGRESS" | "CHUNK_SET_IMMUTABLE" | "GENERATION_CONFIG_NOT_FOUND" | "GENERATION_SOURCE_NOT_FOUND" | "GENERATION_CONFIG_UNAVAILABLE" | "GENERATION_SNAPSHOT_UNSAFE" | "GENERATION_RENDERER_UNAVAILABLE" | "GENERATION_SOURCE_NOT_READY" | "GENERATION_IN_PROGRESS" | "GENERATION_NOT_RETRYABLE" | "GENERATION_RETRY_EXISTS" | "GENERATION_PROVENANCE_INVALID" | "CANDIDATE_REVIEW_STATE_CONFLICT" | "CANDIDATE_EVIDENCE_REQUIRED" | "CANDIDATE_ALREADY_PROMOTED" | "CURATED_REVISION_CONFLICT" | "CURATED_APPROVAL_GATE_FAILED" | "CURATED_REVIEW_STATE_CONFLICT" | "COMPOSITION_NOT_DRAFT" | "COMPOSITION_ITEM_INELIGIBLE" | "COMPOSITION_MEMBER_EXISTS" | "COMPOSITION_REVISION_CONFLICT" | "COMPOSITION_FINALIZE_GATE_FAILED" | "COMPOSITION_HASH_INVALID" | "EXPORT_SOURCE_NOT_FINALIZED" | "EXPORT_REVISION_CONFLICT" | "EXPORT_IMMUTABLE" | "EXPORT_INTEGRITY_ERROR" | "EXPORT_PROVENANCE_GAP";
             /**
              * Context
              * @description 仅含经 schema 声明的非敏感结构；允许为 null
@@ -3167,6 +3195,24 @@ export interface components {
             /** Start Char */
             start_char: number;
         };
+        /**
+         * ExportCreatedResponse
+         * @description T11：导出请求创建响应（202）。
+         */
+        ExportCreatedResponse: {
+            /**
+             * Export Id
+             * Format: uuid
+             */
+            export_id: string;
+            /** Status */
+            status: string;
+            /**
+             * Task Id
+             * Format: uuid
+             */
+            task_id: string;
+        };
         /** ExportProfileCreate */
         ExportProfileCreate: {
             /**
@@ -3227,18 +3273,35 @@ export interface components {
                 [key: string]: unknown;
             } | null;
         };
-        /** ExportRequest */
+        /**
+         * ExportRequest
+         * @description T11：导出请求。
+         *
+         *     - ``export_profile_id``：导出配置。
+         *     - ``expected_source_revision``：期望的 source composition revision（一致性校验）。
+         *     - ``expected_source_sha256``：期望的 source composition SHA-256。
+         *     - 支持 ``Idempotency-Key``（由路由处理）。
+         */
         ExportRequest: {
+            /** Expected Source Revision */
+            expected_source_revision: number;
+            /** Expected Source Sha256 */
+            expected_source_sha256: string;
             /**
              * Export Profile Id
              * Format: uuid
              */
             export_profile_id: string;
         };
-        /** ExportResponse */
+        /**
+         * ExportResponse
+         * @description T11：导出记录响应（列表/详情）。
+         */
         ExportResponse: {
             /** Benchmark Id */
             benchmark_id: string | null;
+            /** Completed At */
+            completed_at: string | null;
             /**
              * Created At
              * Format: date-time
@@ -3251,11 +3314,17 @@ export interface components {
             created_by: string;
             /** Dataset Id */
             dataset_id: string | null;
+            /** Error Code */
+            error_code: string | null;
+            /** Error Message */
+            error_message: string | null;
             /**
              * Export Profile Id
              * Format: uuid
              */
             export_profile_id: string;
+            /** File Size */
+            file_size: number | null;
             /** Format */
             format: string;
             /**
@@ -3263,18 +3332,50 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Integrity Status */
+            integrity_status: string;
+            /** Is Legacy */
+            is_legacy: boolean;
             /** Item Count */
-            item_count: number;
+            item_count: number | null;
+            /** Output Sha256 */
+            output_sha256: string | null;
             /**
              * Project Id
              * Format: uuid
              */
             project_id: string;
+            /** Retry Count */
+            retry_count: number;
+            /** Snapshot Manifest Id */
+            snapshot_manifest_id: string | null;
+            /** Source Type */
+            source_type: string | null;
+            /** Status */
+            status: string;
+            /** Task Id */
+            task_id: string | null;
+        };
+        /**
+         * ExportVerifyResponse
+         * @description T11：深度验证结果（逐项）。
+         */
+        ExportVerifyResponse: {
+            /** Deep */
+            deep?: {
+                [key: string]: unknown;
+            } | null;
             /**
-             * Snapshot Manifest Id
+             * Export Id
              * Format: uuid
              */
-            snapshot_manifest_id: string;
+            export_id: string;
+            /** Shallow */
+            shallow: {
+                [key: string]: unknown;
+            };
+            /** Status */
+            status: string;
         };
         /**
          * GenerateAcceptedResponse
@@ -4415,22 +4516,44 @@ export interface components {
              */
             lease_id: string;
         };
-        /** SnapshotManifestResponse */
+        /**
+         * SnapshotManifestResponse
+         * @description T11：快照清单响应。
+         *
+         *     ``integrity_status``：
+         *     - ``verified``：新格式，manifest_sha256 可验证。
+         *     - ``unverified_legacy``：迁移前旧记录，不伪造完整性。
+         */
         SnapshotManifestResponse: {
+            /** Canonicalization Version */
+            canonicalization_version: string;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
             /**
+             * Export Id
+             * Format: uuid
+             */
+            export_id: string;
+            /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Integrity Status */
+            integrity_status: string;
             /** Manifest */
             manifest: {
                 [key: string]: unknown;
             };
+            /** Manifest Sha256 */
+            manifest_sha256: string | null;
+            /** Schema Version */
+            schema_version: number;
+            /** Sealed At */
+            sealed_at: string | null;
         };
         /** TaskAttemptResponse */
         TaskAttemptResponse: {
@@ -6740,12 +6863,12 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            201: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExportResponse"];
+                    "application/json": components["schemas"]["ExportCreatedResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -8183,12 +8306,12 @@ export interface operations {
         };
         responses: {
             /** @description Successful Response */
-            201: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExportResponse"];
+                    "application/json": components["schemas"]["ExportCreatedResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -10451,6 +10574,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SnapshotManifestResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    export_verify: {
+        parameters: {
+            query?: {
+                deep?: boolean;
+            };
+            header?: never;
+            path: {
+                pid: string;
+                eid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportVerifyResponse"];
                 };
             };
             /** @description 认证失败 */

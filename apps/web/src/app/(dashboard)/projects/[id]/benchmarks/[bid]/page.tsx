@@ -135,10 +135,17 @@ export default function BenchmarkDetailPage() {
       toast.error("请选择导出配置");
       return;
     }
+    if (!benchmark || benchmark.status !== "finalized") {
+      toast.error("仅 finalize 的基准集可导出");
+      return;
+    }
     setExporting(true);
     try {
+      // T11：请求携带 expected source revision/hash（一致性校验）。
       await api.post("/projects/{pid}/benchmarks/{bid}/export", {
         export_profile_id: selectedProfile,
+        expected_source_revision: benchmark.composition_revision,
+        expected_source_sha256: benchmark.composition_sha256,
       }, {
         params: { pid: projectId, bid: benchmarkId },
       });
@@ -148,7 +155,7 @@ export default function BenchmarkDetailPage() {
     } finally {
       setExporting(false);
     }
-  }, [projectId, benchmarkId, selectedProfile]);
+  }, [projectId, benchmarkId, selectedProfile, benchmark]);
 
   const handleFinalize = useCallback(async () => {
     if (!benchmark) return;

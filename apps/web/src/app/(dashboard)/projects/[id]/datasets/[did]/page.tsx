@@ -136,10 +136,17 @@ export default function DatasetDetailPage() {
       toast.error("请选择导出配置");
       return;
     }
+    if (!dataset || dataset.status !== "finalized") {
+      toast.error("仅 finalize 的数据集可导出");
+      return;
+    }
     setExporting(true);
     try {
+      // T11：请求携带 expected source revision/hash（一致性校验）。
       await api.post("/projects/{pid}/datasets/{did}/export", {
         export_profile_id: selectedProfile,
+        expected_source_revision: dataset.composition_revision,
+        expected_source_sha256: dataset.composition_sha256,
       }, {
         params: { pid: projectId, did: datasetId },
       });
@@ -149,7 +156,7 @@ export default function DatasetDetailPage() {
     } finally {
       setExporting(false);
     }
-  }, [projectId, datasetId, selectedProfile]);
+  }, [projectId, datasetId, selectedProfile, dataset]);
 
   const handleFinalize = useCallback(async () => {
     if (!dataset) return;
