@@ -256,6 +256,106 @@ async def _make_curated_item(db_session, chunk, project_id, promoted_by):
     return item
 
 
+async def _make_approved_membership_refs(db_session, chunk, project_id, promoted_by):
+    """构造一条可编组的 approved CuratedItem + 固定 revision/approval record。
+
+    返回 {"curated_item_id", "curated_revision_id", "curated_revision_sha256",
+          "approval_record_id", "approval_evidence_sha256"}，供 DatasetItem/
+    BenchmarkCase 直接引用（T10：membership 必须固定批准 revision/record）。
+    """
+    from datetime import UTC, datetime
+
+    from app.models.curated import CuratedItem, CuratedRevision, EvidenceLink
+    from app.models.review_record import ReviewRecord
+    from domain.canonical import (
+        CURATED_APPROVAL_CJSON_VERSION,
+        CURATED_CONTENT_CJSON_VERSION,
+        curated_approval_sha256,
+        curated_content_sha256,
+    )
+
+    candidate = await _make_candidate(db_session, chunk, project_id)
+    content = {"title": "压缩机原理", "summary": "…", "tags": ["核心知识"]}
+    item = CuratedItem(
+        project_id=project_id,
+        candidate_id=candidate.id,
+        content=content,
+        item_type="knowledge_extraction",
+        status="draft",
+        promoted_by=promoted_by,
+        current_revision=1,
+    )
+    db_session.add(item)
+    await db_session.flush()
+    rev = CuratedRevision(
+        curated_item_id=item.id,
+        revised_by=promoted_by,
+        version=1,
+        content=content,
+        content_sha256=curated_content_sha256(content),
+        canonicalization_version=CURATED_CONTENT_CJSON_VERSION,
+    )
+    db_session.add(rev)
+    await db_session.flush()
+    link = EvidenceLink(
+        curated_item_id=item.id,
+        document_id=chunk.document_id,
+        chunk_id=chunk.id,
+        start_char=0,
+        end_char=max(1, len(chunk.content or "") // 2),
+        source_pages={"start": 1},
+        heading_path="h1",
+        quote_text=(chunk.content or "")[: max(1, len(chunk.content or "") // 2)],
+    )
+    db_session.add(link)
+    await db_session.flush()
+    content_hash = curated_content_sha256(content)
+    evidence_hash = curated_approval_sha256(
+        revision_id=rev.id, content_sha256=content_hash, evidence_links=[]
+    )
+    record = ReviewRecord(
+        entity_type="curated_item",
+        entity_id=item.id,
+        reviewer_id=promoted_by,
+        action="approve",
+        entity_revision_id=rev.id,
+        revision_content_sha256=content_hash,
+        evidence_snapshot={
+            "schema_version": 1,
+            "canonicalization_version": CURATED_APPROVAL_CJSON_VERSION,
+            "evidence_links": [
+                {
+                    "evidence_link_id": str(link.id),
+                    "chunk_id": str(link.chunk_id),
+                    "document_id": str(link.document_id),
+                    "start_char": link.start_char,
+                    "end_char": link.end_char,
+                    "quote_text": link.quote_text or "",
+                    "source_pages": link.source_pages,
+                    "heading_path": link.heading_path or "",
+                }
+            ],
+        },
+        evidence_sha256=evidence_hash,
+        canonicalization_version=CURATED_APPROVAL_CJSON_VERSION,
+    )
+    db_session.add(record)
+    await db_session.flush()
+    item.status = "approved"
+    item.approved_revision_id = rev.id
+    item.approval_record_id = record.id
+    item.approved_by = promoted_by
+    item.approved_at = datetime.now(UTC)
+    await db_session.flush()
+    return {
+        "curated_item_id": item.id,
+        "curated_revision_id": rev.id,
+        "curated_revision_sha256": rev.content_sha256,
+        "approval_record_id": record.id,
+        "approval_evidence_sha256": record.evidence_sha256,
+    }
+
+
 class TestDatasetItemsPagination:
     async def test_empty_dataset_returns_four_keys(self, client, org, db_session):
         headers = await _login_headers(client, "editor_user")
@@ -289,10 +389,17 @@ class TestDatasetItemsPagination:
         db_session.add(dataset)
         await db_session.flush()
         for i in range(3):
+            refs = await _make_approved_membership_refs(
+                db_session, chunk, org["projects"]["a"].id, org["users"]["editor"].id
+            )
             item = DatasetItem(
                 dataset_id=dataset.id,
-                curated_item_id=(await _make_curated_item(db_session, chunk, org["projects"]["a"].id, org["users"]["editor"].id)).id,
+                curated_item_id=refs["curated_item_id"],
                 ordinal=i + 1,
+                curated_revision_id=refs["curated_revision_id"],
+                curated_revision_sha256=refs["curated_revision_sha256"],
+                approval_record_id=refs["approval_record_id"],
+                approval_evidence_sha256=refs["approval_evidence_sha256"],
             )
             db_session.add(item)
         await db_session.flush()
@@ -319,10 +426,17 @@ class TestDatasetItemsPagination:
         )
         db_session.add(dataset)
         await db_session.flush()
+        refs = await _make_approved_membership_refs(
+            db_session, chunk, org["projects"]["a"].id, org["users"]["editor"].id
+        )
         item = DatasetItem(
             dataset_id=dataset.id,
-            curated_item_id=(await _make_curated_item(db_session, chunk, org["projects"]["a"].id, org["users"]["editor"].id)).id,
+            curated_item_id=refs["curated_item_id"],
             ordinal=1,
+            curated_revision_id=refs["curated_revision_id"],
+            curated_revision_sha256=refs["curated_revision_sha256"],
+            approval_record_id=refs["approval_record_id"],
+            approval_evidence_sha256=refs["approval_evidence_sha256"],
         )
         db_session.add(item)
         await db_session.flush()
@@ -359,10 +473,17 @@ class TestBenchmarkCasesPagination:
         db_session.add(benchmark)
         await db_session.flush()
         for i in range(5):
+            refs = await _make_approved_membership_refs(
+                db_session, chunk, org["projects"]["a"].id, org["users"]["editor"].id
+            )
             case = BenchmarkCase(
                 benchmark_id=benchmark.id,
-                curated_item_id=(await _make_curated_item(db_session, chunk, org["projects"]["a"].id, org["users"]["editor"].id)).id,
+                curated_item_id=refs["curated_item_id"],
                 ordinal=i + 1,
+                curated_revision_id=refs["curated_revision_id"],
+                curated_revision_sha256=refs["curated_revision_sha256"],
+                approval_record_id=refs["approval_record_id"],
+                approval_evidence_sha256=refs["approval_evidence_sha256"],
             )
             db_session.add(case)
         await db_session.flush()
