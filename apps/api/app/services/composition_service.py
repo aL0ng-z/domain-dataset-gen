@@ -20,7 +20,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.curated import CuratedItem, CuratedRevision
@@ -30,6 +30,7 @@ from app.models.review_record import ReviewRecord
 from app.services.composition_policy import (
     CompositionGateError,
     assert_item_eligible,
+    eligible_base_query,
 )
 from domain.composition import (
     COMPOSITION_CJSON_VERSION,
@@ -185,6 +186,79 @@ class CompositionService:
                 }
             )
         return details
+
+    # ------------------------------------------------------------------
+    # eligible 查询（T10 §5.2）
+    # ------------------------------------------------------------------
+
+    async def list_eligible_items(
+        self,
+        *,
+        container_type: str,
+        container_id: uuid.UUID,
+        project_id: uuid.UUID,
+        query: str | None,
+        page: int,
+        page_size: int,
+        require_supported: bool,
+    ) -> tuple[list[dict], int]:
+        """分页返回可添加的 CuratedItemSummary。
+
+        与 add/finalize 共用 :func:`eligible_base_query`；``query`` 只对受控的
+        标题/内容摘要字段做子串搜索（LIKE 转义，不拼接原始 SQL）。摘要的
+        pinned_revision/pinned_content 来自加入时固定的 approved revision。
+        """
+        base = eligible_base_query(
+            container_type=container_type,
+            container_id=container_id,
+            project_id=project_id,
+            require_supported=require_supported,
+        )
+
+        # query 仅用于受控摘要字段搜索；LIKE 通配符转义，避免注入。
+        if query:
+            q = query.strip()
+            if q:
+                escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                pattern = f"%{escaped}%"
+                base = base.where(
+                    or_(
+                        CuratedItem.item_type.ilike(pattern, escape="\\"),
+                        CuratedItem.content["title"].astext.ilike(pattern, escape="\\"),
+                        CuratedItem.content["question"].astext.ilike(pattern, escape="\\"),
+                        CuratedItem.content["summary"].astext.ilike(pattern, escape="\\"),
+                    )
+                )
+
+        count_stmt = select(func.count()).select_from(base.subquery())
+        total_result = await self.db.execute(count_stmt)
+        total = int(total_result.scalar() or 0)
+
+        offset = (page - 1) * page_size
+        rows = (await self.db.execute(base.offset(offset).limit(page_size))).all()
+
+        items = []
+        for row in rows:
+            items.append(
+                {
+                    "id": row.id,
+                    "item_type": row.item_type,
+                    "current_status": row.status,
+                    "current_revision": row.current_revision,
+                    "pinned_revision": (
+                        {
+                            "id": row.approved_revision_id,
+                            "version": row.pinned_version,
+                            "content_sha256": row.pinned_content_sha256,
+                        }
+                        if row.pinned_version is not None
+                        else None
+                    ),
+                    "pinned_content": row.content,
+                    "approved_at": row.approved_at,
+                }
+            )
+        return items, total
 
     # ------------------------------------------------------------------
     # add / remove

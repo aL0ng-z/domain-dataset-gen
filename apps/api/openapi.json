@@ -1,36 +1,6 @@
 {
   "components": {
     "schemas": {
-      "AddToBenchmarkRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "benchmark_id": {
-            "format": "uuid",
-            "title": "Benchmark Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "benchmark_id"
-        ],
-        "title": "AddToBenchmarkRequest",
-        "type": "object"
-      },
-      "AddToDatasetRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "dataset_id": {
-            "format": "uuid",
-            "title": "Dataset Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "dataset_id"
-        ],
-        "title": "AddToDatasetRequest",
-        "type": "object"
-      },
       "AsyncTaskAcceptedResponse": {
         "description": "202 异步任务已接受的统一响应（无 body 以外的业务负载）。",
         "properties": {
@@ -66,16 +36,42 @@
         "title": "BenchmarkCaseAdd",
         "type": "object"
       },
-      "BenchmarkCaseResponse": {
+      "BenchmarkCaseDetailResponse": {
         "properties": {
-          "benchmark_id": {
-            "format": "uuid",
-            "title": "Benchmark Id",
+          "approval_evidence_sha256": {
+            "title": "Approval Evidence Sha256",
             "type": "string"
+          },
+          "approval_record_id": {
+            "format": "uuid",
+            "title": "Approval Record Id",
+            "type": "string"
+          },
+          "container_id": {
+            "format": "uuid",
+            "title": "Container Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "curated_item": {
+            "$ref": "#/components/schemas/CuratedItemSummaryResponse"
           },
           "curated_item_id": {
             "format": "uuid",
             "title": "Curated Item Id",
+            "type": "string"
+          },
+          "curated_revision_id": {
+            "format": "uuid",
+            "title": "Curated Revision Id",
+            "type": "string"
+          },
+          "curated_revision_sha256": {
+            "title": "Curated Revision Sha256",
             "type": "string"
           },
           "id": {
@@ -90,11 +86,17 @@
         },
         "required": [
           "id",
-          "benchmark_id",
+          "container_id",
           "curated_item_id",
-          "ordinal"
+          "curated_revision_id",
+          "curated_revision_sha256",
+          "approval_record_id",
+          "approval_evidence_sha256",
+          "ordinal",
+          "created_at",
+          "curated_item"
         ],
-        "title": "BenchmarkCaseResponse",
+        "title": "BenchmarkCaseDetailResponse",
         "type": "object"
       },
       "BenchmarkCreate": {
@@ -120,6 +122,172 @@
           "name"
         ],
         "title": "BenchmarkCreate",
+        "type": "object"
+      },
+      "BenchmarkDetailResponse": {
+        "description": "T10：详情页额外返回准确 case_count 与 composition/finalize 摘要。",
+        "properties": {
+          "case_count": {
+            "title": "Case Count",
+            "type": "integer"
+          },
+          "composition_canonicalization_version": {
+            "title": "Composition Canonicalization Version",
+            "type": "string"
+          },
+          "composition_revision": {
+            "title": "Composition Revision",
+            "type": "integer"
+          },
+          "composition_sha256": {
+            "title": "Composition Sha256",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "title": "Created By",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "finalized_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized At"
+          },
+          "finalized_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized By"
+          },
+          "finalized_canonicalization_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized Canonicalization Version"
+          },
+          "finalized_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized Revision"
+          },
+          "finalized_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized Sha256"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "description",
+          "status",
+          "created_by",
+          "created_at",
+          "updated_at",
+          "case_count",
+          "composition_revision",
+          "composition_sha256",
+          "composition_canonicalization_version",
+          "finalized_revision",
+          "finalized_sha256",
+          "finalized_canonicalization_version",
+          "finalized_by",
+          "finalized_at"
+        ],
+        "title": "BenchmarkDetailResponse",
+        "type": "object"
+      },
+      "BenchmarkFinalizeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_sha256": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "expected_sha256"
+        ],
+        "title": "BenchmarkFinalizeRequest",
         "type": "object"
       },
       "BenchmarkResponse": {
@@ -1874,6 +2042,58 @@
         "title": "CuratedItemReview",
         "type": "object"
       },
+      "CuratedItemSummaryResponse": {
+        "description": "membership 嵌套的 CuratedItem 摘要（至少含 §5.1 固定字段）。\n\npinned_content 来自加入时固定的 CuratedRevision.content（JSON object），\ncurrent_status/current_revision 反映当前状态用于前端“退审/新 revision”提示。",
+        "properties": {
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "current_revision": {
+            "title": "Current Revision",
+            "type": "integer"
+          },
+          "current_status": {
+            "title": "Current Status",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "item_type": {
+            "title": "Item Type",
+            "type": "string"
+          },
+          "pinned_content": {
+            "additionalProperties": true,
+            "title": "Pinned Content",
+            "type": "object"
+          },
+          "pinned_revision": {
+            "$ref": "#/components/schemas/PinnedRevisionRef"
+          }
+        },
+        "required": [
+          "id",
+          "item_type",
+          "current_status",
+          "current_revision",
+          "pinned_revision",
+          "pinned_content"
+        ],
+        "title": "CuratedItemSummaryResponse",
+        "type": "object"
+      },
       "CuratedItemUpdate": {
         "additionalProperties": false,
         "description": "编辑请求：只允许 editor 修改 draft；请求中不存在 status（422）。\n\n含 expected_revision 乐观锁：不等于当前版本返回 409 CURATED_REVISION_CONFLICT，\n不覆盖他人更新。",
@@ -2025,6 +2245,172 @@
         "title": "DatasetCreate",
         "type": "object"
       },
+      "DatasetDetailResponse": {
+        "description": "T10：详情页额外返回准确 item_count 与 composition/finalize 摘要。",
+        "properties": {
+          "composition_canonicalization_version": {
+            "title": "Composition Canonicalization Version",
+            "type": "string"
+          },
+          "composition_revision": {
+            "title": "Composition Revision",
+            "type": "integer"
+          },
+          "composition_sha256": {
+            "title": "Composition Sha256",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "format": "uuid",
+            "title": "Created By",
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "finalized_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized At"
+          },
+          "finalized_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized By"
+          },
+          "finalized_canonicalization_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized Canonicalization Version"
+          },
+          "finalized_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized Revision"
+          },
+          "finalized_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized Sha256"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "item_count": {
+            "title": "Item Count",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "format": "uuid",
+            "title": "Project Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "description",
+          "status",
+          "created_by",
+          "created_at",
+          "updated_at",
+          "item_count",
+          "composition_revision",
+          "composition_sha256",
+          "composition_canonicalization_version",
+          "finalized_revision",
+          "finalized_sha256",
+          "finalized_canonicalization_version",
+          "finalized_by",
+          "finalized_at"
+        ],
+        "title": "DatasetDetailResponse",
+        "type": "object"
+      },
+      "DatasetFinalizeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "expected_sha256": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "expected_sha256"
+        ],
+        "title": "DatasetFinalizeRequest",
+        "type": "object"
+      },
       "DatasetItemAdd": {
         "additionalProperties": false,
         "properties": {
@@ -2040,16 +2426,42 @@
         "title": "DatasetItemAdd",
         "type": "object"
       },
-      "DatasetItemResponse": {
+      "DatasetItemDetailResponse": {
         "properties": {
+          "approval_evidence_sha256": {
+            "title": "Approval Evidence Sha256",
+            "type": "string"
+          },
+          "approval_record_id": {
+            "format": "uuid",
+            "title": "Approval Record Id",
+            "type": "string"
+          },
+          "container_id": {
+            "format": "uuid",
+            "title": "Container Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "curated_item": {
+            "$ref": "#/components/schemas/CuratedItemSummaryResponse"
+          },
           "curated_item_id": {
             "format": "uuid",
             "title": "Curated Item Id",
             "type": "string"
           },
-          "dataset_id": {
+          "curated_revision_id": {
             "format": "uuid",
-            "title": "Dataset Id",
+            "title": "Curated Revision Id",
+            "type": "string"
+          },
+          "curated_revision_sha256": {
+            "title": "Curated Revision Sha256",
             "type": "string"
           },
           "id": {
@@ -2064,11 +2476,17 @@
         },
         "required": [
           "id",
-          "dataset_id",
+          "container_id",
           "curated_item_id",
-          "ordinal"
+          "curated_revision_id",
+          "curated_revision_sha256",
+          "approval_record_id",
+          "approval_evidence_sha256",
+          "ordinal",
+          "created_at",
+          "curated_item"
         ],
-        "title": "DatasetItemResponse",
+        "title": "DatasetItemDetailResponse",
         "type": "object"
       },
       "DatasetResponse": {
@@ -2299,7 +2717,13 @@
               "CANDIDATE_ALREADY_PROMOTED",
               "CURATED_REVISION_CONFLICT",
               "CURATED_APPROVAL_GATE_FAILED",
-              "CURATED_REVIEW_STATE_CONFLICT"
+              "CURATED_REVIEW_STATE_CONFLICT",
+              "COMPOSITION_NOT_DRAFT",
+              "COMPOSITION_ITEM_INELIGIBLE",
+              "COMPOSITION_MEMBER_EXISTS",
+              "COMPOSITION_REVISION_CONFLICT",
+              "COMPOSITION_FINALIZE_GATE_FAILED",
+              "COMPOSITION_HASH_INVALID"
             ],
             "title": "Code",
             "type": "string"
@@ -3484,11 +3908,11 @@
         "title": "MonitoringSummary",
         "type": "object"
       },
-      "PaginatedResponse_BenchmarkCaseResponse_": {
+      "PaginatedResponse_BenchmarkCaseDetailResponse_": {
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/BenchmarkCaseResponse"
+              "$ref": "#/components/schemas/BenchmarkCaseDetailResponse"
             },
             "title": "Items",
             "type": "array"
@@ -3512,7 +3936,7 @@
           "page",
           "page_size"
         ],
-        "title": "PaginatedResponse[BenchmarkCaseResponse]",
+        "title": "PaginatedResponse[BenchmarkCaseDetailResponse]",
         "type": "object"
       },
       "PaginatedResponse_BenchmarkResponse_": {
@@ -3670,6 +4094,37 @@
         "title": "PaginatedResponse[CuratedItemResponse]",
         "type": "object"
       },
+      "PaginatedResponse_CuratedItemSummaryResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CuratedItemSummaryResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "PaginatedResponse[CuratedItemSummaryResponse]",
+        "type": "object"
+      },
       "PaginatedResponse_CuratedRevisionResponse_": {
         "properties": {
           "items": {
@@ -3701,11 +4156,11 @@
         "title": "PaginatedResponse[CuratedRevisionResponse]",
         "type": "object"
       },
-      "PaginatedResponse_DatasetItemResponse_": {
+      "PaginatedResponse_DatasetItemDetailResponse_": {
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/DatasetItemResponse"
+              "$ref": "#/components/schemas/DatasetItemDetailResponse"
             },
             "title": "Items",
             "type": "array"
@@ -3729,7 +4184,7 @@
           "page",
           "page_size"
         ],
-        "title": "PaginatedResponse[DatasetItemResponse]",
+        "title": "PaginatedResponse[DatasetItemDetailResponse]",
         "type": "object"
       },
       "PaginatedResponse_DatasetResponse_": {
@@ -4509,6 +4964,31 @@
           }
         },
         "title": "ParserProfileUpdate",
+        "type": "object"
+      },
+      "PinnedRevisionRef": {
+        "description": "加入时固定的 approved CuratedRevision 摘要。",
+        "properties": {
+          "content_sha256": {
+            "title": "Content Sha256",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "content_sha256"
+        ],
+        "title": "PinnedRevisionRef",
         "type": "object"
       },
       "ProjectCreate": {
@@ -8420,7 +8900,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BenchmarkResponse"
+                  "$ref": "#/components/schemas/BenchmarkDetailResponse"
                 }
               }
             },
@@ -8647,7 +9127,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PaginatedResponse_BenchmarkCaseResponse_"
+                  "$ref": "#/components/schemas/PaginatedResponse_BenchmarkCaseDetailResponse_"
                 }
               }
             },
@@ -8753,7 +9233,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BenchmarkCaseResponse"
+                  "$ref": "#/components/schemas/BenchmarkCaseDetailResponse"
                 }
               }
             },
@@ -8778,6 +9258,16 @@
               }
             },
             "description": "权限不足"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
           },
           "422": {
             "content": {
@@ -8880,6 +9370,16 @@
             },
             "description": "资源不存在"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -8907,6 +9407,144 @@
           }
         ],
         "summary": "Remove Case",
+        "tags": [
+          "benchmarks"
+        ]
+      }
+    },
+    "/api/projects/{pid}/benchmarks/{bid}/eligible-items": {
+      "get": {
+        "operationId": "benchmark_list_eligible_items",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "bid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Query"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedResponse_CuratedItemSummaryResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "资源不存在"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Eligible Items",
         "tags": [
           "benchmarks"
         ]
@@ -9021,6 +9659,114 @@
           }
         ],
         "summary": "Export Benchmark",
+        "tags": [
+          "benchmarks"
+        ]
+      }
+    },
+    "/api/projects/{pid}/benchmarks/{bid}/finalize": {
+      "post": {
+        "operationId": "benchmark_finalize",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "bid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BenchmarkFinalizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Finalize Benchmark",
         "tags": [
           "benchmarks"
         ]
@@ -10087,202 +10833,6 @@
         ]
       }
     },
-    "/api/projects/{pid}/curated-items/{iid}/add-to-benchmark": {
-      "post": {
-        "operationId": "curated_item_add_to_benchmark",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "pid",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Pid",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "iid",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Iid",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AddToBenchmarkRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BenchmarkCaseResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "认证失败"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "权限不足"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            },
-            "description": "请求参数校验失败"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "服务器内部错误"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Add To Benchmark",
-        "tags": [
-          "curated-items"
-        ]
-      }
-    },
-    "/api/projects/{pid}/curated-items/{iid}/add-to-dataset": {
-      "post": {
-        "operationId": "curated_item_add_to_dataset",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "pid",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Pid",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "iid",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Iid",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AddToDatasetRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DatasetItemResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "认证失败"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "权限不足"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ValidationErrorResponse"
-                }
-              }
-            },
-            "description": "请求参数校验失败"
-          },
-          "500": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "服务器内部错误"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Add To Dataset",
-        "tags": [
-          "curated-items"
-        ]
-      }
-    },
     "/api/projects/{pid}/curated-items/{iid}/evidence": {
       "get": {
         "operationId": "curated_item_list_evidence",
@@ -10939,7 +11489,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DatasetResponse"
+                  "$ref": "#/components/schemas/DatasetDetailResponse"
                 }
               }
             },
@@ -11113,6 +11663,144 @@
         ]
       }
     },
+    "/api/projects/{pid}/datasets/{did}/eligible-items": {
+      "get": {
+        "operationId": "dataset_list_eligible_items",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "did",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Did",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 200,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Query"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedResponse_CuratedItemSummaryResponse_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "资源不存在"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Eligible Items",
+        "tags": [
+          "datasets"
+        ]
+      }
+    },
     "/api/projects/{pid}/datasets/{did}/export": {
       "post": {
         "operationId": "dataset_export",
@@ -11227,6 +11915,114 @@
         ]
       }
     },
+    "/api/projects/{pid}/datasets/{did}/finalize": {
+      "post": {
+        "operationId": "dataset_finalize",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "did",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Did",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DatasetFinalizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetDetailResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Finalize Dataset",
+        "tags": [
+          "datasets"
+        ]
+      }
+    },
     "/api/projects/{pid}/datasets/{did}/items": {
       "get": {
         "operationId": "dataset_list_items",
@@ -11280,7 +12076,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PaginatedResponse_DatasetItemResponse_"
+                  "$ref": "#/components/schemas/PaginatedResponse_DatasetItemDetailResponse_"
                 }
               }
             },
@@ -11386,7 +12182,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DatasetItemResponse"
+                  "$ref": "#/components/schemas/DatasetItemDetailResponse"
                 }
               }
             },
@@ -11411,6 +12207,16 @@
               }
             },
             "description": "权限不足"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
           },
           "422": {
             "content": {
@@ -11512,6 +12318,16 @@
               }
             },
             "description": "资源不存在"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
           },
           "422": {
             "content": {

@@ -86,11 +86,3 @@ class EvidenceLinkResponse(BaseSchema):
     source_pages: dict | None
     heading_path: str | None
     quote_text: str | None
-
-
-class AddToDatasetRequest(RequestSchema):
-    dataset_id: uuid.UUID
-
-
-class AddToBenchmarkRequest(RequestSchema):
-    benchmark_id: uuid.UUID

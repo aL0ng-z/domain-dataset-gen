@@ -68,6 +68,13 @@ def _inject_error_responses(op: dict[str, Any], path: str, method: str) -> None:
         or "promote_to_curated" in opid
         or "curated_item_update" in opid
         or "curated_item_review" in opid
+        # T10：Dataset/Benchmark 编组 add/remove/finalize 均可能返回 409。
+        or "dataset_add_item" in opid
+        or "dataset_remove_item" in opid
+        or "dataset_finalize" in opid
+        or "benchmark_add_case" in opid
+        or "benchmark_remove_case" in opid
+        or "benchmark_finalize" in opid
     )
     if conflict_opid and "409" not in responses:
         responses["409"] = _response("冲突", _ERROR_REF)

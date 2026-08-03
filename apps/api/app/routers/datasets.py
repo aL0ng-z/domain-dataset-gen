@@ -2,6 +2,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.authz import ProjectResourceResolver
@@ -11,13 +12,18 @@ from app.models.config import ExportProfile
 from app.models.curated import CuratedItem
 from app.models.user import User
 from app.schemas.dataset import (
+    CuratedItemSummaryResponse,
     DatasetCreate,
+    DatasetDetailResponse,
+    DatasetFinalizeRequest,
     DatasetItemAdd,
-    DatasetItemResponse,
+    DatasetItemDetailResponse,
     DatasetResponse,
     DatasetUpdate,
 )
 from app.schemas.export import ExportRequest, ExportResponse
+from app.services.composition_policy import CompositionGateError
+from app.services.composition_service import CompositionService
 from app.services.dataset_service import DatasetService
 from app.services.idempotency import idempotent_create_task
 from app.services.task_service import TaskService
@@ -25,6 +31,31 @@ from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
 
 router = APIRouter(prefix="/api/projects/{pid}/datasets", tags=["datasets"])
+
+
+def _gate_409(exc: CompositionGateError) -> HTTPException:
+    """把资格门禁异常映射为稳定 409 ErrorResponse。"""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"code": exc.code, "message": str(exc)},
+    )
+
+
+def _dataset_detail(dataset, item_count: int) -> dict:
+    """组装 DatasetDetailResponse（T10 §5.1）。"""
+    base = DatasetResponse.model_validate(dataset).model_dump()
+    return DatasetDetailResponse(
+        **base,
+        item_count=item_count,
+        composition_revision=dataset.composition_revision,
+        composition_sha256=dataset.composition_sha256,
+        composition_canonicalization_version=dataset.composition_canonicalization_version,
+        finalized_revision=dataset.finalized_revision,
+        finalized_sha256=dataset.finalized_sha256,
+        finalized_canonicalization_version=dataset.finalized_canonicalization_version,
+        finalized_by=dataset.finalized_by,
+        finalized_at=dataset.finalized_at,
+    ).model_dump()
 
 
 @router.post("/", response_model=DatasetResponse, status_code=status.HTTP_201_CREATED, operation_id="dataset_create")
@@ -51,7 +82,7 @@ async def list_datasets(
     return PaginatedResponse(items=datasets, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{did}", response_model=DatasetResponse, operation_id="dataset_get")
+@router.get("/{did}", response_model=DatasetDetailResponse, operation_id="dataset_get")
 async def get_dataset(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -62,7 +93,9 @@ async def get_dataset(
     dataset = await resolver.dataset(pid, did)
     if dataset is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
-    return dataset
+    service = DatasetService(db)
+    item_count = await service.count_items(did)
+    return _dataset_detail(dataset, item_count)
 
 
 @router.patch("/{did}", response_model=DatasetResponse, operation_id="dataset_update")
@@ -99,7 +132,7 @@ async def delete_dataset(
 
 @router.get(
     "/{did}/items",
-    response_model=PaginatedResponse[DatasetItemResponse],
+    response_model=PaginatedResponse[DatasetItemDetailResponse],
     operation_id="dataset_list_items",
 )
 async def list_items(
@@ -114,11 +147,43 @@ async def list_items(
     if await resolver.dataset(pid, did) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
     service = DatasetService(db)
-    items, total = await service.list_items_paginated(did, page, page_size)
+    items, total = await service.list_items(did, page, page_size)
+    composition_service = CompositionService(db)
+    details = await composition_service.build_membership_details("dataset", did, items)
+    return PaginatedResponse(items=details, total=total, page=page, page_size=page_size)
+
+
+@router.get(
+    "/{did}/eligible-items",
+    response_model=PaginatedResponse[CuratedItemSummaryResponse],
+    operation_id="dataset_list_eligible_items",
+)
+async def list_eligible_items(
+    pid: uuid.UUID,
+    did: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
+    query: str | None = Query(None, max_length=200),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.dataset(pid, did) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
+    composition_service = CompositionService(db)
+    items, total = await composition_service.list_eligible_items(
+        container_type="dataset",
+        container_id=did,
+        project_id=pid,
+        query=query,
+        page=page,
+        page_size=page_size,
+        require_supported=False,
+    )
     return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
 
-@router.post("/{did}/items", response_model=DatasetItemResponse, status_code=status.HTTP_201_CREATED, operation_id="dataset_add_item")
+@router.post("/{did}/items", response_model=DatasetItemDetailResponse, status_code=status.HTTP_201_CREATED, operation_id="dataset_add_item")
 async def add_item(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -129,13 +194,26 @@ async def add_item(
     resolver = ProjectResourceResolver(db)
     if await resolver.dataset(pid, did) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
-    # 请求体引用的 curated item 必须属于同一项目。
+    # 请求体引用的 curated item 必须属于同一项目（跨项目 -> 404）。
     await resolver.ensure_in_project(pid, [(CuratedItem, body.curated_item_id)])
-    service = DatasetService(db)
+    composition_service = CompositionService(db)
     try:
-        return await service.add_item(did, body.curated_item_id)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+        membership = await composition_service.add_membership(
+            container_type="dataset",
+            container_id=did,
+            curated_item_id=body.curated_item_id,
+            require_supported=False,
+        )
+    except CompositionGateError as exc:
+        raise _gate_409(exc) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "COMPOSITION_MEMBER_EXISTS", "message": "同一 CuratedItem 已在容器中"},
+        ) from exc
+    details = await composition_service.build_membership_details("dataset", did, [membership])
+    return details[0]
 
 
 @router.delete("/{did}/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="dataset_remove_item")
@@ -149,9 +227,42 @@ async def remove_item(
     resolver = ProjectResourceResolver(db)
     if await resolver.dataset(pid, did) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
-    service = DatasetService(db)
-    if not await service.remove_item(did, item_id):
+    composition_service = CompositionService(db)
+    try:
+        removed = await composition_service.remove_membership(
+            container_type="dataset", container_id=did, membership_id=item_id
+        )
+    except CompositionGateError as exc:
+        raise _gate_409(exc) from exc
+    if not removed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集条目不存在")
+
+
+@router.post("/{did}/finalize", response_model=DatasetDetailResponse, operation_id="dataset_finalize")
+async def finalize_dataset(
+    pid: uuid.UUID,
+    did: uuid.UUID,
+    body: DatasetFinalizeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
+):
+    resolver = ProjectResourceResolver(db)
+    dataset = await resolver.dataset(pid, did)
+    if dataset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
+    composition_service = CompositionService(db)
+    try:
+        finalized = await composition_service.finalize(
+            container_type="dataset",
+            container_id=did,
+            expected_revision=body.expected_revision,
+            expected_sha256=body.expected_sha256,
+            reviewer_id=current_user.id,
+        )
+    except CompositionGateError as exc:
+        raise _gate_409(exc) from exc
+    item_count = await DatasetService(db).count_items(did)
+    return _dataset_detail(finalized, item_count)
 
 
 @router.post("/{did}/export", response_model=ExportResponse, status_code=status.HTTP_201_CREATED, operation_id="dataset_export")
@@ -201,7 +312,6 @@ async def export_dataset(
     await db.commit()
 
     # Return a placeholder export response — actual export created by runner
-    from app.schemas.export import ExportResponse
     return ExportResponse(
         id=task.id,
         project_id=pid,

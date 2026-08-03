@@ -18,7 +18,7 @@ import uuid
 
 from sqlalchemy import Select, exists, or_, select
 
-from app.models.curated import CuratedItem
+from app.models.curated import CuratedItem, CuratedRevision
 from app.models.dataset import BenchmarkCase, DatasetItem
 from app.models.generation import Candidate
 from app.models.review_record import ReviewRecord
@@ -66,7 +66,8 @@ def eligible_base_query(
 
     排除：其它项目、已加入该容器的 item、非 approved、缺审批指针、无证据快照的
     approve 记录；require_supported=True 时额外排除 source Candidate verdict 非
-    supported。结果只含查询所需列，避免把整行 JSONB content 拖入（page_size 受限）。
+    supported。结果含 pinned revision 摘要列（LEFT JOIN CuratedRevision），供
+    service 直接组装 summary，避免 N+1。page_size 受限（<=50）。
     """
     membership_table = DatasetItem if container_type == "dataset" else BenchmarkCase
     membership_col = (
@@ -94,6 +95,13 @@ def eligible_base_query(
             CuratedItem.approval_record_id,
             CuratedItem.approved_at,
             CuratedItem.created_at,
+            CuratedItem.content,
+            CuratedRevision.version.label("pinned_version"),
+            CuratedRevision.content_sha256.label("pinned_content_sha256"),
+        )
+        .outerjoin(
+            CuratedRevision,
+            CuratedRevision.id == CuratedItem.approved_revision_id,
         )
         .where(
             CuratedItem.project_id == project_id,

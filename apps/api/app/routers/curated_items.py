@@ -7,18 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.authz import ProjectResourceResolver
 from app.database import get_db
 from app.dependencies import require_project_member
-from app.models.dataset import Benchmark, Dataset
 from app.models.user import User
 from app.schemas.curated import (
-    AddToBenchmarkRequest,
-    AddToDatasetRequest,
     CuratedItemResponse,
     CuratedItemReview,
     CuratedItemUpdate,
     CuratedRevisionResponse,
     EvidenceLinkResponse,
 )
-from app.schemas.dataset import BenchmarkCaseResponse, DatasetItemResponse
 from app.services.curated_item_service import (
     CuratedApprovalGateFailedError,
     CuratedItemService,
@@ -175,43 +171,3 @@ async def list_evidence(
     service = CuratedItemService(db)
     items, total = await service.list_evidence_links(iid, page=page, page_size=page_size)
     return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
-
-
-@router.post("/{iid}/add-to-dataset", response_model=DatasetItemResponse, status_code=status.HTTP_201_CREATED, operation_id="curated_item_add_to_dataset")
-async def add_to_dataset(
-    pid: uuid.UUID,
-    iid: uuid.UUID,
-    body: AddToDatasetRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(require_project_member(UserRole.editor))],
-):
-    resolver = ProjectResourceResolver(db)
-    if await resolver.curated_item(pid, iid) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识条目不存在")
-    # 请求体引用的 dataset 必须属于同一项目（跨项目引用 -> 404）。
-    await resolver.ensure_in_project(pid, [(Dataset, body.dataset_id)])
-    service = CuratedItemService(db)
-    try:
-        return await service.add_to_dataset(iid, body.dataset_id)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
-
-
-@router.post("/{iid}/add-to-benchmark", response_model=BenchmarkCaseResponse, status_code=status.HTTP_201_CREATED, operation_id="curated_item_add_to_benchmark")
-async def add_to_benchmark(
-    pid: uuid.UUID,
-    iid: uuid.UUID,
-    body: AddToBenchmarkRequest,
-    db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(require_project_member(UserRole.editor))],
-):
-    resolver = ProjectResourceResolver(db)
-    if await resolver.curated_item(pid, iid) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识条目不存在")
-    # 请求体引用的 benchmark 必须属于同一项目。
-    await resolver.ensure_in_project(pid, [(Benchmark, body.benchmark_id)])
-    service = CuratedItemService(db)
-    try:
-        return await service.add_to_benchmark(iid, body.benchmark_id)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e

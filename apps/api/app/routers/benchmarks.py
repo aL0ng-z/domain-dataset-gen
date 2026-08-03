@@ -2,6 +2,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.authz import ProjectResourceResolver
@@ -12,19 +13,47 @@ from app.models.curated import CuratedItem
 from app.models.user import User
 from app.schemas.dataset import (
     BenchmarkCaseAdd,
-    BenchmarkCaseResponse,
+    BenchmarkCaseDetailResponse,
     BenchmarkCreate,
+    BenchmarkDetailResponse,
+    BenchmarkFinalizeRequest,
     BenchmarkResponse,
     BenchmarkUpdate,
+    CuratedItemSummaryResponse,
 )
 from app.schemas.export import ExportRequest, ExportResponse
 from app.services.benchmark_service import BenchmarkService
+from app.services.composition_policy import CompositionGateError
+from app.services.composition_service import CompositionService
 from app.services.idempotency import idempotent_create_task
 from app.services.task_service import TaskService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
 
 router = APIRouter(prefix="/api/projects/{pid}/benchmarks", tags=["benchmarks"])
+
+
+def _gate_409(exc: CompositionGateError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"code": exc.code, "message": str(exc)},
+    )
+
+
+def _benchmark_detail(benchmark, case_count: int) -> dict:
+    base = BenchmarkResponse.model_validate(benchmark).model_dump()
+    return BenchmarkDetailResponse(
+        **base,
+        case_count=case_count,
+        composition_revision=benchmark.composition_revision,
+        composition_sha256=benchmark.composition_sha256,
+        composition_canonicalization_version=benchmark.composition_canonicalization_version,
+        finalized_revision=benchmark.finalized_revision,
+        finalized_sha256=benchmark.finalized_sha256,
+        finalized_canonicalization_version=benchmark.finalized_canonicalization_version,
+        finalized_by=benchmark.finalized_by,
+        finalized_at=benchmark.finalized_at,
+    ).model_dump()
 
 
 @router.post("/", response_model=BenchmarkResponse, status_code=status.HTTP_201_CREATED, operation_id="benchmark_create")
@@ -51,7 +80,7 @@ async def list_benchmarks(
     return PaginatedResponse(items=benchmarks, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{bid}", response_model=BenchmarkResponse, operation_id="benchmark_get")
+@router.get("/{bid}", response_model=BenchmarkDetailResponse, operation_id="benchmark_get")
 async def get_benchmark(
     pid: uuid.UUID,
     bid: uuid.UUID,
@@ -62,7 +91,9 @@ async def get_benchmark(
     benchmark = await resolver.benchmark(pid, bid)
     if benchmark is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
-    return benchmark
+    service = BenchmarkService(db)
+    case_count = await service.count_cases(bid)
+    return _benchmark_detail(benchmark, case_count)
 
 
 @router.patch("/{bid}", response_model=BenchmarkResponse, operation_id="benchmark_update")
@@ -99,7 +130,7 @@ async def delete_benchmark(
 
 @router.get(
     "/{bid}/cases",
-    response_model=PaginatedResponse[BenchmarkCaseResponse],
+    response_model=PaginatedResponse[BenchmarkCaseDetailResponse],
     operation_id="benchmark_list_cases",
 )
 async def list_cases(
@@ -114,11 +145,43 @@ async def list_cases(
     if await resolver.benchmark(pid, bid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
     service = BenchmarkService(db)
-    items, total = await service.list_cases_paginated(bid, page, page_size)
+    items, total = await service.list_cases(bid, page, page_size)
+    composition_service = CompositionService(db)
+    details = await composition_service.build_membership_details("benchmark", bid, items)
+    return PaginatedResponse(items=details, total=total, page=page, page_size=page_size)
+
+
+@router.get(
+    "/{bid}/eligible-items",
+    response_model=PaginatedResponse[CuratedItemSummaryResponse],
+    operation_id="benchmark_list_eligible_items",
+)
+async def list_eligible_items(
+    pid: uuid.UUID,
+    bid: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _: Annotated[User, Depends(require_project_member(UserRole.viewer))],
+    query: str | None = Query(None, max_length=200),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=50),
+):
+    resolver = ProjectResourceResolver(db)
+    if await resolver.benchmark(pid, bid) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
+    composition_service = CompositionService(db)
+    items, total = await composition_service.list_eligible_items(
+        container_type="benchmark",
+        container_id=bid,
+        project_id=pid,
+        query=query,
+        page=page,
+        page_size=page_size,
+        require_supported=True,
+    )
     return PaginatedResponse(items=items, total=total, page=page, page_size=page_size)
 
 
-@router.post("/{bid}/cases", response_model=BenchmarkCaseResponse, status_code=status.HTTP_201_CREATED, operation_id="benchmark_add_case")
+@router.post("/{bid}/cases", response_model=BenchmarkCaseDetailResponse, status_code=status.HTTP_201_CREATED, operation_id="benchmark_add_case")
 async def add_case(
     pid: uuid.UUID,
     bid: uuid.UUID,
@@ -131,11 +194,24 @@ async def add_case(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
     # 请求体引用的 curated item 必须属于同一项目。
     await resolver.ensure_in_project(pid, [(CuratedItem, body.curated_item_id)])
-    service = BenchmarkService(db)
+    composition_service = CompositionService(db)
     try:
-        return await service.add_case(bid, body.curated_item_id)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
+        membership = await composition_service.add_membership(
+            container_type="benchmark",
+            container_id=bid,
+            curated_item_id=body.curated_item_id,
+            require_supported=True,
+        )
+    except CompositionGateError as exc:
+        raise _gate_409(exc) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "COMPOSITION_MEMBER_EXISTS", "message": "同一 CuratedItem 已在容器中"},
+        ) from exc
+    details = await composition_service.build_membership_details("benchmark", bid, [membership])
+    return details[0]
 
 
 @router.delete("/{bid}/cases/{case_id}", status_code=status.HTTP_204_NO_CONTENT, operation_id="benchmark_remove_case")
@@ -149,9 +225,42 @@ async def remove_case(
     resolver = ProjectResourceResolver(db)
     if await resolver.benchmark(pid, bid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
-    service = BenchmarkService(db)
-    if not await service.remove_case(bid, case_id):
+    composition_service = CompositionService(db)
+    try:
+        removed = await composition_service.remove_membership(
+            container_type="benchmark", container_id=bid, membership_id=case_id
+        )
+    except CompositionGateError as exc:
+        raise _gate_409(exc) from exc
+    if not removed:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准案例不存在")
+
+
+@router.post("/{bid}/finalize", response_model=BenchmarkDetailResponse, operation_id="benchmark_finalize")
+async def finalize_benchmark(
+    pid: uuid.UUID,
+    bid: uuid.UUID,
+    body: BenchmarkFinalizeRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(require_project_member(UserRole.reviewer))],
+):
+    resolver = ProjectResourceResolver(db)
+    benchmark = await resolver.benchmark(pid, bid)
+    if benchmark is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
+    composition_service = CompositionService(db)
+    try:
+        finalized = await composition_service.finalize(
+            container_type="benchmark",
+            container_id=bid,
+            expected_revision=body.expected_revision,
+            expected_sha256=body.expected_sha256,
+            reviewer_id=current_user.id,
+        )
+    except CompositionGateError as exc:
+        raise _gate_409(exc) from exc
+    case_count = await BenchmarkService(db).count_cases(bid)
+    return _benchmark_detail(finalized, case_count)
 
 
 @router.post("/{bid}/export", response_model=ExportResponse, status_code=status.HTTP_201_CREATED, operation_id="benchmark_export")
