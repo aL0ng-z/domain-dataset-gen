@@ -53,6 +53,11 @@ def classify_error(exc: Exception) -> tuple[TaskErrorCode, bool]:
     可重试：网络/限流/临时基础设施。永久：校验/资源缺失/合同/未知 payload。
     默认（未知异常）按永久失败处理——避免无限重试掩盖真实 bug。
     """
+    # 携带稳定错误码的业务异常（如 PROVENANCE_SNAPSHOT_MISSING）。
+    from app.workers.errors import TaskError
+
+    if isinstance(exc, TaskError):
+        return exc.code, exc.retriable
     # 已知异常类型 -> 可重试。
     if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
         return TaskErrorCode.NETWORK_ERROR, True

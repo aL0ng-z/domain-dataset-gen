@@ -27,6 +27,10 @@ class TaskErrorCode(StrEnum):
     UNSUPPORTED_TASK_PAYLOAD = "UNSUPPORTED_TASK_PAYLOAD"
     # 解析/导出等业务内部逻辑错误（不可重试的业务异常）。
     BUSINESS_ERROR = "BUSINESS_ERROR"
+    # T11：导出一致性快照缺失/冻结引用 hash 不符，禁止 fallback 到当前配置。
+    PROVENANCE_SNAPSHOT_MISSING = "PROVENANCE_SNAPSHOT_MISSING"
+    # T11：导出请求 source revision/hash 与当前 composition 不一致。
+    EXPORT_REVISION_CONFLICT = "EXPORT_REVISION_CONFLICT"
 
     # ---- 可重试错误（按 Policy 退避）----
     # 网络/传输层临时失败（超时、连接重置、5xx）。
@@ -41,6 +45,15 @@ class TaskErrorCode(StrEnum):
     LEGACY_TASK_NOT_RESUMABLE = "LEGACY_TASK_NOT_RESUMABLE"
     # 任务被取消（cancelling -> cancelled）。
     TASK_CANCELLED = "TASK_CANCELLED"
+
+
+class TaskError(Exception):
+    """携带稳定错误码的 handler 异常（runner 原样写入 Task.error_code）。"""
+
+    def __init__(self, code: TaskErrorCode, message: str, *, retriable: bool = False):
+        super().__init__(message)
+        self.code = code
+        self.retriable = retriable
 
 
 # 可重试错误码集合：runner 据此决定是否回 queued 退避重试。
