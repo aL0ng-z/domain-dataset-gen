@@ -1,6 +1,6 @@
 # T00：自动化质量基线与测试底座
 
-- 状态：待实施
+- 状态：本地门禁完成，待 GitHub required checks
 - 优先级：P0（所有修复卡的质量前置条件）
 - 建议规模：M
 - 直接依赖：无
@@ -61,7 +61,7 @@
 - `apps/web/package.json`、前端测试配置和 `apps/web/src/**/*.test.*`
 - `.github/workflows/` 或仓库实际采用的 CI 目录
 - `scripts/` 下统一的测试入口脚本
-- `README.md`、相关 runbook、`docs/logs/dev-log.md`
+- `README.md`、相关 runbook、根目录 `DevLog.md`
 
 ## 8. 依赖
 
@@ -143,4 +143,4 @@ npm run build
 - 后续任务可直接复用双项目、角色、Token、数据库、Redis、MinIO 和前端 API mock fixture；
 - CI 是 required gate，不能在失败时合并；
 - 测试运行说明和故障排查文档已更新；
-- `docs/logs/dev-log.md` 已用中文记录实施和验证结果。
+- 根目录 `DevLog.md` 已用中文记录实施和验证结果。

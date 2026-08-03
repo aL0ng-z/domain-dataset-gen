@@ -1,6 +1,6 @@
 # T01：JWT 令牌语义与前端认证状态
 
-- 状态：待实施
+- 状态：代码及自动化验收完成，待真实 R1 联调
 - 优先级：P0-Security
 - 建议规模：M
 - 直接依赖：T00
@@ -97,7 +97,7 @@ sub、type=refresh、iat、exp。签发和验证只能使用 settings.jwt_algori
 - apps/web/src/lib/ws.ts
 - apps/web/src/contexts/auth-context.tsx
 - 对应后端集成测试、前端单元/组件测试、OpenAPI 说明
-- 实施完成时更新 docs/logs/dev-log.md
+- 实施完成时更新根目录 DevLog.md
 
 ## 8. 依赖
 
@@ -186,4 +186,4 @@ npm exec tsc -- --noEmit
 - 前端不存在并发刷新风暴、旧响应覆盖新会话或失败后残留认证状态。
 - OpenAPI 与前端类型保持兼容，发布说明明确历史令牌失效影响。
 - 代码中只有统一令牌模块负责 JWT 解码，安全敏感日志已验证脱敏。
-- docs/logs/dev-log.md 已用中文记录实现范围、测试命令与结果。
+- 根目录 DevLog.md 已用中文记录实现范围、测试命令与结果。

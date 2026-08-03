@@ -1,6 +1,6 @@
 # T10：Dataset/Benchmark 编组
 
-- 状态：待实施
+- 状态：代码及自动化验收完成，待真实 R1 联调
 - 优先级：P0-Functional
 - 建议规模：L
 - 直接依赖：T02、T04、T09
@@ -107,7 +107,7 @@
 - `apps/api/app/routers/datasets.py`、`benchmarks.py`、`curated_items.py`。
 - `apps/api/app/services/dataset_service.py`、`benchmark_service.py`，提取共享 composition policy/service。
 - Dataset/Benchmark 详情页、共享 eligible item picker 和 JSON preview 组件。
-- 后端集成/并发/授权测试、前端组件测试、T04 生成物、文档和 `docs/logs/dev-log.md`。
+- 后端集成/并发/授权测试、前端组件测试、T04 生成物、文档和根目录 `DevLog.md`。
 
 ## 8. 依赖
 

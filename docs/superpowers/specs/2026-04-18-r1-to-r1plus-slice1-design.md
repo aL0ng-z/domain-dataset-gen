@@ -284,7 +284,7 @@ Reviews all changes against this spec. Flags missing invariants, broken existing
 - Run existing pytest suite if present to confirm no regressions
 
 ### Phase 5 — Docs
-- Append to `docs/logs/dev-log.md` with R1+ slice-1 entry
+- Append to root `DevLog.md` with R1+ slice-1 entry
 - Append to `docs/r1-testing-issues.md` if new issues found
 - Commit all work with a single coherent commit message (only if user asks)
 

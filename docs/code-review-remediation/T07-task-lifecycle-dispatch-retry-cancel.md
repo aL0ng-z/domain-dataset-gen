@@ -1,6 +1,6 @@
 # T07：任务生命周期、派发、重试与取消
 
-- 状态：待实施
+- 状态：代码及自动化验收完成，待真实 R1 联调
 - 优先级：P1
 - 建议规模：L
 - 直接依赖：T01、T02、T04
@@ -111,7 +111,7 @@ cancelling -> cancelled
 - `infra/docker/` 或当前部署清单中新增独立 worker 服务
 - `apps/api/app/ws/task_ws.py`
 - 任务页、浮动任务面板、生成 API 类型和前端测试
-- Alembic 迁移、后端集成/故障测试、runbook、`docs/logs/dev-log.md`
+- Alembic 迁移、后端集成/故障测试、runbook、根目录 `DevLog.md`
 
 ## 9. 依赖和风险
 
@@ -166,4 +166,4 @@ cancelling -> cancelled
 - 所有现有异步业务均通过持久 runner 执行，API 重启不会丢任务。
 - retry、cancel、超时、崩溃恢复与父子聚合符合状态图并有自动化证据。
 - Task/Attempt、REST、WebSocket 和前端展示最终一致，Redis 不是真源。
-- 迁移/回滚/runbook 完整，`docs/logs/dev-log.md` 已用中文记录实施和验证结果。
+- 迁移/回滚/runbook 完整，根目录 `DevLog.md` 已用中文记录实施和验证结果。

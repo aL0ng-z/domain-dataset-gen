@@ -1,6 +1,6 @@
 # T06：版本化切分与 Token 预算
 
-- 状态：待实施
+- 状态：代码及自动化验收完成，待真实 R1 联调
 - 优先级：P1
 - 建议规模：L
 - 直接依赖：T02、T04、T05、T07
@@ -110,7 +110,7 @@
 - `libs/splitters/splitters/base.py`、`hybrid_heading.py`
 - `apps/api/migrations/versions/` 新增迁移
 - 文档详情、Chunk 列表/详情页面与生成 API 类型
-- 后端单元/集成测试、前端合同/组件测试、`docs/logs/dev-log.md`
+- 后端单元/集成测试、前端合同/组件测试、根目录 `DevLog.md`
 
 ## 9. 依赖和风险
 
@@ -173,4 +173,4 @@
 - 重跑、重复请求、并发请求和中途失败均满足上述确定语义。
 - 切分已完全由 T07 dispatcher 执行，Task/ChunkSet 在 retry、cancel 和 worker 崩溃后可确定收敛。
 - 所有自动化验收通过，迁移与 rollback 文档可执行。
-- `docs/logs/dev-log.md` 已用中文记录实现、数据回填数量和验证结果。
+- 根目录 `DevLog.md` 已用中文记录实现、数据回填数量和验证结果。

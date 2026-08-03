@@ -1,6 +1,6 @@
 # T09：Candidate/CuratedItem 证据与审批
 
-- 状态：待实施
+- 状态：代码及自动化验收完成，待真实 R1 联调
 - 优先级：P0-Functional
 - 建议规模：L
 - 直接依赖：T02、T04、T08
@@ -137,7 +137,7 @@
 - `apps/api/app/routers/candidates.py`、`curated_items.py`。
 - `apps/api/app/services/candidate_service.py`、`curated_item_service.py`、证据验证/审批策略。
 - Candidate 页面、CuratedItem 列表/详情页、JSON editor/evidence selector/revision 组件。
-- 后端权限与事务测试、前端组件测试、OpenAPI 生成物、文档和 `docs/logs/dev-log.md`。
+- 后端权限与事务测试、前端组件测试、OpenAPI 生成物、文档和根目录 `DevLog.md`。
 
 ## 8. 依赖
 

@@ -599,5 +599,4 @@
 
 **提交：** `0f6da40 fix(r1plus): address review nits — returned→in_progress on edit, explicit backfill in migration`
 
-**冒烟结论：** 迁移应用成功，8 个新端点全部 HTTP 200，状态机端到端走通，MinIO artifact 写入正确。前端 UI 目检仍待手工验证（见 `docs/logs/dev-log.md` "下一步测试清单"）。
-
+**冒烟结论：** 迁移应用成功，8 个新端点全部 HTTP 200，状态机端到端走通，MinIO artifact 写入正确。前端 UI 目检仍待手工验证（见根目录 `DevLog.md` "下一步测试清单"）。

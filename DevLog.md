@@ -1,6 +1,40 @@
-# Development Log
+# 开发日志
 
 > 本文件记录项目开发进度，每个阶段完成后更新。
+
+---
+
+## Code Review Remediation 收口（2026-08-03）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| T07 任务底座 | runner 在 handler 前释放 Task 行锁；checkpoint、heartbeat、lease refresh 使用独立短事务；发布继续使用 run token + state_version CAS；自动回队不提前运行业务终态钩子 | 代码及自动化验收完成，待真实 R1 联调 |
+| T07 人工重试 | 新增 handler/version retry preparation registry；导出重试在创建新 Task 的同一事务内切换同一 Export，保留 SnapshotManifest 并递增 retry_count | 代码及自动化验收完成，待真实 R1 联调 |
+| T11 不可变导出 | REPEATABLE READ 快照阶段与只读 manifest 渲染/上传阶段分离；canonical manifest 字节上传；对象复用前读取指定 version 校验真实 bytes/hash；seal、Export、Task 同事务发布 | 代码及自动化验收完成，待真实 R1 联调 |
+| 导出 API | 保留 307 下载；新增 Bearer `POST download-link`（300 秒、no-store）；POST verify 为主合同，GET 标 deprecated；浅验核对两类对象 metadata，深验流式复算 payload、manifest 对象及 DB canonical manifest | 代码及自动化验收完成，待真实 R1 联调 |
+| 前端生成/导出 | 单条与批量生成共用 URL 可恢复任务跟踪器；补首次提交幂等、取消、部分失败、稳定错误码、provenance、retry 新 Task/Batch；导出页逐行 loading、认证下载、浅/深验证、失败禁用下载及同 Export retry | 已实现，95 项前端测试通过 |
+| 测试隔离 | `MINIO_KEY_PREFIX=tests/{run_id}/` 统一覆盖文档、解析、清洗和导出新写入；结束后删除精确对象版本/delete marker，并复核 PostgreSQL、Redis、MinIO 无残留 | 已通过全量门禁 |
+| 覆盖率 | 后端 `fail_under=60`，实测 65.22%；前端 V8 初始完整基线为 statements 69.20%、branches 59.90%、functions 65.09%、lines 70.95%，阈值分别为 67.20%、57.90%、63.09%、68.95%，最终实测 69.55%、60.16%、65.09%、71.32% | 已通过 |
+| 运维与仓库 | 新增 dry-run 默认的 `scripts/export_orphan_cleanup.py`；迁移开发日志到根目录；临时脚本、流水线日志、缓存、测试 bucket 和已合并分支按白名单清理 | 已完成 |
+
+### 关键实现语义
+
+- 自动重试只结束当前 attempt，未耗尽额度时 Export 保持 processing 且快照可复用；永久失败、额度耗尽或取消才收敛业务终态。
+- 已存在 SnapshotManifest 的自动/人工重试只读取快照和 Export 创建时的 `profile_snapshot`，不读取当前 Dataset、Profile、Prompt、Model 等可变配置。
+- manifest 上传、数据库 hash 和深度校验统一使用 `manifest_cjson()` 规范字节；外部同 key 新版本不会改变旧 Export 的 version-fixed 下载。
+- 前端首次提交与 retry 请求超时均保留同一个幂等键；后端以文档行锁、Task 唯一约束和请求指纹保证同意图重放返回原 Task/Batch、改参重用返回 `IDEMPOTENCY_KEY_REUSED`；成功返回后立即跟踪 Task/Batch，不保存或记录预签名 URL。
+- 本轮不调用真实付费 LLM/解析服务、不 push、不修改 GitHub 分支保护；真实 R1 联调仍是后续独立确认门。
+
+### 当前验证证据
+
+- 后端 Ruff 与全量 pytest 通过：422 项，覆盖率 65.22%，并通过 PostgreSQL 业务表、测试 Redis 前缀和本轮 MinIO 前缀的 teardown 无残留断言。
+- T07 多连接取消、跨会话心跳/lease、旧 run token fencing、自动重试额度与业务终态钩子场景均纳入全量测试；T11 固定 version 下载、canonical bytes、外部同 key 新版本、上传/finalize 故障恢复及上传后取消场景均通过。
+- 前端从 `npm ci` 开始完成 ESLint、TypeScript、95 项 Vitest coverage、API drift 与 Next.js production build；最终覆盖率为 statements 69.55%、branches 60.16%、functions 65.09%、lines 71.32%。
+- `python scripts/export_openapi.py --check` 与 Alembic 空库 upgrade → downgrade → upgrade 通过；隔离测试库 ParserProfile dry-run/check 通过。
+- 清理 `scripts/pipeline/`、约 827 MB 的 `logs/pipeline/`、覆盖率/pytest/Ruff/Next.js/TypeScript/Python 缓存；清空 `documents-test`、`outputs-test` 共 109 个对象版本/delete marker；删除 12 个已合并且无关联 worktree 的 `fix/t00-*` 至 `fix/t11-*` 本地分支。最终复核 38 张测试业务表、Redis `test:*`、两个测试 bucket 均为空，并保留 `.env*`、`models/`、`node_modules/`、`.venv`、解析器验证结果、常规日志和 `.claude`。
+- 开发库 dry-run 诚实发现 4 条旧 ParserProfile 因本地 `.env` 未配置 `PARSER_ENDPOINT_REGISTRY` 而无法唯一映射；未猜测 registry、未执行迁移。该项与已暴露第三方解析器凭据吊销/轮换一并留待真实 R1 前由配置所有者处理，新值不得进入 Git 或日志。
 
 ---
 
@@ -77,6 +111,10 @@
 - 前端 `npm run lint`、`npm exec tsc -- --noEmit`、`npm run api:check`、`npm test -- --run`（**86** 项）、`npm run build` 全部通过。
 
 ---
+
+## T09 Candidate、CuratedItem 证据与审批（2026-08-03）
+
+### 本轮总览
 
 | 模块 | 内容 | 状态 |
 |------|------|------|
@@ -189,8 +227,6 @@
 
 ## T05 清洗编辑并发与租约（2026-08-03）
 
-## T07 任务生命周期、派发、重试与取消（2026-08-03）
-
 ### 本轮总览
 
 | 模块 | 内容 | 状态 |
@@ -227,6 +263,10 @@
 - `python -m ruff check apps/api libs tests scripts` 通过；`python scripts/export_openapi.py --check` 通过。
 
 ---
+
+## T07 任务生命周期、派发、重试与取消（2026-08-03）
+
+### 本轮总览
 
 | `apps/api/migrations/versions/t07_task_lifecycle.py` | Task 扩展（handler/payload/state_version/attempt/lease/cancel/retry）+ task_attempts 审计表 + task_status 枚举 cancelling + 双 head merge | 已完成 |
 | `apps/api/app/workers/queue.py` | 原子 create/claim（SKIP LOCKED）/heartbeat/CAS transition/reaper 回收 | 已完成 |
@@ -375,8 +415,6 @@
 
 ## T01 JWT 令牌语义与前端认证状态（2026-08-01）
 
-## T04 API/前端合同单一事实源（2026-08-01）
-
 ### 本轮总览
 
 | 模块 | 内容 | 状态 |
@@ -493,6 +531,10 @@
   `npm run build` 通过。
 
 ---
+
+## T04 API/前端合同单一事实源（2026-08-01）
+
+### 本轮总览
 
 | `libs/domain/domain/schemas.py` | 统一错误 envelope（ErrorResponse/ValidationErrorResponse）、`RequestSchema(extra=forbid)`、参数化 `PaginatedResponse[T]` | 已完成 |
 | `apps/api/app/errors.py` | 全局异常映射：业务错误→ErrorResponse（稳定 code），422→ValidationErrorResponse（loc/msg/type），500 不泄漏堆栈 | 已完成 |

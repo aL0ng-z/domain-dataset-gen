@@ -51,7 +51,7 @@ apps/web/src/lib/api.ts            # only if new typed helpers needed; can use g
 
 **Modified docs:**
 ```
-docs/logs/dev-log.md
+DevLog.md
 ```
 
 ---
@@ -1671,7 +1671,7 @@ If any issue found during smoke test, append to `docs/r1-testing-issues.md` foll
 ### Task 10: Update dev log + final commit
 
 **Files:**
-- Modify: `docs/logs/dev-log.md`
+- Modify: `DevLog.md`
 
 - [ ] **Step 1: Append a new section to `dev-log.md`**
 

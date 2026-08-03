@@ -1,6 +1,6 @@
 # T03：解析器出站与凭证安全
 
-- 状态：待实施
+- 状态：代码及自动化验收完成；开发库 profile 待配置 registry 后迁移，待真实 R1 联调
 - 优先级：P0-Security
 - 建议规模：L
 - 直接依赖：T00
@@ -154,7 +154,7 @@ Token 或 PDF。
 - apps/web/src/app/(dashboard)/projects/[id]/settings/page.tsx
 - Alembic 数据迁移或 scripts/ 下受控迁移工具及 runbook
 - tests/unit/security/、tests/contract/、解析器 fake transport 测试
-- 实施完成时更新部署配置示例、安全 runbook 和 docs/logs/dev-log.md
+- 实施完成时更新部署配置示例、安全 runbook 和根目录 DevLog.md
 
 ## 8. 依赖
 
@@ -279,4 +279,4 @@ python -m pytest -q tests/integration/test_parse_job_snapshot_migration.py
 - T11 的合同测试证明只消费冻结快照，对 legacy_unavailable 或 hash 失败的 job 拒绝生成完整快照。
 - 存量 profile 已全部映射到 endpoint_ref；未知项为零，迁移检查可重复通过。
 - 生产 registry、凭证引用、allowlist 和 managed-local 清单经安全审查并完成部署验证。
-- 前端不再展示自由网络字段，OpenAPI、runbook 与 docs/logs/dev-log.md 已同步更新。
+- 前端不再展示自由网络字段，OpenAPI、runbook 与根目录 DevLog.md 已同步更新。

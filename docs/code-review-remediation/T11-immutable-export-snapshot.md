@@ -1,6 +1,6 @@
 # T11：不可变导出与完整快照
 
-- 状态：待实施
+- 状态：代码及自动化验收完成，待真实 R1 联调
 - 优先级：P0-Data
 - 建议规模：L
 - 直接依赖：T03、T06、T07、T08、T09、T10
@@ -134,9 +134,9 @@ manifest 至少包含：
 - `libs/storage/storage/minio_client.py`：versioned put/head/presign-version/stream verify
 - `apps/api/migrations/versions/` 新增迁移和不可变 trigger
 - canonical manifest/seal helper、pgcrypto（或等价）迁移与跨语言 golden fixtures
-- outputs bucket 初始化/运维配置、orphan 清理 runbook
+- outputs bucket 初始化/运维配置、[`docs/runbooks/export-orphan-cleanup.md`](../runbooks/export-orphan-cleanup.md) orphan 清理 runbook
 - 导出发起页、导出历史页、生成 API 类型和前端测试
-- 完整快照 golden fixtures、存储/数据库故障集成测试、`docs/logs/dev-log.md`
+- 完整快照 golden fixtures、存储/数据库故障集成测试、根目录 `DevLog.md`
 
 ## 10. 依赖和风险
 
@@ -199,4 +199,4 @@ manifest 至少包含：
 - 每个 completed Export 均与唯一、数据库校验且不可修改的 artifact seal 原子绑定。
 - 历史下载在重导出、业务编辑、进程失败和对象新版本出现后仍返回原字节。
 - 所有自动化验收与 R1 导出主链通过，迁移、bucket versioning、orphan 处置和验证 runbook 完整。
-- `docs/logs/dev-log.md` 已用中文记录实施、legacy 数量、对象存储配置和验证结果。
+- 根目录 `DevLog.md` 已用中文记录实施、legacy 数量、对象存储配置和验证结果。

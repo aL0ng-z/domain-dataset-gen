@@ -1,6 +1,6 @@
 # T04：API/前端合同单一事实源
 
-- 状态：待实施
+- 状态：本地合同门禁完成，待 GitHub required checks
 - 优先级：P0
 - 建议规模：M
 - 直接依赖：T00
@@ -93,7 +93,7 @@
 - `apps/web/package.json`、lockfile：OpenAPI 类型生成与检查命令及最小依赖。
 - `apps/web/src/lib/api/`：生成类型、类型化 client、JSON 展示 helper。
 - `apps/web/src/app/(dashboard)/projects/`：移除手写响应接口并迁移消费者。
-- `tests/contract/`、前端 `*.test.*`、CI 配置、相关开发文档与 `docs/logs/dev-log.md`。
+- `tests/contract/`、前端 `*.test.*`、CI 配置、相关开发文档与根目录 `DevLog.md`。
 
 ## 8. 依赖
 
@@ -179,4 +179,4 @@ npm exec tsc -- --noEmit
 - 后续业务卡可声明稳定错误 code，而无需再发明响应结构；前端不依赖本地化 message/detail 做控制流。
 - OpenAPI/TypeScript 生成确定、可重复，并成为 CI required gate。
 - 全量自动化门禁通过，没有以断言、`any` 或双合同换取通过。
-- 合同变更流程与本地命令已记录，`docs/logs/dev-log.md` 已用中文记录实施和验证结果。
+- 合同变更流程与本地命令已记录，根目录 `DevLog.md` 已用中文记录实施和验证结果。

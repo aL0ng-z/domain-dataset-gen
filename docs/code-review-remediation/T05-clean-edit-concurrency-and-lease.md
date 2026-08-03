@@ -1,6 +1,6 @@
 # T05：清洗编辑并发与租约
 
-- 状态：待实施
+- 状态：代码及自动化验收完成，待真实 R1 联调
 - 优先级：P1
 - 建议规模：L
 - 直接依赖：T02、T04
@@ -125,7 +125,7 @@ Redis key 若保留，value 必须包含 `lease_id`，设置和 compare-and-dele
 - 对象存储 create-only/清理适配层及一致性审计脚本
 - `apps/web/src/app/(dashboard)/projects/[id]/documents/[did]/clean/page.tsx`
 - 前端生成 API 类型及对应后端集成、前端组件测试
-- `docs/logs/dev-log.md`（实施本卡时记录，本任务卡编写阶段不修改）
+- 根目录 `DevLog.md`（实施本卡时记录，本任务卡编写阶段不修改）
 
 ## 8. 依赖
 
@@ -205,4 +205,4 @@ Redis key 若保留，value 必须包含 `lease_id`，设置和 compare-and-dele
 - 不再存在可复现的 A/B 串写、旧版本覆盖或旧 lease 释放新 lease。
 - 并发合并不会产生重复版本号、重复正式产物或被覆盖的历史对象，且每个版本可由 revision map 与 hash 复核。
 - 并发终审不会双写 review 结果或使 `active_clean_version_id` 回退/清空。
-- 迁移、回滚和运维处置说明齐全，`docs/logs/dev-log.md` 已用中文记录实施与验证结果。
+- 迁移、回滚和运维处置说明齐全，根目录 `DevLog.md` 已用中文记录实施与验证结果。

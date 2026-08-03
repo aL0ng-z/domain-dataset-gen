@@ -1,6 +1,6 @@
 # T02：项目资源对象级授权
 
-- 状态：待实施
+- 状态：代码及自动化验收完成，待真实 R1 联调
 - 优先级：P0-Security
 - 建议规模：L
 - 直接依赖：T00、T01
@@ -118,7 +118,7 @@ candidates、cleaned-versions 等平铺路由只要求登录；PDF 下载和任�
 - apps/web/src/lib/api.ts、apps/web/src/lib/ws.ts
 - 文档清洗页的 PDF Blob 加载与释放逻辑
 - tests/integration/authorization/、WebSocket/PDF 集成测试及资源工厂
-- 实施完成时更新 OpenAPI、权限矩阵和 docs/logs/dev-log.md
+- 实施完成时更新 OpenAPI、权限矩阵和根目录 DevLog.md
 
 ## 8. 依赖
 
@@ -214,4 +214,4 @@ npm exec tsc -- --noEmit
 - 所有平铺路由均能从数据库关系得到唯一项目并执行授权。
 - PDF 不再接受 query token，WebSocket 非法连接不会创建 Redis 订阅。
 - 存量数据归属审计已通过或已按停止条件形成单独治理决策。
-- 权限矩阵、OpenAPI 和 docs/logs/dev-log.md 已同步更新。
+- 权限矩阵、OpenAPI 和根目录 DevLog.md 已同步更新。

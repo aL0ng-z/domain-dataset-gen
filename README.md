@@ -612,7 +612,7 @@ alembic revision --autogenerate -m "describe change"
 
 - 产品需求：[docs/product/PRD.md](docs/product/PRD.md)
 - 工程计划：[docs/plans/compressor-knowledge-platform-engineering-plan.md](docs/plans/compressor-knowledge-platform-engineering-plan.md)
-- 开发日志：[docs/logs/dev-log.md](docs/logs/dev-log.md)
+- 开发日志：[DevLog.md](DevLog.md)
 - R1 测试指南：[docs/r1-testing-guide.md](docs/r1-testing-guide.md)
 - R1 问题记录：[docs/r1-testing-issues.md](docs/r1-testing-issues.md)
 - 新机器部署 runbook：[docs/runbooks/new-machine-runbook.md](docs/runbooks/new-machine-runbook.md)

@@ -1,6 +1,6 @@
 # T08：生成链路修复
 
-- 状态：待实施
+- 状态：代码及自动化验收完成，待真实 R1 联调
 - 优先级：P0-Functional
 - 建议规模：L
 - 直接依赖：T04、T06、T07
@@ -130,7 +130,7 @@
 - `apps/api/app/services/chunk_service.py`、generation orchestration service、`workers/generate_worker.py`。
 - Task dispatcher/handler 注册点（只接入 T07，不改变其通用状态机）。
 - 单 Chunk 页、文档详情页、任务/批次状态组件和生成类型。
-- canonical snapshot/prompt renderer 模块、secret-field filter，以及后端集成测试、worker 测试、前端组件测试、开发文档与 `docs/logs/dev-log.md`。
+- canonical snapshot/prompt renderer 模块、secret-field filter，以及后端集成测试、worker 测试、前端组件测试、开发文档与根目录 `DevLog.md`。
 
 ## 8. 依赖
 
