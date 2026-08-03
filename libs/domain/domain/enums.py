@@ -48,6 +48,12 @@ class ChunkSetStatus(StrEnum):
 
 
 class CandidateStatus(StrEnum):
+    """Candidate 唯一审核状态源（任务卡 §4.1）。
+
+    ai_generated -> (PATCH) human_edited -> (review) approved|rejected。
+    旧 review_pending 仅兼容历史读取，新流程不再写入。
+    """
+
     ai_generated = "ai_generated"
     human_edited = "human_edited"
     review_pending = "review_pending"
