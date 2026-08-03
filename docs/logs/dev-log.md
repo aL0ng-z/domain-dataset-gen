@@ -20,7 +20,7 @@
 | `apps/api/app/services/curated_item_service.py` | 乐观修订 CAS（expected_revision 条件 UPDATE）+ approve/needs_revision（绑定 revision id/content hash + 证据快照/审批 hash 写不可变记录）+ 分页查询 | 已完成 |
 | `apps/api/app/routers/*` | candidates review/promote 与 curated-items update/review 的 409 领域 code 映射；evidence/revisions 分页端点；openapi 注入 T09 操作 409 | 已完成 |
 | `apps/web` | 候选 JSON 编辑器 + 证据选择器（选中原文生成 code point span）+ 判定/拒绝原因；CuratedItem 详情分别加载 item/evidence/revisions、reviewer 审批/退审控件、409 冲突保留草稿；组件测试 6 项 | 已完成 |
-| 测试 | `test_curated_evidence_approval.py`（33 项）+ `test_curated_migration.py`（3 项）+ 既有 62 项合同/授权适配 | 已完成 |
+| 测试 | `test_curated_evidence_approval.py`（34 项）+ `test_curated_migration.py`（3 项）+ 既有合同/授权适配 | 已完成 |
 
 ### 设计决策
 
@@ -35,7 +35,7 @@
 ### 验证状态
 
 - 迁移往返 `upgrade head → downgrade t08 → upgrade head` 通过；三类回填计数输出。
-- 全量 `python -m pytest -q` 342 项通过（T09 36 项 + 既有回归）；`python -m ruff check apps/api libs tests scripts` 通过。
+- 全量 `python -m pytest -q` 343 项通过（T09 37 项 + 既有回归）；`python -m ruff check apps/api libs tests scripts` 通过。
 - `python scripts/export_openapi.py --check` 通过；`tests/contract/test_openapi.py` 14 项通过。
 - 前端 `npm run lint`、`npm exec tsc -- --noEmit`、`npm test -- --run`（70 项）、`npm run api:check`、`npm run build` 全部通过。
 
