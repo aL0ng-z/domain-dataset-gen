@@ -85,19 +85,30 @@ def _evidence_row(link: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def curated_evidence_cjson(evidence_links: list[dict[str, Any]]) -> str:
-    """``curated-approval-cjson-v1`` 的证据快照部分：稳定排序证据链接的规范 JSON。
+def build_evidence_snapshot(evidence_links: list[dict[str, Any]]) -> dict[str, Any]:
+    """构造稳定排序的证据快照 dict（供 ReviewRecord.evidence_snapshot 存储）。
 
     排序键 ``(evidence_link_id, chunk_id, start_char, end_char)``，保证同一组
-    证据无论创建顺序如何都产生相同 hash。结果同时作为审计快照
-    ``ReviewRecord.evidence_snapshot`` 的来源。
+    证据无论创建顺序如何都产生相同结构，可直接与 golden fixture 对照。
     """
     rows = sorted(
         (_evidence_row(el) for el in evidence_links),
         key=lambda r: (r["evidence_link_id"], r["chunk_id"], r["start_char"], r["end_char"]),
     )
+    return {
+        "schema_version": 1,
+        "canonicalization_version": CURATED_APPROVAL_CJSON_VERSION,
+        "evidence_links": rows,
+    }
+
+
+def curated_evidence_cjson(evidence_links: list[dict[str, Any]]) -> str:
+    """``curated-approval-cjson-v1`` 的证据快照部分：稳定排序证据链接的规范 JSON。
+
+    hash 只依赖稳定排序结构，与创建顺序无关。
+    """
     return json.dumps(
-        {"schema_version": 1, "canonicalization_version": CURATED_APPROVAL_CJSON_VERSION, "evidence_links": rows},
+        build_evidence_snapshot(evidence_links),
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -127,10 +138,7 @@ def curated_approval_cjson(
         "canonicalization_version": CURATED_APPROVAL_CJSON_VERSION,
         "revision_id": str(revision_id),
         "content_sha256": str(content_sha256),
-        "evidence_links": sorted(
-            (_evidence_row(el) for el in evidence_links),
-            key=lambda r: (r["evidence_link_id"], r["chunk_id"], r["start_char"], r["end_char"]),
-        ),
+        "evidence_links": build_evidence_snapshot(evidence_links)["evidence_links"],
     }
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 

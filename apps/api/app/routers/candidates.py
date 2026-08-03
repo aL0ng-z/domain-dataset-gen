@@ -16,7 +16,13 @@ from app.schemas.candidate import (
     CandidateUpdate,
 )
 from app.schemas.curated import CuratedItemResponse
-from app.services.candidate_service import CandidateService
+from app.services.candidate_service import (
+    CandidateAlreadyPromotedError,
+    CandidateEvidenceRequiredError,
+    CandidateService,
+    CandidateStateConflictError,
+    EvidenceValidationError,
+)
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
 
@@ -73,9 +79,15 @@ async def update_candidate(
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
     if body.content is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="内容不能为空")
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="内容不能为空")
     service = CandidateService(db)
-    candidate = await service.update_content(cid, body.content)
+    try:
+        candidate = await service.update_content(cid, body.content)
+    except CandidateAlreadyPromotedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CANDIDATE_ALREADY_PROMOTED", "message": str(e)},
+        ) from e
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
     return candidate
@@ -96,13 +108,34 @@ async def review_candidate(
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
     service = CandidateService(db)
-    candidate = await service.review(
-        candidate_id=cid,
-        reviewer_id=current_user.id,
-        verdict=body.verdict,
-        evidence_spans=body.evidence_spans,
-        reject_reason=body.reject_reason,
-    )
+    try:
+        candidate = await service.review(
+            candidate_id=cid,
+            reviewer_id=current_user.id,
+            verdict=body.verdict,
+            evidence_spans=[s.model_dump() for s in body.evidence_spans] if body.evidence_spans else None,
+            reject_reason=body.reject_reason,
+        )
+    except CandidateStateConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CANDIDATE_REVIEW_STATE_CONFLICT", "message": str(e)},
+        ) from e
+    except CandidateAlreadyPromotedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CANDIDATE_REVIEW_STATE_CONFLICT", "message": str(e)},
+        ) from e
+    except CandidateEvidenceRequiredError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CANDIDATE_EVIDENCE_REQUIRED", "message": str(e)},
+        ) from e
+    except EvidenceValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "VALIDATION_ERROR", "message": str(e)},
+        ) from e
     if candidate is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
     return candidate
@@ -159,6 +192,26 @@ async def promote_to_curated(
     service = CandidateService(db)
     try:
         curated_item = await service.promote_to_curated(cid, current_user.id)
+    except CandidateAlreadyPromotedError as e:
+        # 409 + context 只返回同项目可见 item id（不创建第二份记录）。
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "CANDIDATE_ALREADY_PROMOTED",
+                "message": str(e),
+                "context": {"curated_item_id": str(e.item_id) if e.item_id else None},
+            },
+        ) from e
+    except CandidateStateConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CANDIDATE_REVIEW_STATE_CONFLICT", "message": str(e)},
+        ) from e
+    except CandidateEvidenceRequiredError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "CANDIDATE_EVIDENCE_REQUIRED", "message": str(e)},
+        ) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     return curated_item

@@ -548,10 +548,12 @@ class ResourceFactory:
         return candidate
 
     async def create_curated_item(
-        self, project_id: uuid.UUID, candidate_id: uuid.UUID, promoted_by: uuid.UUID, status: str = "approved"
+        self, project_id: uuid.UUID, candidate_id: uuid.UUID, promoted_by: uuid.UUID, status: str = "draft"
     ):
         from app.models.curated import CuratedItem
 
+        # T09：approved 当且仅当审批指针齐全（CHECK ck_curated_items_approved_complete）。
+        # 通用 fixture 默认 draft；测试需要 approved 时必须显式走审批流程建立指针。
         item = CuratedItem(
             project_id=project_id,
             candidate_id=candidate_id,
@@ -559,6 +561,7 @@ class ResourceFactory:
             item_type="qa_generation",
             status=status,
             promoted_by=promoted_by,
+            current_revision=1,
         )
         self.session.add(item)
         await self.session.flush()

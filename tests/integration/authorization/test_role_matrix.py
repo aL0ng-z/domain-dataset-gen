@@ -75,11 +75,15 @@ async def test_write_actions_pass_for_roles(client: AsyncClient, full_resources,
     tokens = await _login(client, username)
     r = full_resources["projects"]["a"]
 
-    # editor 级：更新 curated item（PATCH）-> 200
+    # editor 级：更新 curated item（PATCH，需 content + expected_revision）-> 200
     res = await client.patch(
         f"/api/projects/{r['pid']}/curated-items/{r['curated_item'].id}",
         headers=_bearer(tokens["access_token"]),
-        json={"revision_note": "更新"},
+        json={
+            "content": {"question": "q", "answer": "a"},
+            "revision_note": "更新",
+            "expected_revision": r["curated_item"].current_revision,
+        },
     )
     assert res.status_code == 200, f"{username}: {res.status_code} {res.text}"
 

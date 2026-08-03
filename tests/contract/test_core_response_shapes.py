@@ -240,13 +240,15 @@ async def _make_curated_item(db_session, chunk, project_id, promoted_by):
     candidate = await _make_candidate(db_session, chunk, project_id)
     from app.models.curated import CuratedItem
 
+    # T09：approved 必须带审批指针（CHECK），通用 fixture 用 draft。
     item = CuratedItem(
         project_id=project_id,
         candidate_id=candidate.id,
         content=candidate.content,
         item_type="knowledge_extraction",
-        status="approved",
+        status="draft",
         promoted_by=promoted_by,
+        current_revision=1,
     )
     db_session.add(item)
     await db_session.flush()
