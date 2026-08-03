@@ -360,6 +360,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/projects/{pid}/benchmarks/{bid}/eligible-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Eligible Items */
+        get: operations["benchmark_list_eligible_items"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/benchmarks/{bid}/export": {
         parameters: {
             query?: never;
@@ -371,6 +388,23 @@ export interface paths {
         put?: never;
         /** Export Benchmark */
         post: operations["benchmark_export"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/benchmarks/{bid}/finalize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Finalize Benchmark */
+        post: operations["benchmark_finalize"];
         delete?: never;
         options?: never;
         head?: never;
@@ -506,40 +540,6 @@ export interface paths {
         patch: operations["curated_item_update"];
         trace?: never;
     };
-    "/api/projects/{pid}/curated-items/{iid}/add-to-benchmark": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Add To Benchmark */
-        post: operations["curated_item_add_to_benchmark"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/projects/{pid}/curated-items/{iid}/add-to-dataset": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Add To Dataset */
-        post: operations["curated_item_add_to_dataset"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/projects/{pid}/curated-items/{iid}/evidence": {
         parameters: {
             query?: never;
@@ -628,6 +628,23 @@ export interface paths {
         patch: operations["dataset_update"];
         trace?: never;
     };
+    "/api/projects/{pid}/datasets/{did}/eligible-items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Eligible Items */
+        get: operations["dataset_list_eligible_items"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/datasets/{did}/export": {
         parameters: {
             query?: never;
@@ -639,6 +656,23 @@ export interface paths {
         put?: never;
         /** Export Dataset */
         post: operations["dataset_export"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/datasets/{did}/finalize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Finalize Dataset */
+        post: operations["dataset_finalize"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1924,22 +1958,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** AddToBenchmarkRequest */
-        AddToBenchmarkRequest: {
-            /**
-             * Benchmark Id
-             * Format: uuid
-             */
-            benchmark_id: string;
-        };
-        /** AddToDatasetRequest */
-        AddToDatasetRequest: {
-            /**
-             * Dataset Id
-             * Format: uuid
-             */
-            dataset_id: string;
-        };
         /**
          * AsyncTaskAcceptedResponse
          * @description 202 异步任务已接受的统一响应（无 body 以外的业务负载）。
@@ -1961,18 +1979,38 @@ export interface components {
              */
             curated_item_id: string;
         };
-        /** BenchmarkCaseResponse */
-        BenchmarkCaseResponse: {
+        /** BenchmarkCaseDetailResponse */
+        BenchmarkCaseDetailResponse: {
+            /** Approval Evidence Sha256 */
+            approval_evidence_sha256: string;
             /**
-             * Benchmark Id
+             * Approval Record Id
              * Format: uuid
              */
-            benchmark_id: string;
+            approval_record_id: string;
+            /**
+             * Container Id
+             * Format: uuid
+             */
+            container_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            curated_item: components["schemas"]["CuratedItemSummaryResponse"];
             /**
              * Curated Item Id
              * Format: uuid
              */
             curated_item_id: string;
+            /**
+             * Curated Revision Id
+             * Format: uuid
+             */
+            curated_revision_id: string;
+            /** Curated Revision Sha256 */
+            curated_revision_sha256: string;
             /**
              * Id
              * Format: uuid
@@ -1987,6 +2025,68 @@ export interface components {
             description?: string | null;
             /** Name */
             name: string;
+        };
+        /**
+         * BenchmarkDetailResponse
+         * @description T10：详情页额外返回准确 case_count 与 composition/finalize 摘要。
+         */
+        BenchmarkDetailResponse: {
+            /** Case Count */
+            case_count: number;
+            /** Composition Canonicalization Version */
+            composition_canonicalization_version: string;
+            /** Composition Revision */
+            composition_revision: number;
+            /** Composition Sha256 */
+            composition_sha256: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Created By
+             * Format: uuid
+             */
+            created_by: string;
+            /** Description */
+            description: string | null;
+            /** Finalized At */
+            finalized_at: string | null;
+            /** Finalized By */
+            finalized_by: string | null;
+            /** Finalized Canonicalization Version */
+            finalized_canonicalization_version: string | null;
+            /** Finalized Revision */
+            finalized_revision: number | null;
+            /** Finalized Sha256 */
+            finalized_sha256: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Status */
+            status: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** BenchmarkFinalizeRequest */
+        BenchmarkFinalizeRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Expected Sha256 */
+            expected_sha256: string;
         };
         /** BenchmarkResponse */
         BenchmarkResponse: {
@@ -2696,6 +2796,33 @@ export interface components {
             reason?: string | null;
         };
         /**
+         * CuratedItemSummaryResponse
+         * @description membership 嵌套的 CuratedItem 摘要（至少含 §5.1 固定字段）。
+         *
+         *     pinned_content 来自加入时固定的 CuratedRevision.content（JSON object），
+         *     current_status/current_revision 反映当前状态用于前端“退审/新 revision”提示。
+         */
+        CuratedItemSummaryResponse: {
+            /** Approved At */
+            approved_at?: string | null;
+            /** Current Revision */
+            current_revision: number;
+            /** Current Status */
+            current_status: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Item Type */
+            item_type: string;
+            /** Pinned Content */
+            pinned_content: {
+                [key: string]: unknown;
+            };
+            pinned_revision: components["schemas"]["PinnedRevisionRef"];
+        };
+        /**
          * CuratedItemUpdate
          * @description 编辑请求：只允许 editor 修改 draft；请求中不存在 status（422）。
          *
@@ -2765,6 +2892,68 @@ export interface components {
             /** Name */
             name: string;
         };
+        /**
+         * DatasetDetailResponse
+         * @description T10：详情页额外返回准确 item_count 与 composition/finalize 摘要。
+         */
+        DatasetDetailResponse: {
+            /** Composition Canonicalization Version */
+            composition_canonicalization_version: string;
+            /** Composition Revision */
+            composition_revision: number;
+            /** Composition Sha256 */
+            composition_sha256: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Created By
+             * Format: uuid
+             */
+            created_by: string;
+            /** Description */
+            description: string | null;
+            /** Finalized At */
+            finalized_at: string | null;
+            /** Finalized By */
+            finalized_by: string | null;
+            /** Finalized Canonicalization Version */
+            finalized_canonicalization_version: string | null;
+            /** Finalized Revision */
+            finalized_revision: number | null;
+            /** Finalized Sha256 */
+            finalized_sha256: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Item Count */
+            item_count: number;
+            /** Name */
+            name: string;
+            /**
+             * Project Id
+             * Format: uuid
+             */
+            project_id: string;
+            /** Status */
+            status: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** DatasetFinalizeRequest */
+        DatasetFinalizeRequest: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Expected Sha256 */
+            expected_sha256: string;
+        };
         /** DatasetItemAdd */
         DatasetItemAdd: {
             /**
@@ -2773,18 +2962,38 @@ export interface components {
              */
             curated_item_id: string;
         };
-        /** DatasetItemResponse */
-        DatasetItemResponse: {
+        /** DatasetItemDetailResponse */
+        DatasetItemDetailResponse: {
+            /** Approval Evidence Sha256 */
+            approval_evidence_sha256: string;
+            /**
+             * Approval Record Id
+             * Format: uuid
+             */
+            approval_record_id: string;
+            /**
+             * Container Id
+             * Format: uuid
+             */
+            container_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            curated_item: components["schemas"]["CuratedItemSummaryResponse"];
             /**
              * Curated Item Id
              * Format: uuid
              */
             curated_item_id: string;
             /**
-             * Dataset Id
+             * Curated Revision Id
              * Format: uuid
              */
-            dataset_id: string;
+            curated_revision_id: string;
+            /** Curated Revision Sha256 */
+            curated_revision_sha256: string;
             /**
              * Id
              * Format: uuid
@@ -2885,7 +3094,7 @@ export interface components {
              * @description 稳定大写 snake case 业务错误码，前端按 code 分支
              * @enum {string}
              */
-            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_NOT_READY" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE" | "IDEMPOTENCY_KEY_REUSED" | "CHUNK_RUN_IN_PROGRESS" | "CHUNK_SET_IMMUTABLE" | "GENERATION_CONFIG_NOT_FOUND" | "GENERATION_SOURCE_NOT_FOUND" | "GENERATION_CONFIG_UNAVAILABLE" | "GENERATION_SNAPSHOT_UNSAFE" | "GENERATION_RENDERER_UNAVAILABLE" | "GENERATION_SOURCE_NOT_READY" | "GENERATION_IN_PROGRESS" | "GENERATION_NOT_RETRYABLE" | "GENERATION_RETRY_EXISTS" | "GENERATION_PROVENANCE_INVALID" | "CANDIDATE_REVIEW_STATE_CONFLICT" | "CANDIDATE_EVIDENCE_REQUIRED" | "CANDIDATE_ALREADY_PROMOTED" | "CURATED_REVISION_CONFLICT" | "CURATED_APPROVAL_GATE_FAILED" | "CURATED_REVIEW_STATE_CONFLICT";
+            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_NOT_READY" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE" | "IDEMPOTENCY_KEY_REUSED" | "CHUNK_RUN_IN_PROGRESS" | "CHUNK_SET_IMMUTABLE" | "GENERATION_CONFIG_NOT_FOUND" | "GENERATION_SOURCE_NOT_FOUND" | "GENERATION_CONFIG_UNAVAILABLE" | "GENERATION_SNAPSHOT_UNSAFE" | "GENERATION_RENDERER_UNAVAILABLE" | "GENERATION_SOURCE_NOT_READY" | "GENERATION_IN_PROGRESS" | "GENERATION_NOT_RETRYABLE" | "GENERATION_RETRY_EXISTS" | "GENERATION_PROVENANCE_INVALID" | "CANDIDATE_REVIEW_STATE_CONFLICT" | "CANDIDATE_EVIDENCE_REQUIRED" | "CANDIDATE_ALREADY_PROMOTED" | "CURATED_REVISION_CONFLICT" | "CURATED_APPROVAL_GATE_FAILED" | "CURATED_REVIEW_STATE_CONFLICT" | "COMPOSITION_NOT_DRAFT" | "COMPOSITION_ITEM_INELIGIBLE" | "COMPOSITION_MEMBER_EXISTS" | "COMPOSITION_REVISION_CONFLICT" | "COMPOSITION_FINALIZE_GATE_FAILED" | "COMPOSITION_HASH_INVALID";
             /**
              * Context
              * @description 仅含经 schema 声明的非敏感结构；允许为 null
@@ -3376,10 +3585,10 @@ export interface components {
             /** Total Requests */
             total_requests: number;
         };
-        /** PaginatedResponse[BenchmarkCaseResponse] */
-        PaginatedResponse_BenchmarkCaseResponse_: {
+        /** PaginatedResponse[BenchmarkCaseDetailResponse] */
+        PaginatedResponse_BenchmarkCaseDetailResponse_: {
             /** Items */
-            items: components["schemas"]["BenchmarkCaseResponse"][];
+            items: components["schemas"]["BenchmarkCaseDetailResponse"][];
             /** Page */
             page: number;
             /** Page Size */
@@ -3442,6 +3651,17 @@ export interface components {
             /** Total */
             total: number;
         };
+        /** PaginatedResponse[CuratedItemSummaryResponse] */
+        PaginatedResponse_CuratedItemSummaryResponse_: {
+            /** Items */
+            items: components["schemas"]["CuratedItemSummaryResponse"][];
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Total */
+            total: number;
+        };
         /** PaginatedResponse[CuratedRevisionResponse] */
         PaginatedResponse_CuratedRevisionResponse_: {
             /** Items */
@@ -3453,10 +3673,10 @@ export interface components {
             /** Total */
             total: number;
         };
-        /** PaginatedResponse[DatasetItemResponse] */
-        PaginatedResponse_DatasetItemResponse_: {
+        /** PaginatedResponse[DatasetItemDetailResponse] */
+        PaginatedResponse_DatasetItemDetailResponse_: {
             /** Items */
-            items: components["schemas"]["DatasetItemResponse"][];
+            items: components["schemas"]["DatasetItemDetailResponse"][];
             /** Page */
             page: number;
             /** Page Size */
@@ -3747,6 +3967,21 @@ export interface components {
             parser_options?: {
                 [key: string]: unknown;
             } | null;
+        };
+        /**
+         * PinnedRevisionRef
+         * @description 加入时固定的 approved CuratedRevision 摘要。
+         */
+        PinnedRevisionRef: {
+            /** Content Sha256 */
+            content_sha256: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Version */
+            version: number;
         };
         /** ProjectCreate */
         ProjectCreate: {
@@ -6007,7 +6242,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BenchmarkResponse"];
+                    "application/json": components["schemas"]["BenchmarkDetailResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -6216,7 +6451,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PaginatedResponse_BenchmarkCaseResponse_"];
+                    "application/json": components["schemas"]["PaginatedResponse_BenchmarkCaseDetailResponse_"];
                 };
             };
             /** @description 认证失败 */
@@ -6288,7 +6523,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["BenchmarkCaseResponse"];
+                    "application/json": components["schemas"]["BenchmarkCaseDetailResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -6302,6 +6537,15 @@ export interface operations {
             };
             /** @description 权限不足 */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 冲突 */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6348,6 +6592,87 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 冲突 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    benchmark_list_eligible_items: {
+        parameters: {
+            query?: {
+                query?: string | null;
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path: {
+                pid: string;
+                bid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedResponse_CuratedItemSummaryResponse_"];
+                };
             };
             /** @description 认证失败 */
             401: {
@@ -6434,6 +6759,78 @@ export interface operations {
             };
             /** @description 权限不足 */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    benchmark_finalize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                bid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BenchmarkFinalizeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BenchmarkDetailResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 冲突 */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7152,132 +7549,6 @@ export interface operations {
             };
         };
     };
-    curated_item_add_to_benchmark: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                pid: string;
-                iid: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AddToBenchmarkRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BenchmarkCaseResponse"];
-                };
-            };
-            /** @description 认证失败 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description 权限不足 */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description 请求参数校验失败 */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ValidationErrorResponse"];
-                };
-            };
-            /** @description 服务器内部错误 */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    curated_item_add_to_dataset: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                pid: string;
-                iid: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AddToDatasetRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DatasetItemResponse"];
-                };
-            };
-            /** @description 认证失败 */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description 权限不足 */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description 请求参数校验失败 */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ValidationErrorResponse"];
-                };
-            };
-            /** @description 服务器内部错误 */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
     curated_item_list_evidence: {
         parameters: {
             query?: {
@@ -7633,7 +7904,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DatasetResponse"];
+                    "application/json": components["schemas"]["DatasetDetailResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -7821,6 +8092,78 @@ export interface operations {
             };
         };
     };
+    dataset_list_eligible_items: {
+        parameters: {
+            query?: {
+                query?: string | null;
+                page?: number;
+                page_size?: number;
+            };
+            header?: never;
+            path: {
+                pid: string;
+                did: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedResponse_CuratedItemSummaryResponse_"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     dataset_export: {
         parameters: {
             query?: never;
@@ -7886,6 +8229,78 @@ export interface operations {
             };
         };
     };
+    dataset_finalize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                did: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DatasetFinalizeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetDetailResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 冲突 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     dataset_list_items: {
         parameters: {
             query?: {
@@ -7907,7 +8322,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PaginatedResponse_DatasetItemResponse_"];
+                    "application/json": components["schemas"]["PaginatedResponse_DatasetItemDetailResponse_"];
                 };
             };
             /** @description 认证失败 */
@@ -7979,7 +8394,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DatasetItemResponse"];
+                    "application/json": components["schemas"]["DatasetItemDetailResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -7993,6 +8408,15 @@ export interface operations {
             };
             /** @description 权限不足 */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 冲突 */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8060,6 +8484,15 @@ export interface operations {
             };
             /** @description 资源不存在 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 冲突 */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
