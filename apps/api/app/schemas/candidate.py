@@ -32,8 +32,8 @@ class EvidenceSpan(RequestSchema):
 
 
 class CandidateReview(RequestSchema):
-    """审核请求：supported/partially_supported 至少一个 span；
-    unsupported/out_of_scope 必须提供 reject_reason。客户端不得发送额外 action。"""
+    """审核请求：supported/partially_supported 至少一个 span（409 由服务层裁决）；
+    unsupported/out_of_scope 必须提供 reject_reason（422 字段校验）。客户端不得发送额外 action。"""
 
     verdict: str
     evidence_spans: list[EvidenceSpan] | None = None
@@ -47,12 +47,10 @@ class CandidateReview(RequestSchema):
         return v
 
     @model_validator(mode="after")
-    def _review_gate(self):
-        requires_evidence = self.verdict in ("supported", "partially_supported")
-        requires_reason = self.verdict in ("unsupported", "out_of_scope")
-        if requires_evidence and not self.evidence_spans:
-            raise ValueError("supported/partially_supported 必须提供至少一个证据 span")
-        if requires_reason and not (self.reject_reason and self.reject_reason.strip()):
+    def _reject_reason_required(self):
+        # 缺证据是业务门禁（409 CANDIDATE_EVIDENCE_REQUIRED），不由 schema 拦截；
+        # 拒绝原因缺失属于字段校验（422）。
+        if self.verdict in ("unsupported", "out_of_scope") and not (self.reject_reason and self.reject_reason.strip()):
             raise ValueError("unsupported/out_of_scope 必须提供非空拒绝原因")
         return self
 

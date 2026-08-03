@@ -109,6 +109,8 @@ class CuratedItemService:
         expected = expected_revision if expected_revision is not None else existing.current_revision
 
         # CAS：原子把 current_revision 从 expected 递增到 expected+1（独占行锁）。
+        # synchronize_session="fetch"：让 ORM identity map 同步新 content，避免后续
+        # get() 读到旧值。
         result = await self.db.execute(
             update(CuratedItem)
             .where(
@@ -122,6 +124,7 @@ class CuratedItemService:
                 updated_at=func.now(),
             )
             .returning(CuratedItem.id)
+            .execution_options(synchronize_session="fetch")
         )
         claimed = result.scalar_one_or_none()
         if claimed is None:
@@ -141,6 +144,8 @@ class CuratedItemService:
         )
         self.db.add(revision)
         await self.db.flush()
+        # CAS 用原生 UPDATE 直接写库，identity map 仍是旧 content；expire 后重读。
+        self.db.expire(existing, ["content", "current_revision", "updated_at"])
         item = await self.get(item_id)
         return item
 
