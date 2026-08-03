@@ -2132,8 +2132,8 @@ export interface components {
         };
         /**
          * CandidateReview
-         * @description 审核请求：supported/partially_supported 至少一个 span；
-         *     unsupported/out_of_scope 必须提供 reject_reason。客户端不得发送额外 action。
+         * @description 审核请求：supported/partially_supported 至少一个 span（409 由服务层裁决）；
+         *     unsupported/out_of_scope 必须提供 reject_reason（422 字段校验）。客户端不得发送额外 action。
          */
         CandidateReview: {
             /** Evidence Spans */

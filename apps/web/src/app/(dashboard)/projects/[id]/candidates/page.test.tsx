@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApiMockServer } from "@/lib/__mocks__/api-server";
@@ -117,7 +117,6 @@ describe("候选审核页", () => {
 
     const editor = await screen.findByTestId("candidate-json-editor");
     // 修改为非法 JSON（用 fireEvent 避免 userEvent 解析 { 特殊键）
-    const { fireEvent } = require("@testing-library/react");
     await userEvent.clear(editor);
     fireEvent.change(editor, { target: { value: "{ not valid json" } });
 
