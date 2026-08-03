@@ -90,7 +90,7 @@ def main() -> int:
                 )
 
         # 4. 非 approved item 被编组。
-        for tbl, container_col in (("dataset_items", "dataset_id"), ("benchmark_cases", "benchmark_id")):
+        for tbl, _container_col in (("dataset_items", "dataset_id"), ("benchmark_cases", "benchmark_id")):
             rows = session.execute(
                 text(
                     f"SELECT m.id, m.curated_item_id, ci.status FROM {tbl} m "

@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models.config import ExportProfile
-from app.models.curated import CuratedItem, EvidenceLink
+from app.models.curated import CuratedItem, CuratedRevision, EvidenceLink
 from app.models.dataset import Benchmark, BenchmarkCase, Dataset, DatasetItem
 from app.services.export_service import ExportService
 from app.workers.execution import ExecutionContext
@@ -128,20 +128,38 @@ FORMAT_CONTENT_TYPES = {
 # ---------------------------------------------------------------------------
 
 
-async def _build_formatted_items(db, curated_ids: list[uuid.UUID], ctx: ExecutionContext) -> list[dict]:
-    """加载 curated items 并附加 evidence；批次 checkpoint。"""
+async def _build_formatted_items(
+    db, membership_rows: list[dict], ctx: ExecutionContext
+) -> list[dict]:
+    """从固定 CuratedRevision 内容加载导出项（T10 §4：列表与导出只读固定 revision）。
+
+    membership_rows 每项含 curated_item_id 与 curated_revision_id（加入时 T09 的
+    批准 revision）；导出内容来自该 revision 的 content，绝不跟随 CuratedItem
+    当前 content 漂移。
+    """
+    curated_ids = [m["curated_item_id"] for m in membership_rows]
+    rev_ids = [m["curated_revision_id"] for m in membership_rows]
     curated_result = await db.execute(
         select(CuratedItem).where(CuratedItem.id.in_(curated_ids))
     )
     curated_map = {ci.id: ci for ci in curated_result.scalars().all()}
+    revisions_result = await db.execute(
+        select(CuratedRevision).where(CuratedRevision.id.in_(rev_ids))
+    )
+    revision_map = {r.id: r for r in revisions_result.scalars().all()}
     await ctx.checkpoint()
 
     formatted_items = []
-    for ci_id in curated_ids:
-        ci = curated_map.get(ci_id)
-        if ci is None:
+    for m in membership_rows:
+        ci = curated_map.get(m["curated_item_id"])
+        rev = revision_map.get(m["curated_revision_id"])
+        if ci is None or rev is None:
             continue
-        item_dict = {"content": ci.content, "curated_item_id": str(ci.id)}
+        item_dict = {
+            "content": rev.content,
+            "curated_item_id": str(ci.id),
+            "curated_revision_id": str(rev.id),
+        }
         ev_result = await db.execute(
             select(EvidenceLink).where(EvidenceLink.curated_item_id == ci.id)
         )
@@ -159,11 +177,11 @@ async def _export_common(
     *,
     export_profile_id: uuid.UUID,
     manifest_source: dict,
-    curated_ids: list[uuid.UUID],
+    membership_rows: list[dict],
     minio_key: str,
     created_by: uuid.UUID,
 ) -> None:
-    """导出公共流程：格式化 -> 快照清单 -> 上传 MinIO -> 创建 Export 记录。"""
+    """导出公共流程：格式化（固定 revision）-> 快照清单 -> 上传 MinIO -> 创建 Export 记录。"""
     db = ctx.db
     storage = get_storage_client(
         settings.minio_endpoint, settings.minio_access_key,
@@ -181,7 +199,7 @@ async def _export_common(
         raise RuntimeError(f"不支持的导出格式: {fmt}")
     await ctx.checkpoint()
 
-    formatted_items = await _build_formatted_items(db, curated_ids, ctx)
+    formatted_items = await _build_formatted_items(db, membership_rows, ctx)
     if not formatted_items:
         raise RuntimeError("没有可导出的条目")
 
@@ -194,7 +212,7 @@ async def _export_common(
         "export_profile_id": str(export_profile_id),
         "export_format": fmt,
         "item_count": len(formatted_items),
-        "curated_item_ids": [str(ci_id) for ci_id in curated_ids],
+        "curated_item_ids": [str(m["curated_item_id"]) for m in membership_rows],
     }
     snapshot = await export_service.create_snapshot_manifest(manifest_data)
     await ctx.checkpoint()
@@ -250,7 +268,10 @@ async def run_export_dataset_handler(ctx: ExecutionContext) -> None:
         select(DatasetItem).where(DatasetItem.dataset_id == dataset_id).order_by(DatasetItem.ordinal)
     )
     dataset_items = list(items_result.scalars().all())
-    curated_ids = [di.curated_item_id for di in dataset_items]
+    membership_rows = [
+        {"curated_item_id": di.curated_item_id, "curated_revision_id": di.curated_revision_id}
+        for di in dataset_items
+    ]
 
     minio_key = f"{ctx.project_id}/exports/dataset_{dataset_id}.jsonl"
     await _export_common(
@@ -261,7 +282,7 @@ async def run_export_dataset_handler(ctx: ExecutionContext) -> None:
             "dataset_id": str(dataset_id),
             "dataset_name": dataset.name,
         },
-        curated_ids=curated_ids,
+        membership_rows=membership_rows,
         minio_key=minio_key,
         created_by=created_by,
     )
@@ -296,7 +317,10 @@ async def run_export_benchmark_handler(ctx: ExecutionContext) -> None:
         select(BenchmarkCase).where(BenchmarkCase.benchmark_id == benchmark_id).order_by(BenchmarkCase.ordinal)
     )
     benchmark_cases = list(cases_result.scalars().all())
-    curated_ids = [bc.curated_item_id for bc in benchmark_cases]
+    membership_rows = [
+        {"curated_item_id": bc.curated_item_id, "curated_revision_id": bc.curated_revision_id}
+        for bc in benchmark_cases
+    ]
 
     minio_key = f"{ctx.project_id}/exports/benchmark_{benchmark_id}.jsonl"
     await _export_common(
@@ -307,7 +331,7 @@ async def run_export_benchmark_handler(ctx: ExecutionContext) -> None:
             "benchmark_id": str(benchmark_id),
             "benchmark_name": benchmark.name,
         },
-        curated_ids=curated_ids,
+        membership_rows=membership_rows,
         minio_key=minio_key,
         created_by=created_by,
     )
