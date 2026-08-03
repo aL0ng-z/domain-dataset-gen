@@ -21,11 +21,10 @@ from app.schemas.dataset import (
     BenchmarkUpdate,
     CuratedItemSummaryResponse,
 )
-from app.schemas.export import ExportRequest, ExportResponse
+from app.schemas.export import ExportCreatedResponse, ExportRequest
 from app.services.benchmark_service import BenchmarkService
 from app.services.composition_policy import CompositionGateError
 from app.services.composition_service import CompositionService
-from app.services.idempotency import idempotent_create_task
 from app.services.task_service import TaskService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
@@ -263,7 +262,7 @@ async def finalize_benchmark(
     return _benchmark_detail(finalized, case_count)
 
 
-@router.post("/{bid}/export", response_model=ExportResponse, status_code=status.HTTP_201_CREATED, operation_id="benchmark_export")
+@router.post("/{bid}/export", response_model=ExportCreatedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="benchmark_export")
 async def export_benchmark(
     pid: uuid.UUID,
     bid: uuid.UUID,
@@ -280,45 +279,31 @@ async def export_benchmark(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="基准集不存在")
     await resolver.ensure_in_project(pid, [(ExportProfile, body.export_profile_id)])
 
-    # Create task for tracking
+    # T11：创建 queued Export + Task，返回 202（不再伪造 completed）。
+    from app.services.export_service import ExportService
+    from app.services.export_trigger import create_export_trigger
+
     redis = getattr(request.app.state, "redis", None)
     task_service = TaskService(db, redis)
-    export_payload = {
-        "benchmark_id": str(bid),
-        "export_profile_id": str(body.export_profile_id),
-        "created_by": str(current_user.id),
-    }
-    if idempotency_key:
-        task = await idempotent_create_task(
-            db,
-            task_service=task_service,
-            client_key=idempotency_key,
-            project_id=pid,
-            task_type="export",
-            payload_for_digest=export_payload,
-            create=lambda key: task_service.create_task(
-                project_id=pid, task_type="export", entity_type="benchmark", entity_id=bid,
-                created_by=current_user.id, payload=export_payload, handler="export_benchmark",
-                idempotency_key=key,
-            ),
-        )
-    else:
-        task = await task_service.create_task(
-            project_id=pid, task_type="export", entity_type="benchmark", entity_id=bid,
-            created_by=current_user.id, payload=export_payload, handler="export_benchmark",
-        )
-    await db.commit()
-
-    from app.schemas.export import ExportResponse
-    return ExportResponse(
-        id=task.id,
-        project_id=pid,
-        dataset_id=None,
-        benchmark_id=bid,
+    fingerprint = ExportService.build_request_fingerprint(
+        expected_source_revision=body.expected_source_revision,
+        expected_source_sha256=body.expected_source_sha256,
         export_profile_id=body.export_profile_id,
-        format="pending",
-        item_count=0,
-        snapshot_manifest_id=task.id,
-        created_by=current_user.id,
-        created_at=task.created_at,
     )
+    result = await create_export_trigger(
+        db=db,
+        redis=redis,
+        task_service=task_service,
+        request_fingerprint=fingerprint,
+        project_id=pid,
+        source_type="benchmark",
+        source_id=bid,
+        export_profile_id=body.export_profile_id,
+        created_by=current_user.id,
+        expected_source_revision=body.expected_source_revision,
+        expected_source_sha256=body.expected_source_sha256,
+        idempotency_key=idempotency_key,
+        handler="export_benchmark",
+    )
+    await db.commit()
+    return ExportCreatedResponse(**result)

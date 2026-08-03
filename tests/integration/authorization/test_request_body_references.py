@@ -144,7 +144,11 @@ async def test_cross_project_export_profile_rejected(client: AsyncClient, full_r
     res = await client.post(
         f"/api/projects/{a['pid']}/datasets/{a['dataset'].id}/export",
         headers=_bearer(tokens["access_token"]),
-        json={"export_profile_id": str(b["export_profile"].id)},
+        json={
+            "export_profile_id": str(b["export_profile"].id),
+            "expected_source_revision": 0,
+            "expected_source_sha256": "0" * 64,
+        },
     )
     assert res.status_code == 404, res.text
 

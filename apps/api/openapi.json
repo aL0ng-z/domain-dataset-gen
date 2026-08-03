@@ -2723,7 +2723,12 @@
               "COMPOSITION_MEMBER_EXISTS",
               "COMPOSITION_REVISION_CONFLICT",
               "COMPOSITION_FINALIZE_GATE_FAILED",
-              "COMPOSITION_HASH_INVALID"
+              "COMPOSITION_HASH_INVALID",
+              "EXPORT_SOURCE_NOT_FINALIZED",
+              "EXPORT_REVISION_CONFLICT",
+              "EXPORT_IMMUTABLE",
+              "EXPORT_INTEGRITY_ERROR",
+              "EXPORT_PROVENANCE_GAP"
             ],
             "title": "Code",
             "type": "string"
@@ -2877,6 +2882,32 @@
         "title": "EvidenceSpan",
         "type": "object"
       },
+      "ExportCreatedResponse": {
+        "description": "T11：导出请求创建响应（202）。",
+        "properties": {
+          "export_id": {
+            "format": "uuid",
+            "title": "Export Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "export_id",
+          "task_id",
+          "status"
+        ],
+        "title": "ExportCreatedResponse",
+        "type": "object"
+      },
       "ExportProfileCreate": {
         "additionalProperties": false,
         "properties": {
@@ -3016,7 +3047,20 @@
       },
       "ExportRequest": {
         "additionalProperties": false,
+        "description": "T11：导出请求。\n\n- ``export_profile_id``：导出配置。\n- ``expected_source_revision``：期望的 source composition revision（一致性校验）。\n- ``expected_source_sha256``：期望的 source composition SHA-256。\n- 支持 ``Idempotency-Key``（由路由处理）。",
         "properties": {
+          "expected_source_revision": {
+            "minimum": 0.0,
+            "title": "Expected Source Revision",
+            "type": "integer"
+          },
+          "expected_source_sha256": {
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Expected Source Sha256",
+            "type": "string"
+          },
           "export_profile_id": {
             "format": "uuid",
             "title": "Export Profile Id",
@@ -3024,12 +3068,15 @@
           }
         },
         "required": [
-          "export_profile_id"
+          "export_profile_id",
+          "expected_source_revision",
+          "expected_source_sha256"
         ],
         "title": "ExportRequest",
         "type": "object"
       },
       "ExportResponse": {
+        "description": "T11：导出记录响应（列表/详情）。",
         "properties": {
           "benchmark_id": {
             "anyOf": [
@@ -3042,6 +3089,18 @@
               }
             ],
             "title": "Benchmark Id"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
           },
           "created_at": {
             "format": "date-time",
@@ -3065,10 +3124,43 @@
             ],
             "title": "Dataset Id"
           },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
           "export_profile_id": {
             "format": "uuid",
             "title": "Export Profile Id",
             "type": "string"
+          },
+          "file_size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Size"
           },
           "format": {
             "title": "Format",
@@ -3079,19 +3171,83 @@
             "title": "Id",
             "type": "string"
           },
+          "integrity_status": {
+            "title": "Integrity Status",
+            "type": "string"
+          },
+          "is_legacy": {
+            "title": "Is Legacy",
+            "type": "boolean"
+          },
           "item_count": {
-            "title": "Item Count",
-            "type": "integer"
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Item Count"
+          },
+          "output_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Sha256"
           },
           "project_id": {
             "format": "uuid",
             "title": "Project Id",
             "type": "string"
           },
+          "retry_count": {
+            "title": "Retry Count",
+            "type": "integer"
+          },
           "snapshot_manifest_id": {
-            "format": "uuid",
-            "title": "Snapshot Manifest Id",
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Manifest Id"
+          },
+          "source_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Type"
+          },
+          "status": {
+            "title": "Status",
             "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
           }
         },
         "required": [
@@ -3099,14 +3255,63 @@
           "project_id",
           "dataset_id",
           "benchmark_id",
+          "source_type",
           "export_profile_id",
           "format",
+          "status",
           "item_count",
-          "snapshot_manifest_id",
+          "output_sha256",
+          "file_size",
+          "integrity_status",
+          "task_id",
+          "retry_count",
+          "error_code",
+          "error_message",
+          "is_legacy",
           "created_by",
-          "created_at"
+          "created_at",
+          "completed_at",
+          "snapshot_manifest_id"
         ],
         "title": "ExportResponse",
+        "type": "object"
+      },
+      "ExportVerifyResponse": {
+        "description": "T11：深度验证结果（逐项）。",
+        "properties": {
+          "deep": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deep"
+          },
+          "export_id": {
+            "format": "uuid",
+            "title": "Export Id",
+            "type": "string"
+          },
+          "shallow": {
+            "additionalProperties": true,
+            "title": "Shallow",
+            "type": "object"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "export_id",
+          "status",
+          "shallow"
+        ],
+        "title": "ExportVerifyResponse",
         "type": "object"
       },
       "GenerateAcceptedResponse": {
@@ -5942,10 +6147,20 @@
         "type": "object"
       },
       "SnapshotManifestResponse": {
+        "description": "T11：快照清单响应。\n\n``integrity_status``：\n- ``verified``：新格式，manifest_sha256 可验证。\n- ``unverified_legacy``：迁移前旧记录，不伪造完整性。",
         "properties": {
+          "canonicalization_version": {
+            "title": "Canonicalization Version",
+            "type": "string"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
+            "type": "string"
+          },
+          "export_id": {
+            "format": "uuid",
+            "title": "Export Id",
             "type": "string"
           },
           "id": {
@@ -5953,15 +6168,52 @@
             "title": "Id",
             "type": "string"
           },
+          "integrity_status": {
+            "title": "Integrity Status",
+            "type": "string"
+          },
           "manifest": {
             "additionalProperties": true,
             "title": "Manifest",
             "type": "object"
+          },
+          "manifest_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Sha256"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "sealed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sealed At"
           }
         },
         "required": [
           "id",
+          "export_id",
           "manifest",
+          "schema_version",
+          "canonicalization_version",
+          "manifest_sha256",
+          "integrity_status",
+          "sealed_at",
           "created_at"
         ],
         "title": "SnapshotManifestResponse",
@@ -9602,11 +9854,11 @@
           "required": true
         },
         "responses": {
-          "201": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ExportResponse"
+                  "$ref": "#/components/schemas/ExportCreatedResponse"
                 }
               }
             },
@@ -11853,11 +12105,11 @@
           "required": true
         },
         "responses": {
-          "201": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ExportResponse"
+                  "$ref": "#/components/schemas/ExportCreatedResponse"
                 }
               }
             },
@@ -15351,6 +15603,7 @@
     },
     "/api/projects/{pid}/exports/{eid}/download": {
       "get": {
+        "description": "仅 completed 且完整性非失败时返回绑定 object_version_id 的短时 307。\n\n签发前 HEAD 校验 size/hash metadata；不符返回 409 EXPORT_INTEGRITY_ERROR。",
         "operationId": "export_download",
         "parameters": [
           {
@@ -15538,6 +15791,115 @@
           }
         ],
         "summary": "Get Manifest",
+        "tags": [
+          "exports"
+        ]
+      }
+    },
+    "/api/projects/{pid}/exports/{eid}/verify": {
+      "get": {
+        "description": "导出完整性验证。\n\n- 浅验证：核对 DB 产物字段、version id 与对象 metadata。\n- ``deep=true``：流式重算 payload 与 manifest hash，返回逐项结果。",
+        "operationId": "export_verify",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "eid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Eid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "deep",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Deep",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportVerifyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "资源不存在"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Verify Export",
         "tags": [
           "exports"
         ]

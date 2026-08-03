@@ -21,11 +21,10 @@ from app.schemas.dataset import (
     DatasetResponse,
     DatasetUpdate,
 )
-from app.schemas.export import ExportRequest, ExportResponse
+from app.schemas.export import ExportCreatedResponse, ExportRequest
 from app.services.composition_policy import CompositionGateError
 from app.services.composition_service import CompositionService
 from app.services.dataset_service import DatasetService
-from app.services.idempotency import idempotent_create_task
 from app.services.task_service import TaskService
 from domain.enums import UserRole
 from domain.schemas import PaginatedResponse
@@ -265,7 +264,7 @@ async def finalize_dataset(
     return _dataset_detail(finalized, item_count)
 
 
-@router.post("/{did}/export", response_model=ExportResponse, status_code=status.HTTP_201_CREATED, operation_id="dataset_export")
+@router.post("/{did}/export", response_model=ExportCreatedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="dataset_export")
 async def export_dataset(
     pid: uuid.UUID,
     did: uuid.UUID,
@@ -282,45 +281,31 @@ async def export_dataset(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="数据集不存在")
     await resolver.ensure_in_project(pid, [(ExportProfile, body.export_profile_id)])
 
-    # Create task for tracking
+    # T11：创建 queued Export + Task，返回 202（不再伪造 completed）。
+    from app.services.export_service import ExportService
+    from app.services.export_trigger import create_export_trigger
+
     redis = getattr(request.app.state, "redis", None)
     task_service = TaskService(db, redis)
-    export_payload = {
-        "dataset_id": str(did),
-        "export_profile_id": str(body.export_profile_id),
-        "created_by": str(current_user.id),
-    }
-    if idempotency_key:
-        task = await idempotent_create_task(
-            db,
-            task_service=task_service,
-            client_key=idempotency_key,
-            project_id=pid,
-            task_type="export",
-            payload_for_digest=export_payload,
-            create=lambda key: task_service.create_task(
-                project_id=pid, task_type="export", entity_type="dataset", entity_id=did,
-                created_by=current_user.id, payload=export_payload, handler="export_dataset",
-                idempotency_key=key,
-            ),
-        )
-    else:
-        task = await task_service.create_task(
-            project_id=pid, task_type="export", entity_type="dataset", entity_id=did,
-            created_by=current_user.id, payload=export_payload, handler="export_dataset",
-        )
-    await db.commit()
-
-    # Return a placeholder export response — actual export created by runner
-    return ExportResponse(
-        id=task.id,
-        project_id=pid,
-        dataset_id=did,
-        benchmark_id=None,
+    fingerprint = ExportService.build_request_fingerprint(
+        expected_source_revision=body.expected_source_revision,
+        expected_source_sha256=body.expected_source_sha256,
         export_profile_id=body.export_profile_id,
-        format="pending",
-        item_count=0,
-        snapshot_manifest_id=task.id,  # placeholder until export completes
-        created_by=current_user.id,
-        created_at=task.created_at,
     )
+    result = await create_export_trigger(
+        db=db,
+        redis=redis,
+        task_service=task_service,
+        request_fingerprint=fingerprint,
+        project_id=pid,
+        source_type="dataset",
+        source_id=did,
+        export_profile_id=body.export_profile_id,
+        created_by=current_user.id,
+        expected_source_revision=body.expected_source_revision,
+        expected_source_sha256=body.expected_source_sha256,
+        idempotency_key=idempotency_key,
+        handler="export_dataset",
+    )
+    await db.commit()
+    return ExportCreatedResponse(**result)

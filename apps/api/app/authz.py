@@ -437,6 +437,19 @@ class ProjectResourceResolver:
             .where(SnapshotManifest.id == manifest_id, Export.project_id == pid)
         )
 
+    async def export_manifest_by_export(
+        self, pid: uuid.UUID, export_id: uuid.UUID
+    ) -> SnapshotManifest | None:
+        """按 export 读取 manifest（导出归属经 Export.project_id 校验）。"""
+        return await self._one(
+            select(SnapshotManifest)
+            .join(Export, Export.id == SnapshotManifest.export_id)
+            .where(
+                SnapshotManifest.export_id == export_id,
+                Export.project_id == pid,
+            )
+        )
+
     # ------------------------------------------------------------------
     # 归属链：资源 -> PromptTemplate.project_id
     # ------------------------------------------------------------------
