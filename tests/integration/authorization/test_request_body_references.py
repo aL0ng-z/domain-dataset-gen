@@ -92,7 +92,11 @@ async def test_cross_project_prompt_model_config_rejected(client: AsyncClient, f
 
 @pytest.mark.integration
 async def test_cross_project_curated_and_dataset_rejected(client: AsyncClient, full_resources, db_session):
-    """dataset add_item 引用跨项目 curated item -> 404；curated add-to-dataset 跨项目 dataset -> 404。"""
+    """dataset add_item 引用跨项目 curated item -> 404 且数据库无变化。
+
+    T10：curated-items/{iid}/add-to-dataset 重复添加入口已删除，所有编组收敛到
+    datasets/{did}/items（同项目校验由 resolver 负责）。
+    """
     from sqlalchemy import func, select
 
     from app.models.dataset import DatasetItem
@@ -111,7 +115,7 @@ async def test_cross_project_curated_and_dataset_rejected(client: AsyncClient, f
     )
     assert res.status_code == 404, res.text
 
-    # 项目 A curated item 添加到项目 B 的 dataset -> 404
+    # T10：旧 add-to-dataset 入口已删除，路由不存在 -> 404（断言不泄露路由存在性）。
     res2 = await client.post(
         f"/api/projects/{a['pid']}/curated-items/{a['curated_item'].id}/add-to-dataset",
         headers=_bearer(tokens["access_token"]),
