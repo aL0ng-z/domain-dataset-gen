@@ -2908,6 +2908,31 @@
         "title": "ExportCreatedResponse",
         "type": "object"
       },
+      "ExportDownloadLinkResponse": {
+        "description": "经鉴权即时签发的短期对象版本下载链接。",
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at",
+          "filename"
+        ],
+        "title": "ExportDownloadLinkResponse",
+        "type": "object"
+      },
       "ExportProfileCreate": {
         "additionalProperties": false,
         "properties": {
@@ -3277,13 +3302,15 @@
         "type": "object"
       },
       "ExportVerifyResponse": {
-        "description": "T11：深度验证结果（逐项）。",
+        "description": "T11：浅验证与可选深度验证结果。",
         "properties": {
           "deep": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "items": {
+                  "$ref": "#/components/schemas/VerifyDeepItem"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
@@ -3297,9 +3324,7 @@
             "type": "string"
           },
           "shallow": {
-            "additionalProperties": true,
-            "title": "Shallow",
-            "type": "object"
+            "$ref": "#/components/schemas/VerifyShallowResult"
           },
           "status": {
             "title": "Status",
@@ -7014,6 +7039,65 @@
         ],
         "title": "ValidationErrorResponse",
         "type": "object"
+      },
+      "VerifyDeepItem": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "item": {
+            "title": "Item",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "item",
+          "ok"
+        ],
+        "title": "VerifyDeepItem",
+        "type": "object"
+      },
+      "VerifyShallowResult": {
+        "properties": {
+          "db_fields_present": {
+            "title": "Db Fields Present",
+            "type": "boolean"
+          },
+          "metadata_ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata Ok"
+          },
+          "version_id_present": {
+            "title": "Version Id Present",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "db_fields_present",
+          "version_id_present",
+          "metadata_ok"
+        ],
+        "title": "VerifyShallowResult",
+        "type": "object"
       }
     },
     "securitySchemes": {
@@ -8248,6 +8332,23 @@
               "format": "uuid",
               "title": "Cid",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -14318,6 +14419,23 @@
               "title": "Did",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
           }
         ],
         "requestBody": {
@@ -15603,7 +15721,7 @@
     },
     "/api/projects/{pid}/exports/{eid}/download": {
       "get": {
-        "description": "仅 completed 且完整性非失败时返回绑定 object_version_id 的短时 307。\n\n签发前 HEAD 校验 size/hash metadata；不符返回 409 EXPORT_INTEGRITY_ERROR。",
+        "description": "仅 completed 且完整性非失败时返回绑定 object_version_id 的短时 307。",
         "operationId": "export_download",
         "parameters": [
           {
@@ -15693,6 +15811,95 @@
           }
         ],
         "summary": "Download Export",
+        "tags": [
+          "exports"
+        ]
+      }
+    },
+    "/api/projects/{pid}/exports/{eid}/download-link": {
+      "post": {
+        "description": "Bearer 鉴权后即时签发短期 URL；响应及中间代理不得缓存。",
+        "operationId": "export_create_download_link",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "eid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Eid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportDownloadLinkResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Download Link",
         "tags": [
           "exports"
         ]
@@ -15798,8 +16005,9 @@
     },
     "/api/projects/{pid}/exports/{eid}/verify": {
       "get": {
-        "description": "导出完整性验证。\n\n- 浅验证：核对 DB 产物字段、version id 与对象 metadata。\n- ``deep=true``：流式重算 payload 与 manifest hash，返回逐项结果。",
-        "operationId": "export_verify",
+        "deprecated": true,
+        "description": "兼容旧客户端；新调用应使用 POST。",
+        "operationId": "export_verify_legacy_get",
         "parameters": [
           {
             "in": "path",
@@ -15872,6 +16080,103 @@
               }
             },
             "description": "资源不存在"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Verify Export Legacy Get",
+        "tags": [
+          "exports"
+        ]
+      },
+      "post": {
+        "description": "执行浅验证；``deep=true`` 时流式重算两个固定对象版本的 hash。",
+        "operationId": "export_verify",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "eid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Eid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "deep",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Deep",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportVerifyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
           },
           "422": {
             "content": {

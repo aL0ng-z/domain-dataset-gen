@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,10 +20,12 @@ from app.schemas.generation import (
 from app.services.chunk_service import ChunkService
 from app.services.generation_service import (
     GenerationConfigUnavailableError,
+    GenerationIdempotencyConflictError,
     GenerationInProgressError,
     GenerationOrchestrationService,
     GenerationSourceNotReadyError,
     PromptTemplateVersionMaterializeError,
+    build_generation_request_fingerprint,
 )
 from app.services.task_service import TaskService
 from domain.enums import UserRole
@@ -113,6 +115,9 @@ async def generate_from_chunk(
     body: GenerateRequest,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
+    idempotency_key: Annotated[
+        str | None, Header(alias="Idempotency-Key", max_length=100)
+    ] = None,
 ):
     """单 Chunk 生成（T08 §5.1）：202 接收，服务端固定选择 [cid]。"""
     resolver = ProjectResourceResolver(db)
@@ -131,6 +136,41 @@ async def generate_from_chunk(
             404, "GENERATION_SOURCE_NOT_FOUND", "Chunk 不存在", {"source_type": "Chunk"}
         )
 
+    task_service = TaskService(db)
+    service = GenerationOrchestrationService(db, task_service)
+    request_fingerprint = build_generation_request_fingerprint(
+        kind="single",
+        source_id=cid,
+        prompt_template_id=body.prompt_template_id,
+        model_config_id=body.model_config_id,
+        selected_chunk_ids=[cid],
+        created_by=current_user.id,
+    )
+    if idempotency_key is not None:
+        try:
+            existing = await service.resolve_idempotent_request(
+                project_id=pid,
+                document_id=chunk.document_id,
+                idempotency_key=idempotency_key,
+                request_fingerprint=request_fingerprint,
+            )
+        except GenerationIdempotencyConflictError as exc:
+            await db.rollback()
+            raise _generation_http_error(
+                409,
+                "IDEMPOTENCY_KEY_REUSED",
+                str(exc),
+                {"idempotency_key": idempotency_key},
+            ) from exc
+        if existing is not None:
+            batch, parent_task = existing
+            await db.commit()
+            return GenerateAcceptedResponse(
+                task_id=parent_task.id,
+                generation_batch_id=batch.id,
+                status=parent_task.status,
+            )
+
     # scoped 加载请求体引用的模板/模型；不存在或不可见 -> 404。
     template = await resolver.prompt_template(pid, body.prompt_template_id)
     if template is None:
@@ -143,8 +183,6 @@ async def generate_from_chunk(
             404, "GENERATION_CONFIG_NOT_FOUND", "ModelConfig 不存在", {"config_type": "model_config"}
         )
 
-    task_service = TaskService(db)
-    service = GenerationOrchestrationService(db, task_service)
     batch = None
     parent_task = None
     try:
@@ -155,6 +193,8 @@ async def generate_from_chunk(
             prompt_template_id=body.prompt_template_id,
             model_config_id=body.model_config_id,
             created_by=current_user.id,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
         )
     except GenerationSourceNotReadyError as e:
         raise _generation_http_error(

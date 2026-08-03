@@ -11,6 +11,8 @@ worker 只读 Batch 冻结快照重建 input_prompt 并核验 rendered_prompt_sh
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from typing import Any
 
@@ -34,6 +36,7 @@ from app.models.document import Document
 from app.models.generation import GenerationRun
 from app.models.generation_batch import GenerationBatch
 from app.models.prompt_template import PromptTemplate, PromptTemplateVersion
+from app.models.task import Task
 from app.services.task_service import TaskService
 
 
@@ -60,6 +63,10 @@ class PromptTemplateVersionMaterializeError(Exception):
     """模板当前版本无法唯一物化。"""
 
 
+class GenerationIdempotencyConflictError(Exception):
+    """同一幂等键已绑定到不同的生成请求。"""
+
+
 def _sort_unique_chunk_ids(chunk_ids: list[uuid.UUID]) -> list[str]:
     """按 ordinal 排序、去重后的 UUID 字符串数组（任务卡 §4）。
 
@@ -76,12 +83,93 @@ def _sort_unique_chunk_ids(chunk_ids: list[uuid.UUID]) -> list[str]:
     return out
 
 
+def build_generation_request_fingerprint(
+    *,
+    kind: str,
+    source_id: uuid.UUID,
+    prompt_template_id: uuid.UUID,
+    model_config_id: uuid.UUID,
+    selected_chunk_ids: list[uuid.UUID] | None,
+    created_by: uuid.UUID,
+) -> str:
+    """生成请求的稳定摘要，用于判定同 key 重放是否仍是同一意图。"""
+    canonical = json.dumps(
+        {
+            "created_by": str(created_by),
+            "kind": kind,
+            "model_config_id": str(model_config_id),
+            "prompt_template_id": str(prompt_template_id),
+            "selected_chunk_ids": (
+                sorted(str(chunk_id) for chunk_id in selected_chunk_ids)
+                if selected_chunk_ids is not None
+                else None
+            ),
+            "source_id": str(source_id),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 class GenerationOrchestrationService:
     """生成批次编排：路由调用后在同一事务提交，再由 runner 派发。"""
 
     def __init__(self, db: AsyncSession, task_service: TaskService):
         self.db = db
         self.task_service = task_service
+
+    async def resolve_idempotent_request(
+        self,
+        *,
+        project_id: uuid.UUID,
+        document_id: uuid.UUID,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> tuple[GenerationBatch, Task] | None:
+        """在文档级锁内识别安全重放，并串行化同文档的首次创建。"""
+        document = (
+            await self.db.execute(
+                select(Document.id)
+                .where(Document.id == document_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if document is None:
+            raise GenerationSourceNotReadyError("文档不存在")
+
+        task = (
+            await self.db.execute(
+                select(Task).where(
+                    Task.project_id == project_id,
+                    Task.task_type == "generate_batch",
+                    Task.idempotency_key == idempotency_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if task is None:
+            return None
+
+        stored_fingerprint = (task.payload or {}).get("request_fingerprint")
+        if (
+            stored_fingerprint != request_fingerprint
+            or task.entity_type != "generation_batch"
+        ):
+            raise GenerationIdempotencyConflictError(
+                "Idempotency-Key 已用于不同的生成请求"
+            )
+
+        batch = (
+            await self.db.execute(
+                select(GenerationBatch).where(GenerationBatch.id == task.entity_id)
+            )
+        ).scalar_one_or_none()
+        if batch is None:
+            raise GenerationIdempotencyConflictError(
+                "Idempotency-Key 对应的生成批次不存在"
+            )
+        return batch, task
 
     # ------------------------------------------------------------------
     # 资源加载与校验（项目归属由路由先行 scoped load）
@@ -193,6 +281,8 @@ class GenerationOrchestrationService:
         prompt_template_id: uuid.UUID,
         model_config_id: uuid.UUID,
         created_by: uuid.UUID,
+        idempotency_key: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> tuple[GenerationBatch, Any, list[GenerationRun]]:
         """单 Chunk 生成：1 batch + 1 parent task + 1 child task + 1 run。
 
@@ -228,6 +318,8 @@ class GenerationOrchestrationService:
             model_config=model_config,
             selected_chunks=[chunk],
             created_by=created_by,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
         )
 
     async def create_batch(
@@ -239,6 +331,8 @@ class GenerationOrchestrationService:
         model_config_id: uuid.UUID,
         selected_chunk_ids: list[uuid.UUID] | None,
         created_by: uuid.UUID,
+        idempotency_key: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> tuple[GenerationBatch, Any, list[GenerationRun]]:
         """批量生成：selected_chunk_ids 省略表示 active ChunkSet 全部 ready chunks。
 
@@ -288,6 +382,8 @@ class GenerationOrchestrationService:
             model_config=model_config,
             selected_chunks=chunks,
             created_by=created_by,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
         )
 
     # ------------------------------------------------------------------
@@ -304,6 +400,8 @@ class GenerationOrchestrationService:
         model_config: ModelConfig,
         selected_chunks: list[Chunk],
         created_by: uuid.UUID,
+        idempotency_key: str | None = None,
+        request_fingerprint: str | None = None,
     ) -> tuple[GenerationBatch, Any, list[GenerationRun]]:
         """原子创建 GenerationBatch + parent task + child tasks + runs。
 
@@ -370,6 +468,8 @@ class GenerationOrchestrationService:
             "document_id": str(document_id),
             "generation_batch_id": str(batch.id),
         }
+        if request_fingerprint is not None:
+            parent_payload["request_fingerprint"] = request_fingerprint
         parent_task = await self.task_service.create_task(
             project_id=project_id,
             task_type="generate_batch",
@@ -378,6 +478,7 @@ class GenerationOrchestrationService:
             created_by=created_by,
             payload=parent_payload,
             handler="generate_batch",
+            idempotency_key=idempotency_key,
         )
 
         # 每个 Chunk 一个 child task + 一个 GenerationRun（verified）。

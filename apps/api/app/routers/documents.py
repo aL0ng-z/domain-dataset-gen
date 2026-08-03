@@ -52,10 +52,12 @@ from app.services.clean_version_service import CleanVersionService
 from app.services.document_service import DocumentService
 from app.services.generation_service import (
     GenerationConfigUnavailableError,
+    GenerationIdempotencyConflictError,
     GenerationInProgressError,
     GenerationOrchestrationService,
     GenerationSourceNotReadyError,
     PromptTemplateVersionMaterializeError,
+    build_generation_request_fingerprint,
 )
 from app.services.idempotency import idempotent_create_task
 from app.services.section_service import SectionService
@@ -696,12 +698,50 @@ async def trigger_generate_batch(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
+    idempotency_key: Annotated[
+        str | None, Header(alias="Idempotency-Key", max_length=100)
+    ] = None,
 ):
     """批量生成（T08 §5.1）：202 接收；selected_chunk_ids 省略 = active set 全部 ready。"""
     resolver = ProjectResourceResolver(db)
     doc = await resolver.document(pid, did)
     if doc is None:
         raise _gen_http_error(404, "GENERATION_SOURCE_NOT_FOUND", "文档不存在", {"source_type": "Document"})
+
+    task_service = TaskService(db, request.app.state.redis)
+    service = GenerationOrchestrationService(db, task_service)
+    request_fingerprint = build_generation_request_fingerprint(
+        kind="batch",
+        source_id=did,
+        prompt_template_id=body.prompt_template_id,
+        model_config_id=body.model_config_id,
+        selected_chunk_ids=body.selected_chunk_ids,
+        created_by=current_user.id,
+    )
+    if idempotency_key is not None:
+        try:
+            existing = await service.resolve_idempotent_request(
+                project_id=pid,
+                document_id=did,
+                idempotency_key=idempotency_key,
+                request_fingerprint=request_fingerprint,
+            )
+        except GenerationIdempotencyConflictError as exc:
+            await db.rollback()
+            raise _gen_http_error(
+                409,
+                "IDEMPOTENCY_KEY_REUSED",
+                str(exc),
+                {"idempotency_key": idempotency_key},
+            ) from exc
+        if existing is not None:
+            batch, parent_task = existing
+            await db.commit()
+            return GenerateAcceptedResponse(
+                task_id=parent_task.id,
+                generation_batch_id=batch.id,
+                status=parent_task.status,
+            )
 
     template = await resolver.prompt_template(pid, body.prompt_template_id)
     if template is None:
@@ -714,8 +754,6 @@ async def trigger_generate_batch(
             404, "GENERATION_CONFIG_NOT_FOUND", "ModelConfig 不存在", {"config_type": "model_config"}
         )
 
-    task_service = TaskService(db, request.app.state.redis)
-    service = GenerationOrchestrationService(db, task_service)
     try:
         batch, parent_task, _runs = await service.create_batch(
             project_id=pid,
@@ -724,6 +762,8 @@ async def trigger_generate_batch(
             model_config_id=body.model_config_id,
             selected_chunk_ids=body.selected_chunk_ids,
             created_by=current_user.id,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
         )
     except GenerationSourceNotReadyError as e:
         raise _gen_http_error(

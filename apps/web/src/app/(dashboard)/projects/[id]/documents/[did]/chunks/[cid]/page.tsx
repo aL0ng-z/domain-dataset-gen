@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -15,12 +15,12 @@ import {
 import { StatusBadge } from "@/components/status-badge";
 import { api, ApiErrorException } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
-import { ArrowLeftIcon, PlayIcon, Loader2Icon, RotateCwIcon } from "lucide-react";
+import { useGenerationTracking } from "@/hooks/use-generation-tracking";
+import { ArrowLeftIcon, PlayIcon, Loader2Icon, RotateCwIcon, XCircleIcon } from "lucide-react";
 
 type ChunkDetail = components["schemas"]["ChunkResponse"];
 type Template = components["schemas"]["PromptTemplateResponse"];
 type ModelConfig = components["schemas"]["ModelConfigResponse"];
-type TaskItem = components["schemas"]["TaskResponse"];
 type CandidateItem = components["schemas"]["CandidateResponse"];
 
 /** summary_json 的稳定结构（任务卡 §4：{succeeded, failed, cancelled, candidate_ids, failures}）。 */
@@ -47,17 +47,8 @@ function asSummary(v: unknown): BatchSummary | undefined {
   };
 }
 
-/** 生成链路 tracking（任务卡 §6）：以 Task 为执行状态源，以 Batch 为业务汇总源。 */
-interface TrackState {
-  taskId: string;
-  batchId: string;
-  status: "queued" | "processing" | "completed" | "failed" | "cancelled";
-  batch?: components["schemas"]["GenerationBatchResponse"];
-}
-
 export default function ChunkDetailPage() {
   const params = useParams<{ id: string; did: string; cid: string }>();
-  const searchParams = useSearchParams();
   const projectId = params.id;
   const docId = params.did;
   const chunkId = params.cid;
@@ -68,23 +59,13 @@ export default function ChunkDetailPage() {
   const [selectedTemplate, setSelectedTemplate] = useState<string>("");
   const [selectedModel, setSelectedModel] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
-  const [track, setTrack] = useState<TrackState | null>(null);
   const [candidates, setCandidates] = useState<CandidateItem[]>([]);
   const [loading, setLoading] = useState(true);
-  // 轮询 AbortController（页面卸载/切换文档时取消）。
-  const pollRef = useRef<AbortController | null>(null);
-  const pollTimerRef = useRef<number | null>(null);
-
-  // 刷新恢复：URL 携带 task_id/generation_batch_id 时可恢复状态（不只依赖组件内布尔值）。
-  const initialTrackRef = useRef<TrackState | null>(null);
-  useEffect(() => {
-    const taskId = searchParams.get("task_id");
-    const batchId = searchParams.get("generation_batch_id");
-    if (taskId && batchId) {
-      initialTrackRef.current = { taskId, batchId, status: "queued" };
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  const submissionKeyRef = useRef<{ intent: string; key: string } | null>(null);
+  const retryKeyRef = useRef<{ batchId: string; key: string } | null>(null);
+  const { track, startTrack, cancelTask, cancelling } = useGenerationTracking(projectId, {
+    onError: () => toast.error("跟踪生成状态失败"),
+  });
 
   useEffect(() => {
     Promise.all([
@@ -113,9 +94,6 @@ export default function ChunkDetailPage() {
           const def = modelData.items.find((m) => m.is_default) || modelData.items[0];
           setSelectedModel(def.id);
         }
-        if (initialTrackRef.current) {
-          setTrack(initialTrackRef.current);
-        }
       })
       .catch(() => toast.error("加载分块详情失败"))
       .finally(() => setLoading(false));
@@ -129,25 +107,24 @@ export default function ChunkDetailPage() {
     }
     setSubmitting(true);
     try {
+      const intent = JSON.stringify([chunkId, selectedTemplate, selectedModel]);
+      const key = submissionKeyRef.current?.intent === intent
+        ? submissionKeyRef.current.key
+        : `gen-submit-${crypto.randomUUID()}`;
+      submissionKeyRef.current = { intent, key };
       const result = await api.post(
         "/chunks/{cid}/generate",
         {
           prompt_template_id: selectedTemplate,
           model_config_id: selectedModel,
         },
-        { params: { cid: chunkId } },
+        {
+          params: { cid: chunkId },
+          headers: { "Idempotency-Key": key },
+        },
       );
-      const next: TrackState = {
-        taskId: result.task_id,
-        batchId: result.generation_batch_id,
-        status: "queued",
-      };
-      setTrack(next);
-      // URL 记录 task/batch id，刷新可恢复。
-      const url = new URL(window.location.href);
-      url.searchParams.set("task_id", result.task_id);
-      url.searchParams.set("generation_batch_id", result.generation_batch_id);
-      window.history.replaceState(null, "", url.toString());
+      submissionKeyRef.current = null;
+      startTrack(result.task_id, result.generation_batch_id);
       toast.success("生成任务已提交，等待执行");
     } catch (e) {
       if (e instanceof ApiErrorException) {
@@ -158,85 +135,25 @@ export default function ChunkDetailPage() {
     } finally {
       setSubmitting(false);
     }
-  }, [chunkId, selectedTemplate, selectedModel]);
-
-  // 异步跟踪：轮询 parent task + 读取 batch/candidates（页面卸载时取消）。
-  const pollTrack = useCallback(() => {
-    if (!track) return;
-    if (track.status === "completed" || track.status === "failed" || track.status === "cancelled") {
-      return;
-    }
-    const controller = new AbortController();
-    pollRef.current = controller;
-    api
-      .get("/projects/{pid}/tasks/{tid}", {
-        params: { pid: projectId, tid: track.taskId },
-        signal: controller.signal,
-      })
-      .then((task: TaskItem) => {
-        const status = task.status as TrackState["status"];
-        setTrack((prev) => (prev ? { ...prev, status } : prev));
-        if (task.status === "completed") {
-          // 终态后读取 Batch 与 Candidate。
-          return Promise.all([
-            api.get("/projects/{pid}/generation-batches/{gbid}", {
-              params: { pid: projectId, gbid: track.batchId },
-            }),
-            api.get("/chunks/{cid}/candidates", {
-              params: { cid: chunkId },
-              query: { page: 1, page_size: 20 },
-            }),
-          ]);
-        }
-        return null;
-      })
-      .then((data) => {
-        if (data) {
-          const [batch, candPage] = data as [
-            components["schemas"]["GenerationBatchResponse"],
-            { items: CandidateItem[] },
-          ];
-          setTrack((prev) => (prev ? { ...prev, batch, status: "completed" } : prev));
-          setCandidates(candPage.items);
-        }
-      })
-      .catch((err: unknown) => {
-        // 主动取消不提示。
-        if (err instanceof Error && err.name === "AbortError") return;
-        toast.error("跟踪生成状态失败");
-      })
-      .finally(() => {
-        pollRef.current = null;
-      });
-  }, [projectId, track, chunkId]);
+  }, [chunkId, selectedTemplate, selectedModel, startTrack]);
 
   useEffect(() => {
-    if (!track) return;
-    if (track.status === "completed" || track.status === "failed" || track.status === "cancelled") {
-      return;
-    }
-    pollTrack();
-    pollTimerRef.current = window.setInterval(pollTrack, 3000);
-    return () => {
-      if (pollTimerRef.current) window.clearInterval(pollTimerRef.current);
-      pollRef.current?.abort();
-    };
-  }, [track, pollTrack]);
-
-  // 页面卸载 / 切换文档时取消轮询。
-  useEffect(() => {
-    return () => {
-      if (pollTimerRef.current) window.clearInterval(pollTimerRef.current);
-      pollRef.current?.abort();
-    };
-  }, []);
+    if (!track?.batch) return;
+    api.get("/chunks/{cid}/candidates", {
+      params: { cid: chunkId },
+      query: { page: 1, page_size: 20 },
+    }).then((page) => setCandidates(page.items)).catch(() => {});
+  }, [chunkId, track?.batch]);
 
   // retry：跟随新 Task/Batch。
   const handleRetry = useCallback(async () => {
     if (!track?.batch || track.batch.provenance_status !== "verified") return;
     setSubmitting(true);
     try {
-      const key = `gen-retry-${track.batchId}-${Date.now()}`;
+      const key = retryKeyRef.current?.batchId === track.batchId
+        ? retryKeyRef.current.key
+        : `gen-retry-${crypto.randomUUID()}`;
+      retryKeyRef.current = { batchId: track.batchId, key };
       const result = await api.post(
         "/projects/{pid}/generation-batches/{gbid}/retry",
         undefined,
@@ -245,16 +162,8 @@ export default function ChunkDetailPage() {
           headers: { "Idempotency-Key": key },
         },
       );
-      const next: TrackState = {
-        taskId: result.task_id,
-        batchId: result.generation_batch_id,
-        status: "queued",
-      };
-      setTrack(next);
-      const url = new URL(window.location.href);
-      url.searchParams.set("task_id", result.task_id);
-      url.searchParams.set("generation_batch_id", result.generation_batch_id);
-      window.history.replaceState(null, "", url.toString());
+      retryKeyRef.current = null;
+      startTrack(result.task_id, result.generation_batch_id);
       toast.success("已创建重试任务");
     } catch (e) {
       if (e instanceof ApiErrorException) {
@@ -265,7 +174,7 @@ export default function ChunkDetailPage() {
     } finally {
       setSubmitting(false);
     }
-  }, [projectId, track]);
+  }, [projectId, track, startTrack]);
 
   if (loading) {
     return (
@@ -284,7 +193,7 @@ export default function ChunkDetailPage() {
   }
 
   const showBusy =
-    track && (track.status === "queued" || track.status === "processing");
+    track && ["queued", "processing", "cancelling"].includes(track.status);
 
   return (
     <div className="p-6">
@@ -380,7 +289,24 @@ export default function ChunkDetailPage() {
                 <span className="text-sm font-medium">生成状态</span>
                 <StatusBadge status={track.status} />
                 {showBusy && <Loader2Icon className="size-3 animate-spin" />}
+                {track.canCancel && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={cancelling}
+                    onClick={() => void cancelTask()}
+                  >
+                    <XCircleIcon className="size-3" />
+                    {cancelling ? "取消中" : "取消任务"}
+                  </Button>
+                )}
               </div>
+
+              {(track.errorCode || track.errorMessage) && (
+                <div className="mt-2 text-xs text-destructive">
+                  {track.errorCode ? `${track.errorCode}: ` : ""}{track.errorMessage}
+                </div>
+              )}
               <div className="text-xs text-muted-foreground space-y-1">
                 <div>
                   任务 ID: <span className="font-mono">{track.taskId}</span>

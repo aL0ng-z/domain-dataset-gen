@@ -79,6 +79,58 @@ async def test_batch_generate_returns_202_accepted(
     assert "generation_batch_id" in body
 
 
+async def test_single_generate_reuses_same_idempotency_key(
+    db_session: AsyncSession, org, client: AsyncClient,
+):
+    """同一单条生成请求重放时返回原 Task/Batch，不重复创建。"""
+    res, token = await _make_ready_doc(db_session, org)
+    chunk = res["chunks"][0]
+    headers = {**_headers(token), "Idempotency-Key": "single-timeout-replay"}
+    payload = {
+        "prompt_template_id": str(res["tpl"].id),
+        "model_config_id": str(res["model"].id),
+    }
+
+    first = await client.post(
+        f"/api/chunks/{chunk.id}/generate", json=payload, headers=headers
+    )
+    second = await client.post(
+        f"/api/chunks/{chunk.id}/generate", json=payload, headers=headers
+    )
+
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+    assert second.json()["task_id"] == first.json()["task_id"]
+    assert second.json()["generation_batch_id"] == first.json()["generation_batch_id"]
+
+
+async def test_batch_generate_rejects_reused_key_for_different_request(
+    db_session: AsyncSession, org, client: AsyncClient,
+):
+    """同 key 改变选择范围时返回稳定的 409 领域错误。"""
+    res, token = await _make_ready_doc(db_session, org)
+    endpoint = (
+        f"/api/projects/{org['projects']['a'].id}/documents/"
+        f"{res['doc'].id}/generate-batch"
+    )
+    headers = {**_headers(token), "Idempotency-Key": "batch-key-reused"}
+    base = {
+        "prompt_template_id": str(res["tpl"].id),
+        "model_config_id": str(res["model"].id),
+    }
+
+    first = await client.post(endpoint, json=base, headers=headers)
+    changed = await client.post(
+        endpoint,
+        json={**base, "selected_chunk_ids": [str(res["chunks"][0].id)]},
+        headers=headers,
+    )
+
+    assert first.status_code == 202, first.text
+    assert changed.status_code == 409, changed.text
+    assert changed.json()["code"] == "IDEMPOTENCY_KEY_REUSED"
+
+
 # ---------------------------------------------------------------------------
 # 404 / 409 领域 code 联合
 # ---------------------------------------------------------------------------

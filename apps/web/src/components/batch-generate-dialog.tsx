@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
@@ -14,7 +14,8 @@ import {
 } from "@/components/ui/dialog";
 import { api, ApiErrorException } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
-import { Loader2Icon } from "lucide-react";
+import { useGenerationTracking } from "@/hooks/use-generation-tracking";
+import { Loader2Icon, RotateCwIcon, XCircleIcon } from "lucide-react";
 
 type Template = components["schemas"]["PromptTemplateResponse"];
 type ModelConfig = components["schemas"]["ModelConfigResponse"];
@@ -67,12 +68,12 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
   const [mode, setMode] = useState<"all" | "selected">("all");
   const [selectedChunkIds, setSelectedChunkIds] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
-  const [track, setTrack] = useState<{
-    taskId: string;
-    batchId: string;
-    status: "queued" | "processing" | "completed" | "failed" | "cancelled";
-    batch?: components["schemas"]["GenerationBatchResponse"];
-  } | null>(null);
+  const submissionKeyRef = useRef<{ intent: string; key: string } | null>(null);
+  const retryKeyRef = useRef<{ batchId: string; key: string } | null>(null);
+  const { track, startTrack, cancelTask, cancelling } = useGenerationTracking(projectId, {
+    onTerminal: () => onGenerated?.(),
+    onError: () => toast.error("跟踪生成状态失败"),
+  });
 
   // 打开时加载配置与 ready chunks。
   useEffect(() => {
@@ -104,7 +105,6 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
       if (tpl) setSelectedTemplate(tpl.id);
       const mdl = modelData.items.find((m) => m.is_default) || modelData.items[0];
       if (mdl) setSelectedModel(mdl.id);
-      setTrack(null);
     });
   }, [open, projectId, docId]);
 
@@ -125,6 +125,17 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
     }
     setSubmitting(true);
     try {
+      const intent = JSON.stringify([
+        docId,
+        selectedTemplate,
+        selectedModel,
+        mode,
+        mode === "selected" ? [...selectedChunkIds].sort() : null,
+      ]);
+      const key = submissionKeyRef.current?.intent === intent
+        ? submissionKeyRef.current.key
+        : `gen-submit-${crypto.randomUUID()}`;
+      submissionKeyRef.current = { intent, key };
       const result = await api.post(
         "/projects/{pid}/documents/{did}/generate-batch",
         {
@@ -132,13 +143,13 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
           model_config_id: selectedModel,
           selected_chunk_ids: mode === "selected" ? selectedChunkIds : undefined,
         },
-        { params: { pid: projectId, did: docId } },
+        {
+          params: { pid: projectId, did: docId },
+          headers: { "Idempotency-Key": key },
+        },
       );
-      setTrack({
-        taskId: result.task_id,
-        batchId: result.generation_batch_id,
-        status: "queued",
-      });
+      submissionKeyRef.current = null;
+      startTrack(result.task_id, result.generation_batch_id);
       toast.success("批量生成任务已提交");
     } catch (e) {
       if (e instanceof ApiErrorException) {
@@ -151,49 +162,35 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
     }
   };
 
-  // 轮询跟踪（任务卡 §6：以 Task 为执行状态源）。
-  // 依赖只含 taskId/projectId，避免 status 变化时重建 interval 导致轮询计数混乱。
-  useEffect(() => {
-    if (!track || (track.status !== "queued" && track.status !== "processing")) return;
-    const controller = new AbortController();
-    const poll = () => {
-      api
-        .get("/projects/{pid}/tasks/{tid}", {
-          params: { pid: projectId, tid: track.taskId },
-          signal: controller.signal,
-        })
-        .then((task) => {
-          const status = task.status as Track["status"];
-          if (["completed", "failed", "cancelled"].includes(status)) {
-            return api.get("/projects/{pid}/generation-batches/{gbid}", {
-              params: { pid: projectId, gbid: track.batchId },
-            });
-          }
-          setTrack((prev) => (prev ? { ...prev, status } : prev));
-          return null;
-        })
-        .then((batch) => {
-          if (batch) {
-            setTrack((prev) =>
-              prev
-                ? { ...prev, status: "completed", batch: batch as components["schemas"]["GenerationBatchResponse"] }
-                : prev,
-            );
-            onGenerated?.();
-          }
-        })
-        .catch(() => {});
-    };
-    poll();
-    const timer = window.setInterval(poll, 3000);
-    return () => {
-      window.clearInterval(timer);
-      controller.abort();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [track?.taskId, projectId]);
-
-  type Track = NonNullable<typeof track>;
+  const handleRetry = async () => {
+    if (!track?.batch || track.batch.provenance_status !== "verified") return;
+    setSubmitting(true);
+    try {
+      const key = retryKeyRef.current?.batchId === track.batchId
+        ? retryKeyRef.current.key
+        : `gen-retry-${crypto.randomUUID()}`;
+      retryKeyRef.current = { batchId: track.batchId, key };
+      const result = await api.post(
+        "/projects/{pid}/generation-batches/{gbid}/retry",
+        undefined,
+        {
+          params: { pid: projectId, gbid: track.batchId },
+          headers: { "Idempotency-Key": key },
+        },
+      );
+      retryKeyRef.current = null;
+      startTrack(result.task_id, result.generation_batch_id);
+      toast.success("已创建重试任务");
+    } catch (e) {
+      if (e instanceof ApiErrorException) {
+        toast.error(e.apiError.message);
+      } else {
+        toast.error("重试失败");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -213,7 +210,23 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
               {["queued", "processing"].includes(track.status) && (
                 <Loader2Icon className="size-3 animate-spin" />
               )}
+              {track.canCancel && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={cancelling}
+                  onClick={() => void cancelTask()}
+                >
+                  <XCircleIcon className="size-3" />
+                  {cancelling ? "取消中" : "取消任务"}
+                </Button>
+              )}
             </div>
+            {(track.errorCode || track.errorMessage) && (
+              <div className="text-xs text-destructive">
+                {track.errorCode ? `${track.errorCode}: ` : ""}{track.errorMessage}
+              </div>
+            )}
             <div className="text-xs text-muted-foreground space-y-1">
               <div>任务 ID: <span className="font-mono">{track.taskId}</span></div>
               <div>批次 ID: <span className="font-mono">{track.batchId}</span></div>
@@ -243,9 +256,30 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
                     </ul>
                   ) : null;
                 })()}
+                {track.batch.provenance_status !== "verified" && (
+                  <div className="text-amber-600">
+                    provenance: {track.batch.provenance_status}
+                    {track.batch.provenance_error_code
+                      ? ` (${track.batch.provenance_error_code})`
+                      : ""}
+                    ，禁止重试和作为可信导出来源。
+                  </div>
+                )}
               </div>
             )}
             <DialogFooter>
+              {track.batch &&
+                ["failed", "cancelled"].includes(track.batch.status) &&
+                track.batch.provenance_status === "verified" && (
+                  <Button
+                    variant="outline"
+                    disabled={submitting}
+                    onClick={() => void handleRetry()}
+                  >
+                    <RotateCwIcon className="size-3" />
+                    重试失败项
+                  </Button>
+                )}
               <Button onClick={() => onOpenChange(false)}>关闭</Button>
             </DialogFooter>
           </div>

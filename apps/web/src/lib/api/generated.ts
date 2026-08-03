@@ -1160,12 +1160,30 @@ export interface paths {
         /**
          * Download Export
          * @description 仅 completed 且完整性非失败时返回绑定 object_version_id 的短时 307。
-         *
-         *     签发前 HEAD 校验 size/hash metadata；不符返回 409 EXPORT_INTEGRITY_ERROR。
          */
         get: operations["export_download"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/exports/{eid}/download-link": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Download Link
+         * @description Bearer 鉴权后即时签发短期 URL；响应及中间代理不得缓存。
+         */
+        post: operations["export_create_download_link"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1197,15 +1215,17 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Verify Export
-         * @description 导出完整性验证。
-         *
-         *     - 浅验证：核对 DB 产物字段、version id 与对象 metadata。
-         *     - ``deep=true``：流式重算 payload 与 manifest hash，返回逐项结果。
+         * Verify Export Legacy Get
+         * @deprecated
+         * @description 兼容旧客户端；新调用应使用 POST。
          */
-        get: operations["export_verify"];
+        get: operations["export_verify_legacy_get"];
         put?: never;
-        post?: never;
+        /**
+         * Verify Export
+         * @description 执行浅验证；``deep=true`` 时流式重算两个固定对象版本的 hash。
+         */
+        post: operations["export_verify"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3213,6 +3233,21 @@ export interface components {
              */
             task_id: string;
         };
+        /**
+         * ExportDownloadLinkResponse
+         * @description 经鉴权即时签发的短期对象版本下载链接。
+         */
+        ExportDownloadLinkResponse: {
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Filename */
+            filename: string;
+            /** Url */
+            url: string;
+        };
         /** ExportProfileCreate */
         ExportProfileCreate: {
             /**
@@ -3358,22 +3393,17 @@ export interface components {
         };
         /**
          * ExportVerifyResponse
-         * @description T11：深度验证结果（逐项）。
+         * @description T11：浅验证与可选深度验证结果。
          */
         ExportVerifyResponse: {
             /** Deep */
-            deep?: {
-                [key: string]: unknown;
-            } | null;
+            deep?: components["schemas"]["VerifyDeepItem"][] | null;
             /**
              * Export Id
              * Format: uuid
              */
             export_id: string;
-            /** Shallow */
-            shallow: {
-                [key: string]: unknown;
-            };
+            shallow: components["schemas"]["VerifyShallowResult"];
             /** Status */
             status: string;
         };
@@ -4879,6 +4909,24 @@ export interface components {
             /** Request Id */
             request_id?: string | null;
         };
+        /** VerifyDeepItem */
+        VerifyDeepItem: {
+            /** Detail */
+            detail?: string | null;
+            /** Item */
+            item: string;
+            /** Ok */
+            ok: boolean;
+        };
+        /** VerifyShallowResult */
+        VerifyShallowResult: {
+            /** Db Fields Present */
+            db_fields_present: boolean;
+            /** Metadata Ok */
+            metadata_ok: boolean | null;
+            /** Version Id Present */
+            version_id_present: boolean;
+        };
     };
     responses: never;
     parameters: never;
@@ -5765,7 +5813,9 @@ export interface operations {
     chunk_generate: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 cid: string;
             };
@@ -9664,7 +9714,9 @@ export interface operations {
     document_trigger_generate_batch: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+            };
             path: {
                 pid: string;
                 did: string;
@@ -10555,6 +10607,65 @@ export interface operations {
             };
         };
     };
+    export_create_download_link: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+                eid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportDownloadLinkResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     export_get_manifest: {
         parameters: {
             query?: never;
@@ -10574,6 +10685,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SnapshotManifestResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    export_verify_legacy_get: {
+        parameters: {
+            query?: {
+                deep?: boolean;
+            };
+            header?: never;
+            path: {
+                pid: string;
+                eid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportVerifyResponse"];
                 };
             };
             /** @description 认证失败 */
@@ -10657,15 +10838,6 @@ export interface operations {
             };
             /** @description 权限不足 */
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description 资源不存在 */
-            404: {
                 headers: {
                     [name: string]: unknown;
                 };
