@@ -213,6 +213,11 @@ class CuratedItemService:
             raise CuratedReviewStateConflictError("条目已 approved，不可重复批准")
         if existing.status != "draft":
             raise CuratedReviewStateConflictError("仅 draft 条目可批准")
+        # 不能批准已过期 revision（expected_revision 必须等于 current_revision）。
+        if expected != existing.current_revision:
+            raise CuratedRevisionConflictError(
+                "expected_revision 不等于当前版本", existing.current_revision
+            )
 
         # 门禁预检：source Candidate approved + content 非空 object。
         from app.models.generation import Candidate

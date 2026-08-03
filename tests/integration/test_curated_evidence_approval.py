@@ -801,6 +801,42 @@ class TestCuratedGate:
         assert r.status_code == 409, r.text
         assert r.json()["code"] == "CURATED_APPROVAL_GATE_FAILED"
 
+    async def test_approve_expired_revision_rejected(self, client, org, db_session):
+        """approve 过期 expected_revision（并发编辑已把版本推进到 v2）-> 409。"""
+        headers = await _login(client, "reviewer_user")
+        res = await _make_doc_chain(db_session, org["projects"]["a"].id, org["users"]["editor"].id)
+        candidate, _ = await _make_candidate(db_session, res)
+        item_id = await _review_and_promote(client, "reviewer_user", candidate.id, res)
+        pid = org["projects"]["a"].id
+
+        # editor 先编辑到 v2（当前版本 1 -> 2）。
+        editor_headers = await _login(client, "editor_user")
+        r_edit = await client.patch(
+            f"/api/projects/{pid}/curated-items/{item_id}",
+            headers=editor_headers,
+            json={
+                "content": {"question": "v2", "answer": "a2"},
+                "revision_note": "v2",
+                "expected_revision": 1,
+            },
+        )
+        assert r_edit.status_code == 200, r_edit.text
+
+        # reviewer 用过期 expected_revision=1 批准 -> 409（不能批准已过期 revision）。
+        r = await client.post(
+            f"/api/projects/{pid}/curated-items/{item_id}/review",
+            headers=headers,
+            json={"action": "approve", "reason": None, "expected_revision": 1},
+        )
+        assert r.status_code == 409, r.text
+        assert r.json()["code"] == "CURATED_REVISION_CONFLICT"
+        # 没有产生矛盾 approval record。
+        fresh = (
+            await db_session.execute(select(CuratedItem).where(CuratedItem.id == item_id))
+        ).scalar_one()
+        assert fresh.status == "draft"
+        assert fresh.approval_record_id is None
+
 
 # ---------------------------------------------------------------------------
 # 验收 8/9/10：数据库不可变约束 + deferred trigger + hash 绑定
