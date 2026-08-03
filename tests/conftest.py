@@ -125,6 +125,19 @@ async def _prepare_schema(_test_engine) -> AsyncGenerator[None, None]:
             await conn.execute(text("DROP TABLE IF EXISTS task_attempts CASCADE"))
             await conn.execute(text("DROP TABLE IF EXISTS tasks CASCADE"))
             await conn.execute(text("DROP TYPE IF EXISTS task_status"))
+        # T11：exports 表缺 status 列时重建导出三表（旧 worktree 模型创建的旧 schema）。
+        # 级联删除保证 FK 顺序，create_all 按当前模型重建。
+        export_drift = await conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='exports' AND column_name IN ('status','is_legacy')"
+            )
+        )
+        export_cols = {row[0] for row in export_drift.fetchall()}
+        if "status" not in export_cols or "is_legacy" not in export_cols:
+            await conn.execute(text("DROP TABLE IF EXISTS export_artifact_seals CASCADE"))
+            await conn.execute(text("DROP TABLE IF EXISTS snapshot_manifests CASCADE"))
+            await conn.execute(text("DROP TABLE IF EXISTS exports CASCADE"))
         await conn.run_sync(Base.metadata.create_all)
     async with _test_engine.begin() as conn:
         await conn.execute(text(_TRUNCATE_ALL_SQL))

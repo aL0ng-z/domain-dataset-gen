@@ -283,6 +283,8 @@ async def _export_common(
     ).scalar_one_or_none()
     if export is None:
         raise RuntimeError(f"导出记录不存在: {export_id}")
+    if export.project_id != ctx.project_id:
+        raise RuntimeError("导出记录与任务项目不一致")
     if export.status not in ("queued", "processing"):
         raise RuntimeError(f"导出状态非法: {export.status}")
     await _mark_export_processing(db, export_id, ctx.task_id)
