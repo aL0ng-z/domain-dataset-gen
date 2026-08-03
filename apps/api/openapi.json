@@ -436,12 +436,15 @@
       },
       "CandidateReview": {
         "additionalProperties": false,
+        "description": "审核请求：supported/partially_supported 至少一个 span；\nunsupported/out_of_scope 必须提供 reject_reason。客户端不得发送额外 action。",
         "properties": {
           "evidence_spans": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "items": {
+                  "$ref": "#/components/schemas/EvidenceSpan"
+                },
+                "type": "array"
               },
               {
                 "type": "null"
@@ -473,6 +476,7 @@
       },
       "CandidateUpdate": {
         "additionalProperties": false,
+        "description": "PATCH 请求仅允许 ``{\"content\": {\"question\": \"...\", \"answer\": \"...\"}}``。\n\n不声明 status/review 字段：editor 直接 PATCH status=approved 会被 extra=forbid\n拒绝为 422（任务卡 §5.1、§11 验收标准 6）。",
         "properties": {
           "content": {
             "anyOf": [
@@ -1723,6 +1727,54 @@
       },
       "CuratedItemResponse": {
         "properties": {
+          "approval_record_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Record Id"
+          },
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By"
+          },
+          "approved_revision_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved Revision Id"
+          },
           "candidate_id": {
             "format": "uuid",
             "title": "Candidate Id",
@@ -1737,6 +1789,10 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
+          },
+          "current_revision": {
+            "title": "Current Revision",
+            "type": "integer"
           },
           "id": {
             "format": "uuid",
@@ -1775,26 +1831,62 @@
           "item_type",
           "status",
           "promoted_by",
+          "current_revision",
+          "approved_revision_id",
+          "approval_record_id",
+          "approved_by",
+          "approved_at",
           "created_at",
           "updated_at"
         ],
         "title": "CuratedItemResponse",
         "type": "object"
       },
-      "CuratedItemUpdate": {
+      "CuratedItemReview": {
         "additionalProperties": false,
+        "description": "审批请求：action 仅 approve|needs_revision，仅 reviewer。\n\napprove 绑定当前 revision（expected_revision == current_revision）与证据快照；\nneeds_revision 要求非空 reason，退回 draft 并清空当前批准指针（历史不可变）。",
         "properties": {
-          "content": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "reason": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Content"
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "action",
+          "expected_revision"
+        ],
+        "title": "CuratedItemReview",
+        "type": "object"
+      },
+      "CuratedItemUpdate": {
+        "additionalProperties": false,
+        "description": "编辑请求：只允许 editor 修改 draft；请求中不存在 status（422）。\n\n含 expected_revision 乐观锁：不等于当前版本返回 409 CURATED_REVISION_CONFLICT，\n不覆盖他人更新。",
+        "properties": {
+          "content": {
+            "additionalProperties": true,
+            "title": "Content",
+            "type": "object"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
           },
           "revision_note": {
             "anyOf": [
@@ -1806,28 +1898,29 @@
               }
             ],
             "title": "Revision Note"
-          },
-          "status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Status"
           }
         },
+        "required": [
+          "content",
+          "expected_revision"
+        ],
         "title": "CuratedItemUpdate",
         "type": "object"
       },
       "CuratedRevisionResponse": {
         "properties": {
+          "canonicalization_version": {
+            "title": "Canonicalization Version",
+            "type": "string"
+          },
           "content": {
             "additionalProperties": true,
             "title": "Content",
             "type": "object"
+          },
+          "content_sha256": {
+            "title": "Content Sha256",
+            "type": "string"
           },
           "created_at": {
             "format": "date-time",
@@ -1859,13 +1952,20 @@
               }
             ],
             "title": "Revision Note"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
           }
         },
         "required": [
           "id",
           "curated_item_id",
           "revised_by",
+          "version",
           "content",
+          "content_sha256",
+          "canonicalization_version",
           "revision_note",
           "created_at"
         ],
@@ -2193,7 +2293,13 @@
               "GENERATION_IN_PROGRESS",
               "GENERATION_NOT_RETRYABLE",
               "GENERATION_RETRY_EXISTS",
-              "GENERATION_PROVENANCE_INVALID"
+              "GENERATION_PROVENANCE_INVALID",
+              "CANDIDATE_REVIEW_STATE_CONFLICT",
+              "CANDIDATE_EVIDENCE_REQUIRED",
+              "CANDIDATE_ALREADY_PROMOTED",
+              "CURATED_REVISION_CONFLICT",
+              "CURATED_APPROVAL_GATE_FAILED",
+              "CURATED_REVIEW_STATE_CONFLICT"
             ],
             "title": "Code",
             "type": "string"
@@ -2252,6 +2358,10 @@
             "title": "Document Id",
             "type": "string"
           },
+          "end_char": {
+            "title": "End Char",
+            "type": "integer"
+          },
           "heading_path": {
             "anyOf": [
               {
@@ -2290,6 +2400,10 @@
               }
             ],
             "title": "Source Pages"
+          },
+          "start_char": {
+            "title": "Start Char",
+            "type": "integer"
           }
         },
         "required": [
@@ -2297,11 +2411,46 @@
           "curated_item_id",
           "document_id",
           "chunk_id",
+          "start_char",
+          "end_char",
           "source_pages",
           "heading_path",
           "quote_text"
         ],
         "title": "EvidenceLinkResponse",
+        "type": "object"
+      },
+      "EvidenceSpan": {
+        "additionalProperties": false,
+        "description": "单个结构化证据 span：Chunk + 精确原文字符范围（Unicode code point、左闭右开）。\n\n服务端对不可变 Chunk.content 做精确校验：\n``0 <= start_char < end_char <= len(chunk.content)`` 且\n``chunk.content[start_char:end_char] == quote_text``。",
+        "properties": {
+          "chunk_id": {
+            "format": "uuid",
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "end_char": {
+            "minimum": 1.0,
+            "title": "End Char",
+            "type": "integer"
+          },
+          "quote_text": {
+            "title": "Quote Text",
+            "type": "string"
+          },
+          "start_char": {
+            "minimum": 0.0,
+            "title": "Start Char",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chunk_id",
+          "start_char",
+          "end_char",
+          "quote_text"
+        ],
+        "title": "EvidenceSpan",
         "type": "object"
       },
       "ExportProfileCreate": {
@@ -3521,6 +3670,37 @@
         "title": "PaginatedResponse[CuratedItemResponse]",
         "type": "object"
       },
+      "PaginatedResponse_CuratedRevisionResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CuratedRevisionResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "PaginatedResponse[CuratedRevisionResponse]",
+        "type": "object"
+      },
       "PaginatedResponse_DatasetItemResponse_": {
         "properties": {
           "items": {
@@ -3612,6 +3792,37 @@
           "page_size"
         ],
         "title": "PaginatedResponse[DocumentResponse]",
+        "type": "object"
+      },
+      "PaginatedResponse_EvidenceLinkResponse_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceLinkResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "PaginatedResponse[EvidenceLinkResponse]",
         "type": "object"
       },
       "PaginatedResponse_ExportProfileResponse_": {
@@ -6856,6 +7067,16 @@
             },
             "description": "权限不足"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -6943,6 +7164,16 @@
               }
             },
             "description": "权限不足"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
           },
           "422": {
             "content": {
@@ -9814,6 +10045,16 @@
             },
             "description": "资源不存在"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -10042,9 +10283,9 @@
         ]
       }
     },
-    "/api/projects/{pid}/curated-items/{iid}/evidence-links": {
+    "/api/projects/{pid}/curated-items/{iid}/evidence": {
       "get": {
-        "operationId": "curated_item_list_evidence_links",
+        "operationId": "curated_item_list_evidence",
         "parameters": [
           {
             "in": "path",
@@ -10065,6 +10306,29 @@
               "title": "Iid",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -10072,11 +10336,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/EvidenceLinkResponse"
-                  },
-                  "title": "Response Curated Item List Evidence Links",
-                  "type": "array"
+                  "$ref": "#/components/schemas/PaginatedResponse_EvidenceLinkResponse_"
                 }
               }
             },
@@ -10138,7 +10398,115 @@
             "HTTPBearer": []
           }
         ],
-        "summary": "List Evidence Links",
+        "summary": "List Evidence",
+        "tags": [
+          "curated-items"
+        ]
+      }
+    },
+    "/api/projects/{pid}/curated-items/{iid}/review": {
+      "post": {
+        "operationId": "curated_item_review",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "iid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Iid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CuratedItemReview"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CuratedItemResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Review Curated Item",
         "tags": [
           "curated-items"
         ]
@@ -10167,6 +10535,29 @@
               "title": "Iid",
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -10174,11 +10565,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/CuratedRevisionResponse"
-                  },
-                  "title": "Response Curated Item List Revisions",
-                  "type": "array"
+                  "$ref": "#/components/schemas/PaginatedResponse_CuratedRevisionResponse_"
                 }
               }
             },
