@@ -4,6 +4,42 @@
 
 ---
 
+## T11 不可变导出与完整快照（2026-08-03）
+
+### 本轮总览
+
+| 模块 | 内容 | 状态 |
+|------|------|------|
+| `libs/domain/domain/manifest.py` | `manifest-cjson-v1` / `artifact-seal-cjson-v1` 版本化 canonical JSON/SHA-256：UTF-8/NFC/key 排序/紧凑空白/allow_nan=False；hash 排除自身字段（manifest_sha256/seal_sha256），供后端、迁移、SQL helper 跨端重算 | 已完成 |
+| `apps/api/app/models/export.py` | SnapshotManifest 增加 export_id/project_id/schema/canonical 版本/manifest_sha256/sealed_at/is_legacy；Export 增加 status/source_type/request_fingerprint/profile_snapshot/formatter_version/task_id/retry_count/error/产物对象字段/artifact_seal_id/is_legacy；新增 ExportArtifactSeal 一对一封存表；FK 删除关系改 RESTRICT | 已完成 |
+| `apps/api/migrations/versions/t11_immutable_export_snapshot.py` | 存量 Export/Snapshot 标 legacy（不伪造 hash）；扩展列 + 回填；seal 表 + CHECK；`_t11_canon_jsonb` 共享 canonical SQL helper（PL/pgSQL，与 domain.manifest 跨语言 golden 一致）；BEFORE INSERT seal trigger 复算 hash 核对 payload/列/关联；deferred trigger 保证 completed Export 恰有一 seal 且字段一致；completed Export/Snapshot/seal 不可 UPDATE/DELETE；downgrade 预检停止 | 已完成 |
+| `libs/storage/storage/minio_client.py` | ensure_bucket 支持 versioned=True 并验证 versioning；put_object_versioned 返回 version_id（同 hash 复用）；stat_object_version 按 version_id HEAD 校验 metadata；download_object_version 按 version_id 下载历史字节；presign_object_version 签发绑定版本 URL；metadata 仅用 `x-amz-meta-` 前缀（否则 SignatureDoesNotMatch） | 已完成 |
+| `apps/api/app/services/export_manifest.py` | 完整 manifest 构建（只消费 T03/T06/T08/T09/T10 冻结引用）；证据版本图（Document/ParseJob/ChunkSet/Chunk）；生成链路版本图（Candidate/GenerationRun/Batch/Prompt/Model 快照）；递归 provenance_gap 扫描阻断导出 | 已完成 |
+| `apps/api/app/services/export_service.py` | 创建 queued Export + Snapshot INSERT + seal INSERT + fenced finalize（同事务）；profile 快照与请求指纹 | 已完成 |
+| `apps/api/app/services/export_trigger.py` | 共享触发逻辑（finalized/revision/hash 校验 + 幂等 + queued Export + Task 创建） | 已完成 |
+| `apps/api/app/workers/export_worker.py` | 快照封存 -> 只读 manifest 渲染 -> 内容寻址 versioned key（payload-{sha256}.{ext} / manifest-{sha256}.json）-> seal+finalize 同事务；终态钩子从 Task.error_code 传播稳定错误码 | 已完成 |
+| `apps/api/app/routers/datasets.py` / `benchmarks.py` / `exports.py` | 导出触发改 202 {export_id, task_id, status:queued}；export list/manifest/download/verify API（HEAD 校验、绑定 version 307、浅/深验证、legacy unverified） | 已完成 |
+| `apps/api/app/workers/errors.py` / `runner.py` | TaskError 携带稳定错误码；classify_error 原样映射（PROVENANCE_SNAPSHOT_MISSING 等） | 已完成 |
+| `apps/web` | 导出发起携带 expected_source_revision/sha256（finalize 门禁）；导出历史页真实状态/下载/验证/重试；重新生成 API 类型 | 已完成 |
+| 测试 | `test_export_snapshot.py`（12 项集成）+ `test_export_migration.py`（5 项）+ `test_manifest_golden.py`（11 项单元）+ storage 契约测试 13 项 + 前端适配 | 已完成 |
+
+### 设计决策
+
+- **完整快照而非 ID 列表**：manifest 保存冻结的 CuratedRevision 内容/版本、证据引用（Document/ParseJob/ChunkSet/Chunk 版本图）、生成链路（Candidate/GenerationRun/Batch/PromptTemplateVersion/ModelConfig 快照）；formatter 只读 manifest 渲染 payload，绝不重新读取当前业务表。任何缺失链路经递归 `provenance_gap` 扫描阻断导出（PROVENANCE_SNAPSHOT_MISSING），不用 null 冒充完整验证。
+- **内容寻址 + 对象版本双保险**：key 为 `{project_id}/exports/{export_id}/payload-{sha256}.{ext}`（每次 Export 唯一，同扩展名不同格式不共享 key）；outputs bucket 启用 versioning，保存每次 PUT 的 version_id；外部写入同 key 新版本后，旧 Export 仍按记录 version_id 下载原字节。
+- **seal + fenced finalize 同事务**：上传完成后 INSERT ExportArtifactSeal（BEFORE INSERT trigger 用共享 `_t11_canon_jsonb` 复算 hash、核对 payload/列与关联 Export/Snapshot）；再以 run token CAS 更新 Export completed。deferred constraint 在 commit 前复核一对一关系；任一步失败整笔回滚，不留“seal 已发布、Export 未完成”半状态。
+- **跨语言 canonical 一致性**：PL/pgSQL `_t11_canon_jsonb` 与 domain.manifest 对同一 seal_payload 产生相同 SHA-256（10 组 golden 用例跨端验证通过），杜绝“DB 校验 hash 与后端计算 hash 漂移”。
+- **legacy 诚实标记**：迁移前存量 Export/Snapshot 全部标 is_legacy=true，API 返回 integrity_status=unverified_legacy 且不伪造 hash；项目删除不再级联抹掉导出审计历史（FK 改 RESTRICT）。
+- **稳定错误码**：PROVENANCE_SNAPSHOT_MISSING / EXPORT_SOURCE_NOT_FINALIZED / EXPORT_REVISION_CONFLICT / EXPORT_IMMUTABLE / EXPORT_INTEGRITY_ERROR / EXPORT_PROVENANCE_GAP 登记到领域 ERROR_CODES；worker 用 TaskError 携带稳定 code，终态钩子从 Task.error_code 传播到 Export。
+
+### 验证状态
+
+- `run-migration-smoke.sh`（upgrade head → downgrade → upgrade head）通过；错误 seal hash/错配对象被 DB 拒绝，合法 seal+completed 原子提交成功。
+- 后端 T11 专项 17 项通过（导出集成 12 + 迁移 5）；storage 契约 13 项、manifest golden 11 项通过。
+- `python -m ruff check apps/api libs tests scripts` 通过；`python scripts/export_openapi.py --check` 通过；前端 tsc/lint/test 通过（build 需 `next build --webpack`，Turbopack 对 CJK Google Font 拉取失败为环境限制）。
+
+---
+
 ## T10 Dataset/Benchmark 编组（2026-08-03）
 
 ### 本轮总览
