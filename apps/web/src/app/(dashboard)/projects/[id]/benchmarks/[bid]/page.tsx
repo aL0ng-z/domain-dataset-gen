@@ -14,20 +14,30 @@ import {
 } from "@/components/ui/card";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
+import { EligibleItemPicker } from "@/components/eligible-item-picker";
 import { usePagination } from "@/hooks/use-pagination";
-import { api } from "@/lib/api";
+import { api, ApiErrorException, formatJsonPreview } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
 import {
   ArrowLeftIcon,
   TrashIcon,
   DownloadIcon,
   Loader2Icon,
+  PlusIcon,
+  LockIcon,
 } from "lucide-react";
 
-type BenchmarkDetail = components["schemas"]["BenchmarkResponse"];
-type BenchmarkCase = components["schemas"]["BenchmarkCaseResponse"];
+type BenchmarkDetail = components["schemas"]["BenchmarkDetailResponse"];
+type BenchmarkCase = components["schemas"]["BenchmarkCaseDetailResponse"];
 type ExportProfile = components["schemas"]["ExportProfileResponse"];
 type ExportProfilesPage = components["schemas"]["PaginatedResponse_ExportProfileResponse_"];
+
+const ROLE_LEVEL: Record<string, number> = {
+  admin: 4,
+  reviewer: 3,
+  editor: 2,
+  viewer: 1,
+};
 
 export default function BenchmarkDetailPage() {
   const params = useParams<{ id: string; bid: string }>();
@@ -42,6 +52,12 @@ export default function BenchmarkDetailPage() {
   const [exportProfiles, setExportProfiles] = useState<ExportProfile[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [removingId, setRemovingId] = useState<string | null>(null);
+  const [finalizing, setFinalizing] = useState(false);
+  const [canEdit, setCanEdit] = useState(false);
+  const [canReview, setCanReview] = useState(false);
+  const [finalizeGate, setFinalizeGate] = useState<string | null>(null);
 
   const fetchData = useCallback(() => {
     setLoading(true);
@@ -59,12 +75,19 @@ export default function BenchmarkDetailPage() {
           query: { page: 1, page_size: 50 },
         })
         .catch(() => ({ items: [] as ExportProfile[] } as ExportProfilesPage)),
+      api
+        .get("/auth/me")
+        .then((u) => (u as { role?: string }).role)
+        .catch(() => undefined),
     ])
-      .then(([bm, casesData, profiles]) => {
+      .then(([bm, casesData, profiles, role]) => {
         setBenchmark(bm);
         setCases(casesData.items);
         setTotal(casesData.total);
         setExportProfiles(profiles.items);
+        const level = role ? ROLE_LEVEL[role] ?? 0 : 0;
+        setCanEdit(level >= (ROLE_LEVEL.editor ?? 0));
+        setCanReview(level >= (ROLE_LEVEL.reviewer ?? 0));
         if (profiles.items.length > 0 && !selectedProfile) {
           setSelectedProfile(profiles.items[0].id);
         }
@@ -79,17 +102,32 @@ export default function BenchmarkDetailPage() {
 
   const handleRemoveCase = useCallback(
     async (caseId: string) => {
+      if (!window.confirm("确认移除该用例？移除后 composition revision/hash 将更新。")) {
+        return;
+      }
+      setRemovingId(caseId);
       try {
         await api.delete("/projects/{pid}/benchmarks/{bid}/cases/{case_id}", {
           params: { pid: projectId, bid: benchmarkId, case_id: caseId },
         });
         toast.success("已移除");
-        fetchData();
-      } catch {
-        toast.error("移除失败");
+        if (cases.length === 1 && page > 1) {
+          setPage(page - 1);
+        } else {
+          fetchData();
+        }
+      } catch (err) {
+        const e = err as ApiErrorException;
+        if (e?.apiError?.code === "COMPOSITION_NOT_DRAFT") {
+          toast.error("容器已 finalize，无法移除");
+        } else {
+          toast.error("移除失败");
+        }
+      } finally {
+        setRemovingId(null);
       }
     },
-    [projectId, benchmarkId, fetchData]
+    [projectId, benchmarkId, cases.length, page, setPage, fetchData],
   );
 
   const handleExport = useCallback(async () => {
@@ -112,36 +150,110 @@ export default function BenchmarkDetailPage() {
     }
   }, [projectId, benchmarkId, selectedProfile]);
 
+  const handleFinalize = useCallback(async () => {
+    if (!benchmark) return;
+    const expected = `${benchmark.case_count} 用例 · revision ${benchmark.composition_revision} · ${benchmark.composition_sha256.slice(0, 12)}…`;
+    if (!window.confirm(`确认冻结该基准集？\n${expected}\n冻结后不可再添加或移除用例。`)) {
+      return;
+    }
+    setFinalizing(true);
+    setFinalizeGate(null);
+    try {
+      const result = await api.post("/projects/{pid}/benchmarks/{bid}/finalize", {
+        expected_revision: benchmark.composition_revision,
+        expected_sha256: benchmark.composition_sha256,
+      }, {
+        params: { pid: projectId, bid: benchmarkId },
+      });
+      setBenchmark(result as BenchmarkDetail);
+      toast.success("基准集已冻结");
+      fetchData();
+    } catch (err) {
+      const e = err as ApiErrorException;
+      if (e?.apiError?.code === "COMPOSITION_REVISION_CONFLICT") {
+        setFinalizeGate("composition-conflict");
+        toast.error("编组内容已变化，请刷新后重新确认");
+        fetchData();
+      } else if (e?.apiError?.code === "COMPOSITION_FINALIZE_GATE_FAILED") {
+        setFinalizeGate("gate-failed");
+        toast.error("冻结复核失败：条目资格已失效");
+        fetchData();
+      } else if (e?.apiError?.code === "COMPOSITION_HASH_INVALID") {
+        setFinalizeGate("hash-invalid");
+        toast.error("composition hash 校验异常，禁止继续冻结");
+      } else {
+        toast.error("冻结失败");
+      }
+    } finally {
+      setFinalizing(false);
+    }
+  }, [projectId, benchmarkId, benchmark, fetchData]);
+
   const caseColumns: ColumnDef<BenchmarkCase>[] = [
     {
       key: "ordinal",
       header: "序号",
-      className: "max-w-md",
       render: (row) => <span>{row.ordinal}</span>,
     },
     {
-      key: "curated_item_id",
-      header: "知识条目 ID",
+      key: "preview",
+      header: "内容预览",
+      className: "max-w-md",
+      render: (row) => {
+        const pinned = row.curated_item.pinned_content as Record<string, unknown> | undefined;
+        const question =
+          typeof pinned?.question === "string" ? pinned.question : undefined;
+        return (
+          <div className="min-w-0">
+            <div className="text-sm truncate">
+              {question || formatJsonPreview(row.curated_item.pinned_content).slice(0, 60)}
+            </div>
+            <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2">
+              <span>{row.curated_item.item_type}</span>
+              {row.curated_item.current_revision !==
+                row.curated_item.pinned_revision.version && (
+                <span className="text-amber-600">
+                  条目已修订到 v{row.curated_item.current_revision}（容器仍固定
+                  v{row.curated_item.pinned_revision.version}）
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      key: "created_at",
+      header: "添加时间",
       render: (row) => (
-        <span className="font-mono text-xs truncate block max-w-md">
-          {row.curated_item_id}
+        <span className="text-xs text-muted-foreground">
+          {new Date(row.created_at).toLocaleString()}
         </span>
       ),
     },
-    {
-      key: "actions",
-      header: "操作",
-      render: (row) => (
-        <Button
-          variant="ghost"
-          size="xs"
-          onClick={() => handleRemoveCase(row.id)}
-        >
-          <TrashIcon className="size-3" />
-          移除
-        </Button>
-      ),
-    },
+    ...(canEdit
+      ? [
+          {
+            key: "actions",
+            header: "操作",
+            render: (row: BenchmarkCase) => (
+              <Button
+                variant="ghost"
+                size="xs"
+                disabled={removingId === row.id}
+                onClick={() => handleRemoveCase(row.id)}
+              >
+                {removingId === row.id ? (
+                  <Loader2Icon className="size-3 animate-spin" />
+                ) : (
+                  <TrashIcon className="size-3" />
+                )}
+                移除
+              </Button>
+            ),
+          },
+        ]
+      : []),
   ];
 
   if (loading && !benchmark) {
@@ -153,6 +265,8 @@ export default function BenchmarkDetailPage() {
       </div>
     );
   }
+
+  const finalized = benchmark?.status === "finalized";
 
   return (
     <div className="p-6">
@@ -174,9 +288,56 @@ export default function BenchmarkDetailPage() {
               <span className="text-sm text-muted-foreground">
                 {total} 用例
               </span>
+              {benchmark && (
+                <span className="text-xs text-muted-foreground font-mono">
+                  rev {benchmark.composition_revision} ·{" "}
+                  {benchmark.composition_sha256.slice(0, 12)}
+                </span>
+              )}
             </div>
           </div>
+          <div className="flex gap-2">
+            {canEdit && !finalized && (
+              <Button onClick={() => setPickerOpen(true)}>
+                <PlusIcon className="size-4" />
+                添加用例
+              </Button>
+            )}
+            {canReview && !finalized && (
+              <Button
+                variant="outline"
+                onClick={handleFinalize}
+                disabled={finalizing}
+              >
+                {finalizing ? (
+                  <Loader2Icon className="size-4 animate-spin" />
+                ) : (
+                  <LockIcon className="size-4" />
+                )}
+                冻结
+              </Button>
+            )}
+          </div>
         </div>
+        {finalized && (
+          <div className="mt-2 text-xs text-muted-foreground flex items-center gap-3">
+            <span>已冻结：rev {benchmark?.finalized_revision}</span>
+            <span className="font-mono">{benchmark?.finalized_sha256}</span>
+            {benchmark?.finalized_at && (
+              <span>{new Date(benchmark.finalized_at).toLocaleString()}</span>
+            )}
+          </div>
+        )}
+        {finalizeGate === "composition-conflict" && (
+          <div className="mt-2 text-sm text-amber-600">
+            编组内容已变化：请确认最新 revision/hash 后重新冻结。
+          </div>
+        )}
+        {finalizeGate === "gate-failed" && (
+          <div className="mt-2 text-sm text-destructive">
+            冻结复核失败：某条目已退审或不再满足资格，无法冻结。
+          </div>
+        )}
       </div>
 
       {/* Export panel */}
@@ -223,6 +384,9 @@ export default function BenchmarkDetailPage() {
       <Card>
         <CardHeader>
           <CardTitle>评测用例</CardTitle>
+          {finalized && (
+            <CardDescription>该基准集已冻结，仅可只读查看。</CardDescription>
+          )}
         </CardHeader>
         <CardContent>
           <DataTable
@@ -236,6 +400,15 @@ export default function BenchmarkDetailPage() {
           />
         </CardContent>
       </Card>
+
+      <EligibleItemPicker
+        containerType="benchmark"
+        projectId={projectId}
+        containerId={benchmarkId}
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onAdded={fetchData}
+      />
     </div>
   );
 }

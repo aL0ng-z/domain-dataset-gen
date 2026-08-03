@@ -58,7 +58,6 @@ export function EligibleItemPicker({ containerType, projectId, containerId, open
     containerType === "dataset"
       ? "/projects/{pid}/datasets/{did}/items"
       : "/projects/{pid}/benchmarks/{bid}/cases";
-  const addField = containerType === "dataset" ? "curated_item_id" : "curated_item_id";
   const eligibleLabel = containerType === "dataset" ? "添加条目" : "添加用例";
   const gateNote =
     containerType === "dataset"
