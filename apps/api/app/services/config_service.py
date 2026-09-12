@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base
 from app.models.config import ParserProfile, TaskPolicy
+from parsing.snapshot import LOCAL_PARSERS
 
 
 class ConfigService:
@@ -64,7 +65,7 @@ class ConfigService:
             if mapped.get("task_type", obj.task_type) != obj.task_type:
                 obj.is_default = False  # Defaults belong to their original task category.
         for key, value in mapped.items():
-            if value is not None:
+            if value is not None or self.model_class.__table__.columns[key].nullable:
                 setattr(obj, key, value)
         obj.version = obj.version + 1
         await self.db.flush()
@@ -132,7 +133,7 @@ class ParserProfileService(ConfigService):
 
         endpoint_ref = (options or {}).get("endpoint_ref")
         registry = get_registry()
-        if parser_name in ("pymupdf4llm", "mock"):
+        if parser_name in LOCAL_PARSERS:
             return
         if not endpoint_ref:
             raise ValueError("invalid_parser_endpoint: 缺少 endpoint_ref")
@@ -155,9 +156,9 @@ class ParserProfileService(ConfigService):
         obj = await self.get(config_id)
         if obj is None:
             return None
-        parser_name = kwargs.get("parser_name", obj.parser_name)
-        if kwargs.get("parser_options") is not None:
-            cleaned = self._validate_for_parser(parser_name, kwargs["parser_options"])
-            self._resolve_endpoint_ref(parser_name, cleaned)
+        parser_name = kwargs.get("parser_name") or obj.parser_name
+        cleaned = self._validate_for_parser(parser_name, kwargs.get("parser_options", obj.parser_options))
+        self._resolve_endpoint_ref(parser_name, cleaned)
+        if "parser_options" in kwargs:
             kwargs["parser_options"] = cleaned
         return await super().update(config_id, **kwargs)

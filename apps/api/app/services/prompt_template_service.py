@@ -117,7 +117,9 @@ class PromptTemplateService:
 
         Returns a dict with keys: input_prompt, output, input_tokens, output_tokens, latency_ms.
         """
-        import time
+        from app.generation.renderer import render_input_prompt, render_messages
+        from app.generation.snapshot import build_model_config_snapshot, build_prompt_template_snapshot
+        from llm import LLMClient
 
         template = await self.get(template_id)
         if template is None:
@@ -137,51 +139,28 @@ class PromptTemplateService:
         if model_config is None:
             raise ValueError("模型配置不存在")
 
-        # Build the prompt
-        user_prompt = template.user_prompt_template.replace("{{content}}", chunk.content)
-        user_prompt = user_prompt.replace("{{heading_path}}", chunk.heading_path or "")
-
-        input_prompt = (
-            f"[System]: {template.system_prompt}\n\n[User]: {user_prompt}"
+        snapshot = build_prompt_template_snapshot(template)
+        model_snapshot = build_model_config_snapshot(model_config)
+        input_prompt = render_input_prompt(snapshot, chunk.content, chunk.heading_path or "")
+        messages = render_messages(snapshot, chunk.content, chunk.heading_path or "")
+        client = LLMClient(
+            base_url=model_config.base_url,
+            api_key=model_config.api_key_encrypted,
+            model_name=model_config.model_name,
+            temperature=model_config.temperature,
+            max_tokens=model_config.max_tokens,
+            extra_params=model_snapshot.get("extra_params"),
         )
-
-        # Call LLM via OpenAI-compatible API
-        import httpx
-
-        start_ms = time.monotonic_ns() // 1_000_000
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    f"{model_config.base_url}/v1/chat/completions",
-                    headers={"Authorization": f"Bearer {model_config.api_key_encrypted}"},
-                    json={
-                        "model": model_config.model_name,
-                        "messages": [
-                            {"role": "system", "content": template.system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "temperature": model_config.temperature,
-                        "max_tokens": model_config.max_tokens,
-                        **(model_config.extra_params or {}),
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-        except Exception as e:
-            raise ValueError(f"LLM调用失败: {e}") from e
-
-        end_ms = time.monotonic_ns() // 1_000_000
-        latency_ms = end_ms - start_ms
-
-        output_text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        usage = data.get("usage", {})
-        input_tokens = usage.get("prompt_tokens", 0)
-        output_tokens = usage.get("completion_tokens", 0)
-
+            response = await client.chat_completion(messages, response_format={"type": "json_object"})
+        except Exception as exc:
+            raise ValueError(f"LLM调用失败: {type(exc).__name__}") from exc
+        finally:
+            await client.client.close()
         return {
             "input_prompt": input_prompt,
-            "output": output_text,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "latency_ms": latency_ms,
+            "output": response.content,
+            "input_tokens": response.input_tokens,
+            "output_tokens": response.output_tokens,
+            "latency_ms": response.latency_ms,
         }

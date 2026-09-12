@@ -288,7 +288,11 @@ function Start-DockerInfra {
 
     Invoke-NativeChecked `
         -Exe "docker" `
-        -Arguments @("compose", "-f", "infra/docker/docker-compose.yml", "--env-file", "infra/docker/.env", "up", "-d") `
+        -Arguments @("compose", "-f", "infra/docker/docker-compose.yml", "--env-file", "infra/docker/.env", "stop", "worker") `
+        -FailureMessage "Could not stop the Docker worker before local startup"
+    Invoke-NativeChecked `
+        -Exe "docker" `
+        -Arguments @("compose", "-f", "infra/docker/docker-compose.yml", "--env-file", "infra/docker/.env", "up", "-d", "postgres", "redis", "minio", "minio-init") `
         -FailureMessage "Docker infrastructure startup failed"
     Wait-ServiceReady -Service "postgres" -Label "PostgreSQL"
     Wait-ServiceReady -Service "redis" -Label "Redis"
@@ -378,14 +382,17 @@ function Wait-HttpReady {
 }
 
 function Start-ApplicationProcesses {
-    Write-Host "==> [6/7] Starting API and Web..."
+    Write-Host "==> [6/7] Starting API, Worker and Web..."
     $apiPidFile = Join-Path $LogDir "R1plus-API.pid"
     $webPidFile = Join-Path $LogDir "R1plus-Web.pid"
     $apiLog = Join-Path $LogDir "R1plus-API.log"
     $webLog = Join-Path $LogDir "R1plus-Web.log"
+    $workerPidFile = Join-Path $LogDir "R1plus-Worker.pid"
+    $workerLog = Join-Path $LogDir "R1plus-Worker.log"
 
     Stop-ByPidFile -PidFile $apiPidFile -Label "API"
     Stop-ByPidFile -PidFile $webPidFile -Label "Web"
+    Stop-ByPidFile -PidFile $workerPidFile -Label "Worker"
 
     if (Test-PortInUse -Port $ApiPort) {
         Write-Host "Port $ApiPort is already in use. Stop the existing process and retry." -ForegroundColor Red
@@ -405,6 +412,19 @@ function Start-ApplicationProcesses {
         Write-Host "API failed to become ready. Last API log lines:" -ForegroundColor Red
         Get-Content -LiteralPath $apiLog -Tail 80 -ErrorAction SilentlyContinue
         exit 1
+    }
+
+    Start-BackgroundPowerShell `
+        -Title "R1plus-Worker-Conda" `
+        -WorkDir (Join-Path $RepoRoot "apps\api") `
+        -Command "& $pythonQuoted -m app.workers.runner" `
+        -PidFile $workerPidFile `
+        -LogFile $workerLog
+    Start-Sleep -Seconds 2
+    $workerProcessId = [int](Get-Content -LiteralPath $workerPidFile -Raw).Trim()
+    if (-not (Get-Process -Id $workerProcessId -ErrorAction SilentlyContinue)) {
+        Get-Content -LiteralPath $workerLog -Tail 60
+        throw "Worker exited during startup. Check logs/R1plus-Worker.log."
     }
 
     $WebPort = Get-FreeWebPort
@@ -432,6 +452,7 @@ New-LocalEnvFiles
 Assert-CurrentCondaEnv
 Set-BackendPythonPath
 Assert-RuntimeReady
+Stop-ByPidFile -PidFile (Join-Path $LogDir "R1plus-Worker.pid") -Label "Worker"
 Start-DockerInfra
 Invoke-DatabaseSetup
 
@@ -451,6 +472,7 @@ Write-Host "Admin login     : admin / admin123"
 Write-Host "Conda env       : $env:CONDA_DEFAULT_ENV"
 Write-Host "Python          : $script:PythonExe"
 Write-Host "API log         : logs\R1plus-API.log"
+Write-Host "Worker log      : logs\R1plus-Worker.log"
 Write-Host "Web log         : logs\R1plus-Web.log"
 Write-Host ""
 Write-Host "Stop app only   : .\scripts\dev-stop.ps1"

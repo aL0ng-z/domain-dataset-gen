@@ -118,6 +118,8 @@ const REMOTE_PARSERS = new Set(["mineru", "paddleocr", "mineru_local_service", "
 export function ParserProfileTab({ projectId }: { projectId: string }) {
   const [items, setItems] = useState<ParserProfileItem[]>([]);
   const [endpoints, setEndpoints] = useState<ParserEndpoint[]>([]);
+  const [endpointsLoading, setEndpointsLoading] = useState(true);
+  const [endpointsFailed, setEndpointsFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editItem, setEditItem] = useState<ParserProfileItem | null>(null);
@@ -142,12 +144,19 @@ export function ParserProfileTab({ projectId }: { projectId: string }) {
   }, [projectId]);
 
   const fetchEndpoints = useCallback(() => {
+    setEndpointsLoading(true);
+    setEndpointsFailed(false);
     api
       .get("/projects/{pid}/parser-profiles/endpoints", {
         params: { pid: projectId },
       })
       .then((data) => setEndpoints(data.items))
-      .catch(() => toast.error("加载服务端端点列表失败"));
+      .catch(() => {
+        setEndpoints([]);
+        setEndpointsFailed(true);
+        toast.error("加载服务端端点列表失败");
+      })
+      .finally(() => setEndpointsLoading(false));
   }, [projectId]);
 
   useEffect(() => {
@@ -203,8 +212,8 @@ export function ParserProfileTab({ projectId }: { projectId: string }) {
       return;
     }
     const parserName = form.parser_name;
-    if (REMOTE_PARSERS.has(parserName) && !form.endpoint_ref) {
-      toast.error("请选择服务端端点");
+    if (REMOTE_PARSERS.has(parserName) && (endpointsLoading || endpointsFailed || !endpoints.some((endpoint) => endpoint.parser_name === parserName && endpoint.endpoint_ref === form.endpoint_ref))) {
+      toast.error("请选择已注册且可用的服务端端点");
       return;
     }
     setSaving(true);
@@ -329,6 +338,10 @@ export function ParserProfileTab({ projectId }: { projectId: string }) {
   };
 
   const endpointOptions = endpoints.filter((e) => e.parser_name === form.parser_name);
+  const requiresEndpoint = REMOTE_PARSERS.has(form.parser_name);
+  const endpointUnavailable = requiresEndpoint && (
+    endpointsLoading || endpointsFailed || !endpointOptions.some((endpoint) => endpoint.endpoint_ref === form.endpoint_ref)
+  );
 
   const columns: ColumnDef<ParserProfileItem>[] = [
     {
@@ -349,6 +362,17 @@ export function ParserProfileTab({ projectId }: { projectId: string }) {
       key: "is_default",
       header: "默认",
       render: (row) => (row.is_default ? "✓" : ""),
+    },
+    {
+      key: "availability",
+      header: "使用条件",
+      render: (row) => {
+        if (!REMOTE_PARSERS.has(row.parser_name)) return "本地解析";
+        if (endpointsLoading) return "检查端点中";
+        if (endpointsFailed) return "端点列表读取失败";
+        return endpoints.some((endpoint) => endpoint.parser_name === row.parser_name && endpoint.endpoint_ref === row.parser_options?.endpoint_ref)
+          ? "端点已注册" : "端点未配置，请编辑选择";
+      },
     },
     {
       key: "actions",
@@ -425,6 +449,7 @@ export function ParserProfileTab({ projectId }: { projectId: string }) {
                   id="parser-endpoint"
                   className="w-full rounded border px-3 py-1.5 text-sm bg-transparent"
                   value={form.endpoint_ref}
+                  disabled={endpointsLoading || endpointsFailed || endpointOptions.length === 0}
                   onChange={(e) => setForm({ ...form, endpoint_ref: e.target.value })}
                 >
                   <option value="">选择端点...</option>
@@ -438,6 +463,17 @@ export function ParserProfileTab({ projectId }: { projectId: string }) {
                 <p className="text-xs text-muted-foreground mt-1">
                   端点由管理员管理；Token 由后端环境变量提供，不在本页展示或保存。
                 </p>
+                {endpointsLoading ? <p className="mt-2 text-sm text-muted-foreground">正在加载服务端端点...</p>
+                  : endpointsFailed ? <div role="alert" className="mt-2 text-sm text-destructive">
+                    端点列表加载失败，暂时无法保存服务型解析器配置。
+                    <Button variant="outline" size="sm" onClick={fetchEndpoints}>重试端点列表</Button>
+                  </div>
+                    : endpointOptions.length === 0 ? <p role="alert" className="mt-2 text-sm text-destructive">
+                      尚未注册此解析器的服务端端点，请联系管理员配置后重试；也可选择 PyMuPDF 本地解析。
+                    </p>
+                      : form.endpoint_ref && endpointUnavailable ? <p role="alert" className="mt-2 text-sm text-destructive">
+                        原配置的服务端端点已不可用，请重新选择。
+                      </p> : null}
               </div>
             )}
             {form.parser_name === "mineru_local" && (
@@ -448,7 +484,7 @@ export function ParserProfileTab({ projectId }: { projectId: string }) {
             {renderFunctionalFields()}
           </div>
           <DialogFooter>
-            <Button onClick={handleSave} disabled={saving}>
+            <Button onClick={handleSave} disabled={saving || endpointUnavailable}>
               {saving ? <Loader2Icon className="size-4 animate-spin" /> : null}
               保存
             </Button>

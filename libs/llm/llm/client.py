@@ -13,11 +13,13 @@ class LLMClient:
         model_name: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        extra_params: dict | None = None,
     ):
         self.client = AsyncOpenAI(base_url=base_url, api_key=api_key, max_retries=0)
         self.model_name = model_name
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.extra_params = dict(extra_params or {})
 
     async def chat_completion(
         self,
@@ -31,10 +33,17 @@ class LLMClient:
             try:
                 start_ms = int(time.time() * 1000)
 
+                # 执行重试由 Task 预算控制；仅模型采样参数传给网关。
                 kwargs: dict = {
+                    key: value for key, value in self.extra_params.items()
+                    if key not in {"retries", "timeout_seconds"} and value is not None
+                }
+                kwargs.update({
                     "model": self.model_name,
                     "messages": messages,
-                }
+                })
+                if self.extra_params.get("timeout_seconds") is not None:
+                    kwargs["timeout"] = self.extra_params["timeout_seconds"]
                 if self.temperature is not None:
                     kwargs["temperature"] = self.temperature
                 if self.max_tokens is not None:

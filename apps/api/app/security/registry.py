@@ -214,12 +214,22 @@ class ParserEndpointRegistry:
 
     def list_for_ui(self) -> list[dict]:
         """只读安全投影：不返回主机/IP/端口/allowlist 或网络区域内部细节。"""
+        from app.config import settings
+
+        def credential_ready(definition: EndpointDefinition) -> bool:
+            if not definition.credential_ref:
+                return True
+            name = definition.credential_ref.split(":", 1)[-1].lower()
+            value = getattr(settings, name, None)
+            raw = value.get_secret_value() if hasattr(value, "get_secret_value") else value
+            return bool(raw and str(raw).strip())
+
         return [
             {
                 "endpoint_ref": d.endpoint_ref,
                 "display_name": d.display_name,
                 "parser_name": d.parser_name,
-                "credential_configured": self.requires_credential(d),
+                "credential_configured": credential_ready(d),
             }
             for d in sorted(self._by_ref.values(), key=lambda d: d.endpoint_ref)
         ]

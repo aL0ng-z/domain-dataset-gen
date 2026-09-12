@@ -86,7 +86,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev-start-conda.ps1
 5. 检查当前 shell 是否为 `DatasetGen` / Python 3.11
 6. 执行 Alembic 数据库迁移
 7. 执行种子脚本，创建默认管理员和默认项目
-8. 在后台启动 FastAPI 后端和 Next.js 前端
+8. 在同一 `DatasetGen` 环境中启动 FastAPI 与独立任务 runner，再启动 Next.js 前端
 
 启动完成后访问：
 
@@ -104,6 +104,7 @@ API 和 Web 会在后台 PowerShell 进程中运行，日志写入：
 
 ```text
 logs/R1plus-API.log
+logs/R1plus-Worker.log
 logs/R1plus-Web.log
 ```
 
@@ -292,6 +293,16 @@ http://localhost:8000/docs
 
 #### 2.3.7 启动前端 Web
 
+运行前端前，另开终端启动后台任务执行器（缺少此进程时任务会一直排队）：
+
+```powershell
+conda activate DatasetGen
+cd apps\api
+python -m app.workers.runner
+```
+
+runner 与 API 从同一 `apps/api/.env` 读取配置。本地 conda 启动脚本会自动管理这个进程，并停止同项目的 Docker worker；Docker worker 仅在显式启用 `--profile worker` 时启动，不能和本地 runner 混用不同配置。
+
 打开终端 B：
 
 ```powershell
@@ -401,6 +412,8 @@ docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env d
 | `PaddleOCR-VL（本地部署服务 / MLX）` | macOS/MLX 本地服务链路 | 主要面向原 Mac 环境；Windows 下不建议作为第一选择 |
 
 新手建议先用 `PyMuPDF4LLM（本地）` 跑通。如果中文抽取结果出现大量问号或替换字符，再改用 `MinerU2.5-Pro（本地模型）`。
+
+远程 API 和本地 HTTP 服务型解析器须先由管理员在 `apps/api/.env` 的 `PARSER_ENDPOINT_REGISTRY` 注册端点，服务凭证也配置在该文件。重启 API/runner，再运行 seed，会为已注册端点补齐 `endpoint_ref` 配置；未注册端点不再预置不可用的解析配置。仅填写 API Token 不会自动注册端点。本地模型 `mineru_local` 不需要 HTTP 端点，模型目录在实际执行的 runner 主机上必须存在。
 
 `models/` 是本地大模型权重目录，已经被 `.gitignore` 忽略，不会进入 Git。新机器 clone 仓库后如果没有模型文件，本地 MinerU 不能用，但默认 PyMuPDF 仍可用。
 

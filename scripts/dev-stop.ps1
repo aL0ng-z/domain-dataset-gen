@@ -40,10 +40,11 @@ function Stop-ByPidFile {
 Write-Host "==> Stopping API / Web processes..."
 Stop-ByPidFile -PidFile (Join-Path $PidDir 'R1plus-API.pid') -Label 'R1plus-API'
 Stop-ByPidFile -PidFile (Join-Path $PidDir 'R1plus-Web.pid') -Label 'R1plus-Web'
+Stop-ByPidFile -PidFile (Join-Path $PidDir 'R1plus-Worker.pid') -Label 'R1plus-Worker'
 
 if ($All) {
     Write-Host "==> Stopping Docker infrastructure containers..."
-    docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env stop
+    docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env --profile worker stop
 }
 
 Write-Host "==> Done"

@@ -26,6 +26,7 @@ from app.security.snapshot import (
     scan_for_secrets,
     validate_parser_options,
 )
+from parsing.snapshot import LOCAL_PARSERS
 
 
 class ParseFreezeError(ValueError):
@@ -61,7 +62,7 @@ def freeze_profile_policy(
         raise ParseFreezeError("unsafe_parser_option", str(exc)) from exc
 
     # 2. 本地解析器（无需 endpoint）直接构造 profile 快照（无 policy）。
-    if parser_name in ("pymupdf4llm", "mock"):
+    if parser_name in LOCAL_PARSERS:
         profile_snapshot = build_profile_snapshot(
             profile_id=str(profile.id),
             version=profile.version,

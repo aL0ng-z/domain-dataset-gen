@@ -24,7 +24,6 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { api } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
@@ -437,289 +436,7 @@ function ModelConfigTab({ projectId }: { projectId: string }) {
 // ParserProfile 安全合同（T03）：不再允许自由网络字段。
 // 组件实现在 components/parser-profile-tab.tsx。
 import { ParserProfileTab } from "@/components/parser-profile-tab";
-
-/* ========= Generic Config Tab ========= */
-interface GenericConfig extends ConfigItem {
-  description?: string;
-  config_json?: string;
-}
-
-function GenericConfigTab({
-  projectId,
-  endpoint,
-  label,
-  extraFields,
-}: {
-  projectId: string;
-  endpoint: string;
-  label: string;
-  extraFields?: { key: string; label: string; type?: string }[];
-}) {
-  const [items, setItems] = useState<GenericConfig[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editItem, setEditItem] = useState<GenericConfig | null>(null);
-  const [form, setForm] = useState<Record<string, string>>({
-    name: "",
-    description: "",
-    config_json: "{}",
-  });
-
-  const fetchItems = useCallback(() => {
-    setLoading(true);
-    const query = { page: 1, page_size: 100 };
-    if (endpoint === "chunk-profiles") {
-      api
-        .get("/projects/{pid}/chunk-profiles/", { params: { pid: projectId }, query })
-        .then((data) => setItems(data.items as GenericConfig[]))
-        .catch(() => toast.error(`加载${label}失败`))
-        .finally(() => setLoading(false));
-    } else if (endpoint === "export-profiles") {
-      api
-        .get("/projects/{pid}/export-profiles/", { params: { pid: projectId }, query })
-        .then((data) => setItems(data.items as GenericConfig[]))
-        .catch(() => toast.error(`加载${label}失败`))
-        .finally(() => setLoading(false));
-    } else {
-      api
-        .get("/projects/{pid}/task-policies/", { params: { pid: projectId }, query })
-        .then((data) => setItems(data.items as GenericConfig[]))
-        .catch(() => toast.error(`加载${label}失败`))
-        .finally(() => setLoading(false));
-    }
-  }, [projectId, endpoint, label]);
-
-  useEffect(() => {
-    const refreshTimer = window.setTimeout(() => {
-      fetchItems();
-    }, 0);
-    return () => window.clearTimeout(refreshTimer);
-  }, [fetchItems]);
-
-  const openCreate = () => {
-    setEditItem(null);
-    const defaults: Record<string, string> = {
-      name: "",
-      description: "",
-      config_json: "{}",
-    };
-    extraFields?.forEach((f) => {
-      defaults[f.key] = "";
-    });
-    setForm(defaults);
-    setDialogOpen(true);
-  };
-
-  const openEdit = (item: GenericConfig) => {
-    setEditItem(item);
-    const vals: Record<string, string> = {
-      name: item.name,
-      description: item.description || "",
-      config_json:
-        typeof item.config_json === "string"
-          ? item.config_json
-          : JSON.stringify(item.config_json || {}, null, 2),
-    };
-    extraFields?.forEach((f) => {
-      vals[f.key] = String((item as Record<string, unknown>)[f.key] || "");
-    });
-    setForm(vals);
-    setDialogOpen(true);
-  };
-
-  const handleSave = async () => {
-    if (!form.name?.trim()) {
-      toast.error("请输入名称");
-      return;
-    }
-    try {
-      // GenericConfigTab 覆盖多个 profile 类型（chunk/export/task-policy），
-      // 按 endpoint 构造对应 create/update 请求体（字段均允许可选/部分）。
-      const commonBody = {
-        name: form.name,
-        ...(form.description ? { description: form.description } : {}),
-      };
-      if (endpoint === "chunk-profiles") {
-        const body: components["schemas"]["ChunkProfileCreate"] & { options?: unknown } = {
-          ...commonBody,
-          max_tokens: Number(form.max_tokens || 512),
-          overlap_tokens: Number(form.overlap_tokens || 50),
-          strategy: form.strategy || "hybrid_heading_recursive",
-        };
-        if (editItem) {
-          const patch: components["schemas"]["ChunkProfileUpdate"] = { ...body };
-          await api.patch(
-            "/projects/{pid}/chunk-profiles/{config_id}",
-            patch,
-            { params: { pid: projectId, config_id: editItem.id } }
-          );
-        } else {
-          await api.post("/projects/{pid}/chunk-profiles/", body, {
-            params: { pid: projectId },
-          });
-        }
-      } else if (endpoint === "export-profiles") {
-        const body: components["schemas"]["ExportProfileCreate"] = {
-          ...commonBody,
-          format: form.format || "sft_jsonl",
-        };
-        if (editItem) {
-          const patch: components["schemas"]["ExportProfileUpdate"] = { ...body };
-          await api.patch(
-            "/projects/{pid}/export-profiles/{config_id}",
-            patch,
-            { params: { pid: projectId, config_id: editItem.id } }
-          );
-        } else {
-          await api.post("/projects/{pid}/export-profiles/", body, {
-            params: { pid: projectId },
-          });
-        }
-      } else {
-        const body: components["schemas"]["TaskPolicyCreate"] = {
-          ...commonBody,
-          task_type: form.task_type || "parse",
-          max_retries: Number(form.max_retries || 3),
-          timeout_seconds: Number(form.timeout_seconds || 300),
-          concurrency_limit: Number(form.concurrency_limit || 5),
-        };
-        if (editItem) {
-          const patch: components["schemas"]["TaskPolicyUpdate"] = { ...body };
-          await api.patch(
-            "/projects/{pid}/task-policies/{config_id}",
-            patch,
-            { params: { pid: projectId, config_id: editItem.id } }
-          );
-        } else {
-          await api.post("/projects/{pid}/task-policies/", body, {
-            params: { pid: projectId },
-          });
-        }
-      }
-      toast.success("保存成功");
-      setDialogOpen(false);
-      fetchItems();
-    } catch {
-      toast.error("保存失败");
-    }
-  };
-
-  const columns: ColumnDef<GenericConfig>[] = [
-    {
-      key: "name",
-      header: "名称",
-      render: (row) => (
-        <button
-          className="text-primary hover:underline"
-          onClick={() => openEdit(row)}
-        >
-          {row.name}
-        </button>
-      ),
-    },
-    {
-      key: "description",
-      header: "描述",
-      render: (row) => row.description || "-",
-    },
-    ...(extraFields?.map((f) => ({
-      key: f.key,
-      header: f.label,
-      render: (row: GenericConfig) =>
-        String((row as Record<string, unknown>)[f.key] || "-"),
-    })) || []),
-    {
-      key: "actions",
-      header: "操作",
-      render: (row) => (
-        <Button variant="ghost" size="xs" onClick={() => openEdit(row)}>
-          <PencilIcon className="size-3" />
-          编辑
-        </Button>
-      ),
-    },
-  ];
-
-  return (
-    <div>
-      <div className="flex justify-end mb-4">
-        <Button onClick={openCreate}>
-          <PlusIcon className="size-4" />
-          新建
-        </Button>
-      </div>
-      {loading ? (
-        <div className="py-8 text-center text-sm text-muted-foreground">
-          加载中...
-        </div>
-      ) : (
-        <DataTable
-          columns={columns}
-          data={items}
-          total={items.length}
-          page={1}
-          pageSize={100}
-          onPageChange={() => {}}
-          rowKey={(r) => r.id}
-        />
-      )}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>
-              {editItem ? `编辑${label}` : `新建${label}`}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div>
-              <label className="text-sm font-medium">名称</label>
-              <Input
-                value={form.name || ""}
-                onChange={(e) =>
-                  setForm({ ...form, name: e.target.value })
-                }
-              />
-            </div>
-            <div>
-              <label className="text-sm font-medium">描述</label>
-              <Input
-                value={form.description || ""}
-                onChange={(e) =>
-                  setForm({ ...form, description: e.target.value })
-                }
-              />
-            </div>
-            {extraFields?.map((f) => (
-              <div key={f.key}>
-                <label className="text-sm font-medium">{f.label}</label>
-                <Input
-                  type={f.type || "text"}
-                  value={form[f.key] || ""}
-                  onChange={(e) =>
-                    setForm({ ...form, [f.key]: e.target.value })
-                  }
-                />
-              </div>
-            ))}
-            <div>
-              <label className="text-sm font-medium">配置 (JSON)</label>
-              <Textarea
-                value={form.config_json || "{}"}
-                onChange={(e) =>
-                  setForm({ ...form, config_json: e.target.value })
-                }
-                className="min-h-24 font-mono text-xs"
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button onClick={handleSave}>保存</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
+import { ChunkProfileTab, ExportProfileTab, TaskPolicyTab } from "@/components/typed-config-tabs";
 
 /* ========= Main Settings Page ========= */
 export default function SettingsPage() {
@@ -772,19 +489,7 @@ export default function SettingsPage() {
               <CardTitle>切分配置 (ChunkProfile)</CardTitle>
             </CardHeader>
             <CardContent>
-              <GenericConfigTab
-                projectId={projectId}
-                endpoint="chunk-profiles"
-                label="切分配置"
-                extraFields={[
-                  {
-                    key: "max_tokens",
-                    label: "最大Token数",
-                    type: "number",
-                  },
-                  { key: "strategy", label: "切分策略" },
-                ]}
-              />
+              <ChunkProfileTab projectId={projectId} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -795,14 +500,7 @@ export default function SettingsPage() {
               <CardTitle>导出配置 (ExportProfile)</CardTitle>
             </CardHeader>
             <CardContent>
-              <GenericConfigTab
-                projectId={projectId}
-                endpoint="export-profiles"
-                label="导出配置"
-                extraFields={[
-                  { key: "format", label: "导出格式" },
-                ]}
-              />
+              <ExportProfileTab projectId={projectId} />
             </CardContent>
           </Card>
         </TabsContent>
@@ -813,23 +511,7 @@ export default function SettingsPage() {
               <CardTitle>任务策略 (TaskPolicy)</CardTitle>
             </CardHeader>
             <CardContent>
-              <GenericConfigTab
-                projectId={projectId}
-                endpoint="task-policies"
-                label="任务策略"
-                extraFields={[
-                  {
-                    key: "max_concurrency",
-                    label: "最大并发",
-                    type: "number",
-                  },
-                  {
-                    key: "retry_limit",
-                    label: "重试次数",
-                    type: "number",
-                  },
-                ]}
-              />
+              <TaskPolicyTab projectId={projectId} />
             </CardContent>
           </Card>
         </TabsContent>

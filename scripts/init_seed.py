@@ -5,11 +5,12 @@ import os
 import sys
 
 # Change to apps/api so pydantic-settings picks up apps/api/.env
-_orig_dir = os.getcwd()
-os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "apps", "api"))
+_api_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "apps", "api")
+if __name__ == "__main__":
+    os.chdir(_api_dir)
 
 # Adjust path for running from project root
-sys.path.insert(0, os.getcwd())
+sys.path.insert(0, _api_dir)
 
 from sqlalchemy import select  # noqa: E402
 
@@ -18,7 +19,9 @@ from app.models.config import ChunkProfile, ExportProfile, ParserProfile, TaskPo
 from app.models.project import Project, ProjectMember  # noqa: E402
 from app.models.prompt_template import PromptTemplate  # noqa: E402
 from app.models.user import User  # noqa: E402
+from app.security.registry import get_registry  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402
+from app.services.config_service import ParserProfileService  # noqa: E402
 
 MINERU_LOCAL_OPTIONS = {
     "model_path": "models/MinerU2.5-Pro-2604-1.2B",
@@ -27,7 +30,6 @@ MINERU_LOCAL_OPTIONS = {
     "image_analysis": False,
 }
 MINERU_LOCAL_SERVICE_OPTIONS = {
-    "base_url": "http://127.0.0.1:9010",
     "backend": "vlm-auto-engine",
     "auto_start": True,
     "startup_timeout_seconds": "30",
@@ -36,8 +38,6 @@ MINERU_LOCAL_SERVICE_OPTIONS = {
     "image_analysis": False,
 }
 PADDLEOCR_LOCAL_SERVICE_OPTIONS = {
-    "base_url": "http://127.0.0.1:9020/layout-parsing",
-    "vlm_base_url": "http://127.0.0.1:9021",
     "auto_start": True,
     "startup_timeout_seconds": "90",
     "parse_timeout_seconds": "1800",
@@ -95,46 +95,50 @@ SEED_TEMPLATES = [
 ]
 
 
-async def ensure_mineru_local_profiles(db) -> int:
+def seed_parser_specs() -> list[dict]:
+    """仅创建可通过同一 CRUD 校验的配置；服务 URL 由 registry 管理。"""
+    specs = [
+        {"name": "PyMuPDF4LLM（本地）", "parser_name": "pymupdf4llm", "parser_options": None},
+        {"name": "MinerU2.5-Pro（本地模型）", "parser_name": "mineru_local", "parser_options": MINERU_LOCAL_OPTIONS},
+    ]
+    defaults = {
+        "mineru": {"model_version": "vlm"}, "paddleocr": {},
+        "mineru_local_service": MINERU_LOCAL_SERVICE_OPTIONS,
+        "paddleocr_local_service": PADDLEOCR_LOCAL_SERVICE_OPTIONS,
+    }
+    registry = get_registry()
+    for name, options in defaults.items():
+        endpoint = registry.get_for_parser(name)
+        if endpoint is not None:
+            specs.append({
+                "name": endpoint.display_name, "parser_name": name,
+                "parser_options": {**options, "endpoint_ref": endpoint.endpoint_ref},
+            })
+    return specs
+
+
+async def ensure_parser_profiles(db) -> int:
     projects = (await db.execute(select(Project))).scalars().all()
+    service = ParserProfileService(db)
     added = 0
     for project in projects:
-        local_profiles = (
-            (
-                "mineru_local",
-                "MinerU2.5-Pro（本地模型）",
-                MINERU_LOCAL_OPTIONS,
-            ),
-            (
-                "mineru_local_service",
-                "MinerU（本地部署服务 / MLX）",
-                MINERU_LOCAL_SERVICE_OPTIONS,
-            ),
-            (
-                "paddleocr_local_service",
-                "PaddleOCR-VL（本地部署服务 / MLX）",
-                PADDLEOCR_LOCAL_SERVICE_OPTIONS,
-            ),
-        )
-        for parser_name, name, parser_options in local_profiles:
-            existing = (
-                await db.execute(
-                    select(ParserProfile).where(
-                        ParserProfile.project_id == project.id,
-                        ParserProfile.parser_name == parser_name,
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing is None:
-                db.add(
-                    ParserProfile(
-                        project_id=project.id,
-                        name=name,
-                        parser_name=parser_name,
-                        parser_options=parser_options,
-                    )
-                )
-                added += 1
+        for spec in seed_parser_specs():
+            # 同一 parser 可有多份用户配置，重复 seed 不覆盖、不因多行报错。
+            existing = (await db.execute(select(ParserProfile.id).where(
+                ParserProfile.project_id == project.id,
+                ParserProfile.parser_name == spec["parser_name"],
+            ).limit(1))).scalar_one_or_none()
+            if existing is not None:
+                continue
+            profile = await service.create(project.id, **spec)
+            if spec["parser_name"] == "pymupdf4llm":
+                has_default = (await db.execute(select(ParserProfile.id).where(
+                    ParserProfile.project_id == project.id,
+                    ParserProfile.is_default.is_(True),
+                ).limit(1))).scalar_one_or_none()
+                profile.is_default = has_default is None
+            added += 1
+    await db.flush()
     return added
 
 
@@ -143,9 +147,9 @@ async def seed():
         # Check if already seeded
         result = await db.execute(select(User).where(User.username == "admin"))
         if result.scalar_one_or_none():
-            added = await ensure_mineru_local_profiles(db)
+            added = await ensure_parser_profiles(db)
             await db.commit()
-            print(f"Database already seeded. Added {added} missing local parser profile(s).")
+            print(f"Database already seeded. Added {added} missing valid parser profile(s).")
             return
 
         # Create admin user
@@ -163,43 +167,8 @@ async def seed():
         db.add(member)
         print(f"Created project: {project.name} (ID: {project.id})")
 
-        # Seed config profiles
-        parser_pymupdf = ParserProfile(
-            project_id=project.id,
-            name="PyMuPDF4LLM（本地）",
-            parser_name="pymupdf4llm",
-            is_default=True,
-        )
-        parser_mineru = ParserProfile(
-            project_id=project.id,
-            name="MinerU（API）",
-            parser_name="mineru",
-            parser_options={"base_url": "https://mineru.net/api/v4/extract/task", "model_version": "vlm"},
-        )
-        parser_mineru_local = ParserProfile(
-            project_id=project.id,
-            name="MinerU2.5-Pro（本地模型）",
-            parser_name="mineru_local",
-            parser_options=MINERU_LOCAL_OPTIONS,
-        )
-        parser_mineru_local_service = ParserProfile(
-            project_id=project.id,
-            name="MinerU（本地部署服务 / MLX）",
-            parser_name="mineru_local_service",
-            parser_options=MINERU_LOCAL_SERVICE_OPTIONS,
-        )
-        parser_paddle = ParserProfile(
-            project_id=project.id,
-            name="PaddleOCR（API）",
-            parser_name="paddleocr",
-            parser_options={"base_url": "https://bea4c9v5r2i52ba7.aistudio-app.com/layout-parsing"},
-        )
-        parser_paddle_local_service = ParserProfile(
-            project_id=project.id,
-            name="PaddleOCR-VL（本地部署服务 / MLX）",
-            parser_name="paddleocr_local_service",
-            parser_options=PADDLEOCR_LOCAL_SERVICE_OPTIONS,
-        )
+        # Parser seed 与页面创建使用同一配置校验。
+        await ensure_parser_profiles(db)
         chunk_profile = ChunkProfile(
             project_id=project.id,
             name="混合标题递归（默认）",
@@ -217,19 +186,7 @@ async def seed():
             task_type="parse",
             is_default=True,
         )
-        db.add_all(
-            [
-                parser_pymupdf,
-                parser_mineru,
-                parser_mineru_local,
-                parser_mineru_local_service,
-                parser_paddle,
-                parser_paddle_local_service,
-                chunk_profile,
-                export_profile,
-                task_policy,
-            ]
-        )
+        db.add_all([chunk_profile, export_profile, task_policy])
 
         # Seed prompt templates
         for tmpl_data in SEED_TEMPLATES:

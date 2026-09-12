@@ -17,6 +17,9 @@ from typing import Any
 
 SNAPSHOT_SCHEMA_VERSION = 1
 
+# 纯本地解析器不需要 HTTP endpoint；CRUD、冻结和 seed 共用。
+LOCAL_PARSERS = frozenset({"pymupdf4llm", "mock", "mineru_local"})
+
 #: 禁止出现在 parser_options 的网络/秘密字段名（递归、大小写不敏感、连字符/下划线归一）。
 FORBIDDEN_OPTION_KEYS = frozenset(
     {

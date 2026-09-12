@@ -267,7 +267,7 @@ try {
     Write-Host "Docker Desktop 未运行。请先启动 Docker Desktop，然后重试。" -ForegroundColor Red
     exit 1
 }
-docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env up -d
+docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env --profile worker up -d
 Wait-ServiceReady -Service 'postgres' -Label 'PostgreSQL'
 Wait-ServiceReady -Service 'redis' -Label 'Redis'
 Wait-ServiceReady -Service 'minio' -Label 'MinIO'

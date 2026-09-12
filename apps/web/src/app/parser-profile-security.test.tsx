@@ -161,4 +161,55 @@ describe("ParserProfile 安全合同", () => {
     expect(screen.queryByLabelText(/API 地址/)).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue(/https?:\/\//)).not.toBeInTheDocument();
   });
+
+  it("服务型解析器未注册端点时明确说明并禁止保存", async () => {
+    server.onGet(`/projects/${projectId}/parser-profiles/endpoints`, { items: [] });
+    const user = userEvent.setup();
+    renderTab();
+    await user.click(await screen.findByRole("button", { name: "新建" }));
+    await user.selectOptions(screen.getByLabelText("解析器类型"), "mineru_local_service");
+    expect(await screen.findByText(/尚未注册此解析器的服务端端点/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+  });
+
+  it("纯本地 MinerU 无注册端点仍可创建", async () => {
+    server.onGet(`/projects/${projectId}/parser-profiles/endpoints`, { items: [] });
+    const created = server.onPost(`/projects/${projectId}/parser-profiles/`, { id: "local" });
+    const user = userEvent.setup();
+    renderTab();
+    await user.click(await screen.findByRole("button", { name: "新建" }));
+    await user.selectOptions(screen.getByLabelText("解析器类型"), "mineru_local");
+    await user.type(screen.getByLabelText("名称"), "本地解析");
+    expect(screen.queryByLabelText("服务端端点")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(created.callCount).toBe(1));
+    expect(JSON.parse(created.calls[0].options?.body as string)).toMatchObject({ parser_name: "mineru_local", parser_options: null });
+  });
+
+  it("既有配置指向已移除的端点时必须重新选择", async () => {
+    server.onGet(`/projects/${projectId}/parser-profiles/?page=1&page_size=100`, {
+      items: [{ id: "p1", name: "旧端点配置", parser_name: "mineru", parser_options: { endpoint_ref: "removed" }, is_default: false, version: 1 }], total: 1,
+    });
+    const user = userEvent.setup();
+    renderTab();
+    await user.click(await screen.findByRole("button", { name: "旧端点配置" }));
+    expect(await screen.findByText(/原配置的服务端端点已不可用/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("服务端端点"), "mineru-official");
+    expect(screen.getByRole("button", { name: "保存" })).not.toBeDisabled();
+  });
+
+  it("端点请求失败有重试入口，不误报未注册", async () => {
+    server.mock("GET", `/projects/${projectId}/parser-profiles/endpoints`, { networkError: true });
+    const user = userEvent.setup();
+    renderTab();
+    await user.click(await screen.findByRole("button", { name: "新建" }));
+    await user.selectOptions(screen.getByLabelText("解析器类型"), "paddleocr");
+    expect(await screen.findByRole("button", { name: "重试端点列表" })).toBeInTheDocument();
+    expect(screen.queryByText(/尚未注册此解析器的服务端端点/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    server.onGet(`/projects/${projectId}/parser-profiles/endpoints`, { items: [] });
+    await user.click(screen.getByRole("button", { name: "重试端点列表" }));
+    expect(await screen.findByText(/尚未注册此解析器的服务端端点/)).toBeInTheDocument();
+  });
 });

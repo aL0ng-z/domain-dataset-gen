@@ -35,9 +35,9 @@ cancelled ◀──cancel──┴──cancelling──cancel──▶ cancelle
 ### 启动
 
 ```bash
-docker compose -f infra/docker/docker-compose.yml up -d
-# worker 服务随 compose 启动；也可单独扩容副本：
-docker compose up -d --scale worker=3
+docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env --profile worker up -d
+# 容器 runner 需要显式启用；扩容仍使用相同 compose 文件和环境：
+docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env --profile worker up -d --scale worker=3
 ```
 
 本地开发启动 runner：

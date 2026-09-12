@@ -2,6 +2,10 @@
 
 本文档用于在一台全新电脑上，从 `git clone` 到本项目可运行的完整步骤。
 
+2026-09 工作流修复：Windows 推荐 `conda activate DatasetGen` 后运行 `scripts/dev-start-conda.ps1`，它会启动使用同一环境及 `apps/api/.env` 的 API 和独立 runner，日志分别为 `R1plus-API.log`、`R1plus-Worker.log`。手动启动时，还须在 `apps/api` 执行 `python -m app.workers.runner`。Docker 默认仅承担 PostgreSQL/Redis/MinIO；容器 worker 需要显式 `--profile worker`，不要同时混用两套执行环境。
+
+PyMuPDF 是无需额外服务的默认解析器；本地 MinerU 需要 runner 主机具有模型文件，但无需 HTTP endpoint。远程/本地 HTTP 服务必须先配置 `PARSER_ENDPOINT_REGISTRY` 和必要凭证，seed 只为已注册端点创建配置，不能仅填 Token。
+
 ## 1. 前置安装
 
 请先安装以下软件（仅需一次）：

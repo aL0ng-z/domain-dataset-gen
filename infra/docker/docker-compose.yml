@@ -68,6 +68,8 @@ services:
   # T07: 独立任务 runner（持久 PostgreSQL 队列消费者）。
   # 独立于 API 进程运行；API 重启不丢任务；多副本并发领取由数据库 CAS 保证。
   worker:
+    # 本地 conda 工作流单独运行 runner；显式 --profile worker 才启用容器。
+    profiles: [worker]
     build:
       context: ../..
       dockerfile: infra/docker/Dockerfile.worker

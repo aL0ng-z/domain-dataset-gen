@@ -106,6 +106,7 @@ async def run_generate_single_handler(ctx: ExecutionContext) -> None:
         model_name=str(model_snapshot["model_name"]),
         temperature=model_snapshot.get("temperature"),
         max_tokens=model_snapshot.get("max_tokens"),
+        extra_params=model_snapshot.get("extra_params"),
     )
     messages = json.loads(rebuilt)
     try:
