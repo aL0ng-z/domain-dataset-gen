@@ -1,4 +1,4 @@
-# Requires UTF-8 BOM for PowerShell 5.1 to parse non-ASCII comments correctly.
+﻿# Requires UTF-8 BOM for PowerShell 5.1 to parse non-ASCII comments correctly.
 # This file is saved as UTF-8 with BOM.
 
 <#
@@ -43,18 +43,12 @@ $env:PYTHONPATH = (@(
     (Join-Path $RepoRoot "libs\llm")
 ) -join [IO.Path]::PathSeparator)
 
+. (Join-Path $PSScriptRoot "native-command.ps1")
+
 function Invoke-Alembic {
     param([string[]]$AlembicArgs)
-    Push-Location -LiteralPath $ApiDir
-    try {
-        & python -m alembic @AlembicArgs
-        $code = $LASTEXITCODE
-        if ($code -ne 0) {
-            throw "alembic $AlembicArgs failed (exit code $code)"
-        }
-    } finally {
-        Pop-Location
-    }
+    Invoke-NativeChecked -Exe "python" -Arguments (@("-m", "alembic") + $AlembicArgs) `
+        -FailureMessage "alembic $AlembicArgs failed" -WorkDir $ApiDir
 }
 
 Write-Host "==> [0/3] Reset public schema for empty DB"
@@ -71,10 +65,8 @@ async def main():
     await conn.close()
 asyncio.run(main())
 "@
-& python -c $py
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to reset public schema"
-}
+Invoke-NativeChecked -Exe "python" -Arguments @("-c", $py) `
+    -FailureMessage "Failed to reset public schema" -WorkDir $RepoRoot
 
 Write-Host "==> [1/3] upgrade head on empty DB"
 Invoke-Alembic @("upgrade", "head")

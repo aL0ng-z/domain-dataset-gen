@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Run backend quality gates in one command: ruff lint + pytest (with coverage).
 
@@ -21,24 +21,7 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $RepoRoot
 
-function Invoke-NativeChecked {
-    param(
-        [string]$Exe,
-        [string[]]$Arguments,
-        [string]$FailureMessage,
-        [string]$WorkDir = $RepoRoot
-    )
-    Push-Location -LiteralPath $WorkDir
-    try {
-        & $Exe @Arguments
-        $exitCode = $LASTEXITCODE
-        if ($exitCode -ne 0) {
-            throw "$FailureMessage (exit code $exitCode)"
-        }
-    } finally {
-        Pop-Location
-    }
-}
+. (Join-Path $PSScriptRoot "native-command.ps1")
 
 $currentEnv = $env:CONDA_DEFAULT_ENV
 if ($currentEnv -ne "DatasetGen") {

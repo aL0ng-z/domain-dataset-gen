@@ -40,6 +40,7 @@ function persistTrack(taskId: string, batchId: string) {
 export function useGenerationTracking(projectId: string, options: Options = {}) {
   const [track, setTrack] = useState<GenerationTrack | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const trackVersionRef = useRef(0);
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
@@ -53,9 +54,20 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
   }, []);
 
   const startTrack = useCallback((taskId: string, batchId: string) => {
+    trackVersionRef.current += 1;
     const next: GenerationTrack = { taskId, batchId, status: "queued" };
     setTrack(next);
     persistTrack(taskId, batchId);
+  }, []);
+
+  const clearTrack = useCallback(() => {
+    trackVersionRef.current += 1;
+    setTrack(null);
+    setCancelling(false);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("task_id");
+    url.searchParams.delete("generation_batch_id");
+    window.history.replaceState(null, "", url.toString());
   }, []);
 
   const taskId = track?.taskId;
@@ -65,6 +77,8 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
   useEffect(() => {
     if (!taskId || !batchId || !currentStatus || TERMINAL.has(currentStatus)) return;
     const controller = new AbortController();
+    const trackVersion = trackVersionRef.current;
+    const isCurrent = () => !controller.signal.aborted && trackVersionRef.current === trackVersion;
     let inFlight = false;
 
     const poll = async () => {
@@ -75,12 +89,14 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
           params: { pid: projectId, tid: taskId },
           signal: controller.signal,
         });
+        if (!isCurrent()) return;
         const status = task.status as GenerationTrackStatus;
         if (TERMINAL.has(status)) {
           const batch = await api.get("/projects/{pid}/generation-batches/{gbid}", {
             params: { pid: projectId, gbid: batchId },
             signal: controller.signal,
           });
+          if (!isCurrent()) return;
           const terminal: GenerationTrack = {
             taskId,
             batchId,
@@ -103,7 +119,7 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
         }
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") return;
-        optionsRef.current.onError?.();
+        if (isCurrent()) optionsRef.current.onError?.();
       } finally {
         inFlight = false;
       }
@@ -126,7 +142,7 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
         undefined,
         { params: { pid: projectId, tid: track.taskId } },
       );
-      setTrack((current) => current ? {
+      setTrack((current) => current?.taskId === track.taskId ? {
         ...current,
         status: result.status as GenerationTrackStatus,
         canCancel: false,
@@ -136,5 +152,5 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
     }
   }, [projectId, track, cancelling]);
 
-  return { track, setTrack, startTrack, cancelTask, cancelling };
+  return { track, setTrack, startTrack, clearTrack, cancelTask, cancelling };
 }

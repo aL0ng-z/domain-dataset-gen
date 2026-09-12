@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
@@ -63,6 +63,14 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
   const [templates, setTemplates] = useState<Template[]>([]);
   const [models, setModels] = useState<ModelConfig[]>([]);
   const [chunks, setChunks] = useState<ChunkItem[]>([]);
+  const [page, setPage] = useState(1);
+  const [totalChunks, setTotalChunks] = useState(0);
+  const [configLoading, setConfigLoading] = useState(true);
+  const [chunksLoading, setChunksLoading] = useState(true);
+  const [configError, setConfigError] = useState<string | null>(null);
+  const [chunksError, setChunksError] = useState<string | null>(null);
+  const [formEpoch, setFormEpoch] = useState(0);
+  const [chunksEpoch, setChunksEpoch] = useState(0);
   const [selectedTemplate, setSelectedTemplate] = useState("");
   const [selectedModel, setSelectedModel] = useState("");
   const [mode, setMode] = useState<"all" | "selected">("all");
@@ -70,47 +78,79 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
   const [submitting, setSubmitting] = useState(false);
   const submissionKeyRef = useRef<{ intent: string; key: string } | null>(null);
   const retryKeyRef = useRef<{ batchId: string; key: string } | null>(null);
-  const { track, startTrack, cancelTask, cancelling } = useGenerationTracking(projectId, {
+  const { track, startTrack, clearTrack, cancelTask, cancelling } = useGenerationTracking(projectId, {
     onTerminal: () => onGenerated?.(),
     onError: () => toast.error("跟踪生成状态失败"),
   });
 
-  // 打开时加载配置与 ready chunks。
+  // 请求按对话框生命周期中止；失败保留明确错误，不伪装成空配置或空分块。
   useEffect(() => {
     if (!open) return;
+    const controller = new AbortController();
+    setConfigLoading(true);
+    setConfigError(null);
     Promise.all([
-      api
-        .get("/projects/{pid}/prompt-templates/", {
-          params: { pid: projectId },
-          query: { page: 1, page_size: 100 },
-        })
-        .catch(() => ({ items: [] as Template[] })),
-      api
-        .get("/projects/{pid}/model-configs/", {
-          params: { pid: projectId },
-          query: { page: 1, page_size: 100 },
-        })
-        .catch(() => ({ items: [] as ModelConfig[] })),
-      api
-        .get("/projects/{pid}/documents/{did}/chunks", {
-          params: { pid: projectId, did: docId },
-          query: { page: 1, page_size: 200, status: "ready" },
-        })
-        .catch(() => ({ items: [] as ChunkItem[], total: 0, page: 1, page_size: 200 })),
-    ]).then(([tplData, modelData, chunkData]) => {
+      api.get("/projects/{pid}/prompt-templates/", {
+        params: { pid: projectId }, query: { page: 1, page_size: 100 }, signal: controller.signal,
+      }),
+      api.get("/projects/{pid}/model-configs/", {
+        params: { pid: projectId }, query: { page: 1, page_size: 100 }, signal: controller.signal,
+      }),
+    ]).then(([tplData, modelData]) => {
+      if (controller.signal.aborted) return;
       setTemplates(tplData.items);
       setModels(modelData.items);
-      setChunks(chunkData.items);
-      const tpl = tplData.items.find((t) => t.is_default) || tplData.items[0];
-      if (tpl) setSelectedTemplate(tpl.id);
-      const mdl = modelData.items.find((m) => m.is_default) || modelData.items[0];
-      if (mdl) setSelectedModel(mdl.id);
+      setSelectedTemplate((current) => tplData.items.some((item) => item.id === current) ? current
+        : (tplData.items.find((item) => item.is_default) || tplData.items[0])?.id || "");
+      setSelectedModel((current) => modelData.items.some((item) => item.id === current) ? current
+        : (modelData.items.find((item) => item.is_default) || modelData.items[0])?.id || "");
+    }).catch((error) => {
+      if (!controller.signal.aborted) setConfigError(error instanceof ApiErrorException ? error.apiError.message : "模板或模型加载失败");
+    }).finally(() => {
+      if (!controller.signal.aborted) setConfigLoading(false);
     });
-  }, [open, projectId, docId]);
+    return () => controller.abort();
+  }, [open, projectId, docId, formEpoch]);
 
-  const readyChunks = useMemo(() => chunks, [chunks]);
+  useEffect(() => {
+    if (!open) return;
+    const controller = new AbortController();
+    setChunksLoading(true);
+    setChunksError(null);
+    api.get("/projects/{pid}/documents/{did}/chunks", {
+      params: { pid: projectId, did: docId },
+      query: { page, page_size: 100, status: "ready" },
+      signal: controller.signal,
+    }).then((data) => {
+      if (controller.signal.aborted) return;
+      setChunks(data.items);
+      setTotalChunks(data.total);
+    }).catch((error) => {
+      if (!controller.signal.aborted) setChunksError(error instanceof ApiErrorException ? error.apiError.message : "分块加载失败");
+    }).finally(() => {
+      if (!controller.signal.aborted) setChunksLoading(false);
+    });
+    return () => controller.abort();
+  }, [open, projectId, docId, page, formEpoch, chunksEpoch]);
 
-  const canSubmit = !!selectedTemplate && !!selectedModel && (mode === "all" || selectedChunkIds.length > 0);
+  const totalPages = Math.max(1, Math.ceil(totalChunks / 100));
+  const canSubmit = !configLoading && !chunksLoading && !configError && !chunksError
+    && !!selectedTemplate && !!selectedModel && (mode === "all" || selectedChunkIds.length > 0);
+
+  const handleNewGeneration = () => {
+    clearTrack();
+    submissionKeyRef.current = null;
+    retryKeyRef.current = null;
+    setSelectedTemplate("");
+    setSelectedModel("");
+    setSelectedChunkIds([]);
+    setMode("all");
+    setPage(1);
+    setChunks([]);
+    setConfigLoading(true);
+    setChunksLoading(true);
+    setFormEpoch((value) => value + 1);
+  };
 
   const toggleChunk = (id: string) => {
     setSelectedChunkIds((prev) =>
@@ -198,7 +238,7 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
         <DialogHeader>
           <DialogTitle>批量生成</DialogTitle>
           <DialogDescription>
-            选择模板、模型及 Chunk 范围发起批量生成；202 接收后展示执行状态。
+            选择模板、模型及分块范围，提交后可查看进度和生成结果。
           </DialogDescription>
         </DialogHeader>
 
@@ -280,16 +320,28 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
                     重试失败项
                   </Button>
                 )}
+              {["completed", "failed", "cancelled"].includes(track.status) && (
+                <Button variant="outline" disabled={submitting} onClick={handleNewGeneration}>新建生成</Button>
+              )}
               <Button onClick={() => onOpenChange(false)}>关闭</Button>
             </DialogFooter>
           </div>
         ) : (
           <>
             <div className="space-y-3">
+              {configError && <div role="alert" className="text-sm text-destructive">
+                {configError}
+                <Button variant="outline" size="sm" onClick={() => setFormEpoch((value) => value + 1)}>重试加载配置</Button>
+              </div>}
+              {chunksError && <div role="alert" className="text-sm text-destructive">
+                {chunksError}
+                <Button variant="outline" size="sm" onClick={() => setChunksEpoch((value) => value + 1)}>重试加载分块</Button>
+              </div>}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-medium block mb-1">模板</label>
                   <select
+                    disabled={configLoading || submitting}
                     className="w-full rounded border px-2 py-1.5 text-sm bg-transparent"
                     value={selectedTemplate}
                     onChange={(e) => setSelectedTemplate(e.target.value)}
@@ -305,6 +357,7 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
                 <div>
                   <label className="text-xs font-medium block mb-1">模型</label>
                   <select
+                    disabled={configLoading || submitting}
                     className="w-full rounded border px-2 py-1.5 text-sm bg-transparent"
                     value={selectedModel}
                     onChange={(e) => setSelectedModel(e.target.value)}
@@ -341,23 +394,28 @@ export function BatchGenerateDialog({ projectId, docId, open, onOpenChange, onGe
               </div>
 
               {mode === "selected" && (
-                <div className="border rounded max-h-48 overflow-auto">
-                  {readyChunks.map((c) => (
-                    <label
-                      key={c.id}
-                      className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedChunkIds.includes(c.id)}
-                        onChange={() => toggleChunk(c.id)}
-                      />
-                      #{c.ordinal + 1} — {c.heading_path || "无标题"}
-                    </label>
-                  ))}
-                  {readyChunks.length === 0 && (
-                    <div className="px-3 py-2 text-muted-foreground">没有 ready chunks</div>
-                  )}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span>已选 {selectedChunkIds.length} 个分块</span>
+                    <span>共 {totalChunks} 个分块</span>
+                  </div>
+                  <div className="border rounded max-h-48 overflow-auto">
+                    {chunksLoading ? <div className="px-3 py-2 text-muted-foreground">正在加载分块…</div> : !chunksError && <>
+                      {chunks.map((c) => (
+                        <label key={c.id} className="flex items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/50 cursor-pointer">
+                          <input type="checkbox" checked={selectedChunkIds.includes(c.id)} disabled={submitting}
+                            onChange={() => toggleChunk(c.id)} />
+                          #{c.ordinal + 1} — {c.heading_path || "无标题"}
+                        </label>
+                      ))}
+                      {chunks.length === 0 && <div className="px-3 py-2 text-muted-foreground">没有 ready chunks</div>}
+                    </>}
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <Button variant="outline" size="sm" disabled={page <= 1 || chunksLoading || submitting} onClick={() => setPage((value) => value - 1)}>上一页</Button>
+                    <span>第 {page} / {totalPages} 页</span>
+                    <Button variant="outline" size="sm" disabled={page >= totalPages || chunksLoading || submitting} onClick={() => setPage((value) => value + 1)}>下一页</Button>
+                  </div>
                 </div>
               )}
             </div>

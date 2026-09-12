@@ -1604,3 +1604,13 @@ code-reviewer subagent 检查后裁定 **APPROVE WITH NITS**，两条重要建�
 - QA 优先使用 question/answer，仅在字段缺失时兼容 instruction/output；必需字段必须是非空字符串。混合无效批次整体返回 409，并通过 EXPORT_FORMAT_INCOMPATIBLE / EXPORT_CONTENT_INVALID 及条目、字段上下文说明原因；未知格式返回 422。
 - 新增类型格式矩阵、字段优先级、API 无产物拒绝、worker 独立复核、多解析版本、历史集合、跨文档证据和真实 PostgreSQL 双 Session 发布竞态回归；导出 fixture 改为完整版本来源链，并同步 OpenAPI/TypeScript 错误码契约。
 - 验证：DatasetGen 环境下相关单元、导出、分块及候选审批测试共 112 项通过（390.61 秒）；末次改动和新增场景另跑 13 项重点回归全部通过（87.35 秒）。Ruff、OpenAPI 漂移检查和 `git diff --check` 通过。测试使用隔离 PostgreSQL/MinIO，未调用真实 LLM 或付费解析服务。
+
+## 2026-09-12：用户工作流审查第六批修复（R13、R14、Windows 质量脚本）
+
+- 批量生成分块列表统一请求 `page_size=100`，增加前后分页、总数与跨页选择计数；提交已选模式时发送全部勾选 ID，全部 ready 模式仍由后端解析范围。
+- 将配置、分块的加载和失败状态分开管理；请求失败显示原因和重试按钮，不再转换成空列表，关闭或切换分页时中止旧请求，防止迟到结果覆盖。
+- 生成终态增加“新建生成”：清除 Task/Batch 跟踪参数、旧选择、重试和提交幂等键，重新加载可用分块及配置；保留其他 URL 参数。处理中关闭再打开继续显示原任务，不创建重复批次。
+- 共享跟踪 hook 增加清除操作及请求版本保护，旧轮询响应不能覆盖后续生成；原有提交失败后的幂等键复用行为保持不变。
+- 三个 Windows 质量脚本复用 `native-command.ps1`：先解析原生命令，再临时调整错误策略并按退出码判断结果，始终恢复错误策略与工作目录。stderr 警告保留显示但不导致成功命令误报失败；不存在的命令仍明确失败。
+- Vitest 配置改为 `.mts`，使用 `import.meta.url` 解析源码目录，消除 ESM 语法按 CommonJS 加载的警告；增加不依赖基础设施的 PowerShell 回归入口及脚本说明。
+- 验证：修复前新组件回归 3 项失败；修复后生成组件 14 项、前端全量 129 项通过，ESLint、TypeScript、PowerShell 语法检查和 stderr/退出码/环境恢复回归通过。生产构建 `next build --webpack` 通过；本 worktree 的默认 Turbopack 构建因 `node_modules` junction 指向仓库外被拒绝，脚本正确报告真实退出码 1，默认构建配置未改动。本批未运行 pytest 或数据库迁移。

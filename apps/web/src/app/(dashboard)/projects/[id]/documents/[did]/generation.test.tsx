@@ -29,7 +29,7 @@ vi.mock("@/components/ui/button", () => ({
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 vi.mock("@/components/ui/dialog", () => ({
-  Dialog: ({ children }: { children: React.ReactNode }) => <div data-testid="dialog">{children}</div>,
+  Dialog: ({ children, open }: { children: React.ReactNode; open: boolean }) => open ? <div data-testid="dialog">{children}</div> : null,
   DialogContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogDescription: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   DialogFooter: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
@@ -47,13 +47,13 @@ function mockDialogResources() {
   server.onGet("/projects/p1/model-configs/?page=1&page_size=100", {
     items: [model], total: 1, page: 1, page_size: 100,
   });
-  server.onGet("/projects/p1/documents/d1/chunks?page=1&page_size=200&status=ready", {
+  server.onGet("/projects/p1/documents/d1/chunks?page=1&page_size=100&status=ready", {
     items: [
       { id: "c1", section_id: "s1", document_id: "d1", ordinal: 0, heading_path: "", content: "a", token_count: 1, status: "ready", chunk_set_id: "set-1", chunk_set_version: 1 },
     ],
     total: 1,
     page: 1,
-    page_size: 200,
+    page_size: 100,
   });
 }
 
@@ -161,14 +161,14 @@ describe("批量生成对话框", () => {
   it("选择模板/模型/范围后提交；202 后跟踪 task/batch 状态", async () => {
     server.onGet("/projects/p1/prompt-templates/?page=1&page_size=100", { items: [tpl], total: 1, page: 1, page_size: 100 });
     server.onGet("/projects/p1/model-configs/?page=1&page_size=100", { items: [model], total: 1, page: 1, page_size: 100 });
-    server.onGet("/projects/p1/documents/d1/chunks?page=1&page_size=200&status=ready", {
+    server.onGet("/projects/p1/documents/d1/chunks?page=1&page_size=100&status=ready", {
       items: [
         { id: "c1", section_id: "s1", document_id: "d1", ordinal: 0, heading_path: "", content: "a", token_count: 1, status: "ready", chunk_set_id: "set-1", chunk_set_version: 1 },
         { id: "c2", section_id: "s1", document_id: "d1", ordinal: 1, heading_path: "", content: "b", token_count: 1, status: "ready", chunk_set_id: "set-1", chunk_set_version: 1 },
       ],
       total: 2,
       page: 1,
-      page_size: 200,
+      page_size: 100,
     });
     server.onPost("/projects/p1/documents/d1/generate-batch", { task_id: "btask-1", generation_batch_id: "bbatch-1", status: "queued" });
     // 轮询 parent task -> processing（未终态，继续轮询）。
@@ -237,13 +237,13 @@ describe("批量生成对话框", () => {
   it("部分失败展示成功/失败/取消计数与失败明细", async () => {
     server.onGet("/projects/p1/prompt-templates/?page=1&page_size=100", { items: [tpl], total: 1, page: 1, page_size: 100 });
     server.onGet("/projects/p1/model-configs/?page=1&page_size=100", { items: [model], total: 1, page: 1, page_size: 100 });
-    server.onGet("/projects/p1/documents/d1/chunks?page=1&page_size=200&status=ready", {
+    server.onGet("/projects/p1/documents/d1/chunks?page=1&page_size=100&status=ready", {
       items: [
         { id: "c1", section_id: "s1", document_id: "d1", ordinal: 0, heading_path: "", content: "a", token_count: 1, status: "ready", chunk_set_id: "set-1", chunk_set_version: 1 },
       ],
       total: 1,
       page: 1,
-      page_size: 200,
+      page_size: 100,
     });
     server.onPost("/projects/p1/documents/d1/generate-batch", { task_id: "btask-2", generation_batch_id: "bbatch-2", status: "queued" });
     // 第一次轮询 processing，第二次 completed + batch 带部分失败 summary。
@@ -473,5 +473,114 @@ describe("批量生成对话框", () => {
     await screen.findByText(/GENERATION_PROVENANCE_INVALID/);
     expect(screen.getByText(/SNAPSHOT_HASH_MISMATCH/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "重试失败项" })).toBeNull();
+  });
+});
+
+
+describe("批量生成审查回归", () => {
+  function chunk(ordinal: number) {
+    return { id: `c${ordinal + 1}`, section_id: "s1", document_id: "d1", ordinal,
+      heading_path: `章节 ${ordinal + 1}`, content: "内容", token_count: 1, status: "ready",
+      chunk_set_id: "set-1", chunk_set_version: 1 };
+  }
+
+  it("超过100个分块时分页选择并保留跨页勾选", async () => {
+    mockDialogResources();
+    server.onGet("/projects/p1/documents/d1/chunks?page=1&page_size=100&status=ready", {
+      items: Array.from({ length: 100 }, (_, i) => chunk(i)), total: 101, page: 1, page_size: 100,
+    });
+    const nextPage = server.onGet("/projects/p1/documents/d1/chunks?page=2&page_size=100&status=ready", {
+      items: [chunk(100)], total: 101, page: 2, page_size: 100,
+    });
+    const submit = server.onPost("/projects/p1/documents/d1/generate-batch", {
+      task_id: "task-pages", generation_batch_id: "batch-pages", status: "queued",
+    });
+    server.onGet("/projects/p1/tasks/task-pages", { id: "task-pages", status: "processing", progress: 0 });
+    render(<BatchGenerateDialog projectId="p1" docId="d1" open onOpenChange={vi.fn()} />);
+    await userEvent.click(await screen.findByLabelText("已选 chunks"));
+    await userEvent.click(await screen.findByLabelText("#1 — 章节 1"));
+    await userEvent.click(screen.getByRole("button", { name: "下一页" }));
+    await userEvent.click(await screen.findByLabelText("#101 — 章节 101"));
+    expect(nextPage.callCount).toBe(1);
+    expect(screen.getByText("已选 2 个分块")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "上一页" }));
+    expect(await screen.findByLabelText("#1 — 章节 1")).toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "发起批量生成" }));
+    await screen.findByText("task-pages");
+    expect(JSON.parse(submit.calls[0].options?.body as string).selected_chunk_ids).toEqual(["c1", "c101"]);
+  });
+
+  it("分块请求422显示错误和重试，不能伪装为空列表", async () => {
+    mockDialogResources();
+    const chunks = server.mock("GET", "/projects/p1/documents/d1/chunks?page=1&page_size=100&status=ready", ({ callCount }) =>
+      callCount === 1 ? { status: 422, body: { code: "VALIDATION_ERROR", message: "分页参数非法" } }
+        : { body: { items: [chunk(0)], total: 1, page: 1, page_size: 100 } });
+    render(<BatchGenerateDialog projectId="p1" docId="d1" open onOpenChange={vi.fn()} />);
+    await screen.findByText(/分页参数非法/);
+    await userEvent.click(screen.getByLabelText("已选 chunks"));
+    expect(screen.queryByText("没有 ready chunks")).toBeNull();
+    expect(screen.getByRole("button", { name: "发起批量生成" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "重试加载分块" }));
+    await screen.findByLabelText("#1 — 章节 1");
+    expect(screen.queryByText(/分页参数非法/)).toBeNull();
+    expect(chunks.callCount).toBe(2);
+  });
+
+  it("完成后新建生成清空旧选择及URL并可连续提交第二批", async () => {
+    window.history.replaceState(null, "", "/projects/p1/documents/d1?view=chunks");
+    mockDialogResources();
+    const chunks = server.mock("GET", "/projects/p1/documents/d1/chunks?page=1&page_size=100&status=ready", ({ callCount }) => ({
+      body: { items: [chunk(callCount === 1 ? 0 : 1)], total: 1, page: 1, page_size: 100 },
+    }));
+    const submit = server.mock("POST", "/projects/p1/documents/d1/generate-batch", ({ callCount }) => ({
+      body: { task_id: `task-${callCount}`, generation_batch_id: `batch-${callCount}`, status: "queued" },
+    }));
+    server.onGet("/projects/p1/tasks/task-1", { id: "task-1", status: "completed", progress: 100 });
+    server.onGet("/projects/p1/generation-batches/batch-1", batchResponse({ id: "batch-1" }));
+    server.onGet("/projects/p1/tasks/task-2", { id: "task-2", status: "processing", progress: 0 });
+    render(<BatchGenerateDialog projectId="p1" docId="d1" open onOpenChange={vi.fn()} />);
+    await userEvent.click(screen.getByLabelText("已选 chunks"));
+    await userEvent.click(await screen.findByLabelText("#1 — 章节 1"));
+    await userEvent.click(screen.getByRole("button", { name: "发起批量生成" }));
+    await userEvent.click(await screen.findByRole("button", { name: "新建生成" }));
+    expect(window.location.search).toBe("?view=chunks");
+    expect(screen.getByLabelText("全部 ready chunks")).toBeChecked();
+    await userEvent.click(screen.getByLabelText("已选 chunks"));
+    expect(await screen.findByLabelText("#2 — 章节 2")).not.toBeChecked();
+    expect(screen.getByText("已选 0 个分块")).toBeTruthy();
+    expect(chunks.callCount).toBe(2);
+    await userEvent.click(screen.getByLabelText("全部 ready chunks"));
+    await userEvent.click(screen.getByRole("button", { name: "发起批量生成" }));
+    await screen.findByText("task-2");
+    expect(submit.callCount).toBe(2);
+    expect(JSON.parse(submit.calls[1].options?.body as string).selected_chunk_ids).toBeUndefined();
+    const first = submit.calls[0].options?.headers as Record<string, string>;
+    const second = submit.calls[1].options?.headers as Record<string, string>;
+    expect(second["Idempotency-Key"]).not.toBe(first["Idempotency-Key"]);
+    expect(window.location.search).toContain("task_id=task-2");
+  });
+
+  it("处理中关闭再打开仍跟踪原任务", async () => {
+    mockDialogResources();
+    const submit = server.onPost("/projects/p1/documents/d1/generate-batch", {
+      task_id: "task-running", generation_batch_id: "batch-running", status: "queued",
+    });
+    server.onGet("/projects/p1/tasks/task-running", { id: "task-running", status: "processing", progress: 50 });
+    function Harness() {
+      const [open, setOpen] = React.useState(true);
+      return <><button onClick={() => setOpen(true)}>重新打开</button>
+        <BatchGenerateDialog projectId="p1" docId="d1" open={open} onOpenChange={setOpen} /></>;
+    }
+    render(<Harness />);
+    await userEvent.click(await screen.findByRole("button", { name: "发起批量生成" }));
+    await screen.findByText("processing");
+    expect(screen.queryByRole("button", { name: "新建生成" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(screen.queryByText("task-running")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "重新打开" }));
+    await screen.findByText("task-running");
+    expect(screen.queryByRole("button", { name: "发起批量生成" })).toBeNull();
+    expect(window.location.search).toContain("task_id=task-running");
+    expect(submit.callCount).toBe(1);
   });
 });
