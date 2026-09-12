@@ -21,6 +21,8 @@ class DocumentResponse(BaseSchema):
 
 
 class ParseJobResponse(BaseSchema):
+    task_id: uuid.UUID | None = None
+    error_code: str | None = None
     id: uuid.UUID
     document_id: uuid.UUID
     parser_profile_id: uuid.UUID
@@ -39,6 +41,9 @@ class ParseJobResponse(BaseSchema):
 
 
 class CleaningJobResponse(BaseSchema):
+    task_id: uuid.UUID | None = None
+    error_code: str | None = None
+    error_message: str | None = None
     id: uuid.UUID
     document_id: uuid.UUID
     parse_job_id: uuid.UUID

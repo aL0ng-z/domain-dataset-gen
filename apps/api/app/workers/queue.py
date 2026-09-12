@@ -16,9 +16,11 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
+from app.models.config import TaskPolicy
 from app.models.task import Task, TaskAttempt
 from app.workers.errors import TaskErrorCode, is_retriable
 
@@ -74,8 +76,25 @@ class TaskQueue:
         max_attempts: int = 1,
         timeout_seconds: int = 300,
         next_run_at: datetime | None = None,
+        policy_snapshot: dict[str, Any] | None = None,
+        resolve_policy: bool = True,
     ) -> Task:
         """在调用方事务内创建 Task（不自行 commit）。"""
+        if resolve_policy:
+            policy = await self.db.scalar(select(TaskPolicy).where(
+                TaskPolicy.project_id == project_id, TaskPolicy.task_type == task_type,
+                TaskPolicy.is_default.is_(True),
+            ).execution_options(populate_existing=True))
+            if policy is not None:
+                max_attempts = policy.max_retries + 1
+                timeout_seconds = policy.timeout_seconds
+                policy_snapshot = {
+                    "id": str(policy.id), "version": policy.version, "task_type": task_type,
+                    "max_retries": policy.max_retries, "timeout_seconds": timeout_seconds,
+                }
+        if policy_snapshot is None:
+            policy_snapshot = {"id": None, "task_type": task_type,
+                               "max_retries": max_attempts - 1, "timeout_seconds": timeout_seconds}
         task = Task(
             project_id=project_id,
             task_type=task_type,
@@ -90,6 +109,7 @@ class TaskQueue:
             status="queued",
             state_version=0,
             progress=0,
+            policy_snapshot=policy_snapshot,
             max_attempts=max(1, max_attempts),
             timeout_seconds=max(1, timeout_seconds),
             next_run_at=next_run_at or _now(),
@@ -98,28 +118,43 @@ class TaskQueue:
         self.db.add(task)
         await self.db.flush()
         await self.db.refresh(task)
+        from app.workers.lifecycle import bind_document_job
+        await bind_document_job(self.db, task)
         return task
 
     # ------------------------------------------------------------------
     # Claim
     # ------------------------------------------------------------------
 
-    async def claim_due(self, *, worker_id: str, batch: int = 5) -> list[Task]:
+    async def claim_due(self, *, worker_id: str, batch: int = 1) -> list[Task]:
         """领取到期 queued Task，返回已带 run token/lease 的任务列表。
 
         用 ``SELECT ... FOR UPDATE SKIP LOCKED`` 避免多 runner 并发领取同一任务；
         claim 与 Attempt 创建在同一事务内（调用方负责 commit）。
         """
-        # 加锁读取到期任务（限定批次）。
+        # Filter already saturated groups in SQL so an early backlog cannot hide
+        # runnable work in other projects/types beyond the bounded candidate window.
         now = _now()
+        active_task = aliased(Task)
+        active_count = select(func.count()).select_from(active_task).where(
+            active_task.project_id == TaskPolicy.project_id,
+            active_task.task_type == TaskPolicy.task_type,
+            active_task.status.in_(("processing", "cancelling")),
+            active_task.lease_expires_at > now,
+        ).correlate(TaskPolicy).scalar_subquery()
+        saturated = select(TaskPolicy.id).where(
+            TaskPolicy.project_id == Task.project_id, TaskPolicy.task_type == Task.task_type,
+            TaskPolicy.is_default.is_(True), TaskPolicy.concurrency_limit <= active_count,
+        ).correlate(Task).exists()
         stmt = (
             select(Task)
             .where(
                 Task.status == "queued",
                 Task.next_run_at <= now,
+                ~saturated,
             )
             .order_by(Task.next_run_at)
-            .limit(batch)
+            .limit(max(100, batch * 20))
             .with_for_update(skip_locked=True)
         )
         result = await self.db.execute(stmt)
@@ -129,6 +164,26 @@ class TaskQueue:
 
         claimed: list[Task] = []
         for task in tasks:
+            if len(claimed) >= batch:
+                break
+            # A transaction-scoped policy lock serializes count+claim across runners.
+            # Try-lock avoids deadlocking against another runner holding candidate rows.
+            locked = await self.db.scalar(text(
+                "SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"
+            ), {"key": f"task-policy:{task.project_id}:{task.task_type}"})
+            if not locked:
+                continue
+            policy = await self.db.scalar(select(TaskPolicy).where(
+                TaskPolicy.project_id == task.project_id,
+                TaskPolicy.task_type == task.task_type, TaskPolicy.is_default.is_(True),
+            ).execution_options(populate_existing=True))
+            if policy is not None:
+                active = await self.db.scalar(select(func.count()).select_from(Task).where(
+                    Task.project_id == task.project_id, Task.task_type == task.task_type,
+                    Task.status.in_(("processing", "cancelling")), Task.lease_expires_at > now,
+                ))
+                if active >= policy.concurrency_limit:
+                    continue
             run_token = uuid.uuid4()
             attempt_no = task.attempt_count + 1
             lease_seconds = max(1, task.timeout_seconds)
@@ -149,6 +204,8 @@ class TaskQueue:
                     lease_expires_at=now + timedelta(seconds=lease_seconds),
                     heartbeat_at=now,
                     started_at=task.started_at or now,
+                    error_code=None,
+                    error_message=None,
                     next_run_at=now + timedelta(seconds=lease_seconds),
                 )
             )
@@ -185,6 +242,7 @@ class TaskQueue:
                 Task.id == task_id,
                 Task.run_token == run_token,
                 Task.status.in_(("processing", "cancelling")),
+                Task.lease_expires_at > now,
             )
             .values(heartbeat_at=now, lease_expires_at=now + timedelta(seconds=300))
         )
@@ -201,6 +259,7 @@ class TaskQueue:
                 Task.id == task_id,
                 Task.run_token == run_token,
                 Task.status.in_(("processing", "cancelling")),
+                Task.lease_expires_at > now,
             )
             .values(
                 heartbeat_at=now,
@@ -232,6 +291,8 @@ class TaskQueue:
         if to_status not in _TRANSITIONS.get(from_status, frozenset()):
             raise TaskQueueError(f"非法转换 {from_status} -> {to_status}")
 
+        if from_status in ("processing", "cancelling") and run_token is None:
+            raise TaskQueueError("运行中任务的状态转换必须携带 run token")
         now = _now()
         values: dict[str, Any] = {
             "status": to_status,
@@ -282,8 +343,20 @@ class TaskQueue:
         # processing/cancelling 相关转换要求 run token 匹配。
         if run_token is not None:
             stmt = stmt.where(Task.run_token == run_token)
+        if to_status == "completed":
+            stmt = stmt.where(Task.lease_expires_at > now)
         res = await self.db.execute(stmt.values(**values))
+        if res.rowcount == 1 and to_status in ("failed", "cancelled"):
+            await self._sync_business_terminal(task_id, to_status, error_message)
         return res.rowcount == 1
+
+    async def _sync_business_terminal(self, task_id: uuid.UUID, status: str,
+                                      error_message: str | None) -> None:
+        from app.workers.lifecycle import lifecycle_registry
+        task = await self.db.scalar(select(Task).where(Task.id == task_id)
+                                    .execution_options(populate_existing=True))
+        if task is not None:
+            await lifecycle_registry.terminal(self.db, task, status, error_message)
 
     # ------------------------------------------------------------------
     # 取消
@@ -297,14 +370,30 @@ class TaskQueue:
         返回 (成功, 最终状态)。重复请求幂等：终态返回当前状态且不改写完成时间。
         """
         now = _now()
-        # 先读取当前状态与 state_version（CAS 基础）。
-        task = (
-            await self.db.execute(select(Task).where(Task.id == task_id))
-        ).scalar_one_or_none()
+        # First cancel descendants without holding a parent Task lock. A child can
+        # publish while holding Task -> Batch; retaining a parent Task lock here and
+        # then descending would create the inverse lock chain under parent cancel.
+        task = await self.db.scalar(
+            select(Task).where(Task.id == task_id).execution_options(populate_existing=True)
+        )
         if task is None:
             return False, "not_found"
         if task.status in TERMINAL_STATUSES:
             # 终态幂等：返回当前状态，不改写完成时间。
+            return True, task.status
+        # Descendants first so a queued parent's immutable summary sees their actual
+        # terminal states. Direct queue/API callers share this one path.
+        child_ids = (await self.db.execute(select(Task.id).where(
+            Task.parent_task_id == task.id, Task.status.in_(ACTIVE_STATUSES),
+        ).order_by(Task.id))).scalars().all()
+        for child_id in child_ids:
+            await self.request_cancel(task_id=child_id, cancel_requested_by=cancel_requested_by)
+        # Re-read after recursion: a worker may have reached a terminal transition.
+        task = await self.db.scalar(select(Task).where(Task.id == task_id)
+                                    .with_for_update().execution_options(populate_existing=True))
+        if task is None:
+            return False, "not_found"
+        if task.status in TERMINAL_STATUSES:
             return True, task.status
         if task.status == "queued":
             res = await self.db.execute(
@@ -327,12 +416,12 @@ class TaskQueue:
                 )
             )
             if res.rowcount == 1:
+                await self._sync_business_terminal(task_id, "cancelled", "任务已取消")
                 return True, "cancelled"
-            # 竞态：可能刚被领取为 processing，重读重试。
-            await self.db.rollback()
-            task = (
-                await self.db.execute(select(Task).where(Task.id == task_id))
-            ).scalar_one_or_none()
+            # 竞态：可能刚被领取为 processing。零行 UPDATE 不会使事务失效；
+            # 不能 rollback，否则会撤销已经完成的子任务取消。
+            task = await self.db.scalar(select(Task).where(Task.id == task_id)
+                                        .with_for_update().execution_options(populate_existing=True))
             if task is None:
                 return False, "not_found"
             if task.status == "processing":
@@ -424,6 +513,8 @@ class TaskQueue:
             max_attempts=max_attempts,
             timeout_seconds=timeout_seconds,
             idempotency_key=idempotency_key,
+            policy_snapshot=source.policy_snapshot,
+            resolve_policy=False,
         )
         # 绑定后继链。
         new_task.retry_of_task_id = source_task_id
@@ -482,8 +573,8 @@ class TaskQueue:
                 stats["cancelled"] += 1
                 continue
 
-            error_code = task.error_code
-            retriable = is_retriable(error_code) and task.attempt_count < task.max_attempts
+            error_code = task.error_code or TaskErrorCode.TEMPORARY_INFRA_ERROR.value
+            retriable = is_retriable(error_code) and await self.has_retry_budget(task)
             if retriable:
                 delay = _backoff_delay(task.attempt_count)
                 res = await self.db.execute(
@@ -517,6 +608,16 @@ class TaskQueue:
 
         return stats
 
+    async def has_retry_budget(self, task: Task) -> bool:
+        attempts = task.attempt_count
+        if task.handler == "generate_batch":
+            # Successful aggregation polls release the slot without spending retries.
+            polls = await self.db.scalar(select(func.count()).select_from(TaskAttempt).where(
+                TaskAttempt.task_id == task.id, TaskAttempt.status == "completed",
+            ))
+            attempts -= polls
+        return attempts < task.max_attempts
+
     async def _force_terminal(
         self,
         task: Task,
@@ -539,7 +640,7 @@ class TaskQueue:
             values["error_code"] = error_code
         if error_message is not None:
             values["error_message"] = error_message
-        await self.db.execute(
+        result = await self.db.execute(
             update(Task)
             .where(
                 Task.id == task.id,
@@ -548,6 +649,8 @@ class TaskQueue:
             )
             .values(**values)
         )
+        if result.rowcount == 1:
+            await self._sync_business_terminal(task.id, status, error_message)
 
     # ------------------------------------------------------------------
     # Attempt 审计

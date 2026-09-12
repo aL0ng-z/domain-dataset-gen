@@ -110,10 +110,11 @@ async def run_generate_single_handler(ctx: ExecutionContext) -> None:
     messages = json.loads(rebuilt)
     try:
         response = await client.chat_completion(messages, response_format={"type": "json_object"})
-    except Exception as exc:  # noqa: BLE001 - 转为明确 run 失败
-        raise GenerationRunError(
-            "LLM_CALL_FAILED", f"LLM 调用失败: {type(exc).__name__}"
-        ) from exc
+    except Exception as exc:  # noqa: BLE001 - preserve Task retry classification without provider secrets
+        from app.workers.errors import TaskError
+        from app.workers.runner import classify_error
+        code, retriable = classify_error(exc)
+        raise TaskError(code, f"LLM 调用失败: {type(exc).__name__}", retriable=retriable) from exc
     await ctx.checkpoint()
 
     # 解析输出：非 JSON -> run failed（不得创建看似合格的 Candidate）。
@@ -121,6 +122,8 @@ async def run_generate_single_handler(ctx: ExecutionContext) -> None:
         content = json.loads(response.content)
     except json.JSONDecodeError as exc:
         raise GenerationRunError("LLM_INVALID_JSON", "LLM 返回非 JSON，run 失败") from exc
+
+    await ctx.lock_for_publish()
 
     # 成功：持久化 raw output/Candidate/usage -> 标记 run/child task completed -> 更新批次计数。
     run.raw_output = response.content
@@ -231,6 +234,7 @@ async def run_generate_batch_handler(ctx: ExecutionContext) -> None:
     if batch.status in ("completed", "failed", "cancelled"):
         # 幂等：终态批次不重放。
         return
+    await ctx.lock_for_publish()
     if batch.status == "pending":
         batch.status = "processing"
     await db.flush()
@@ -255,16 +259,16 @@ async def run_generate_batch_handler(ctx: ExecutionContext) -> None:
     failed_children = sum(
         count for status, count in status_counts.items() if status in ("failed", "cancelled")
     )
-    if failed_children:
-        # 任一 child 最终失败 -> batch/parent failed（父任务绝不假 completed）。
-        await _finalize_batch_failed(db, batch, status_counts)
-        raise GenerationRunError("CHILD_FAILED", f"存在失败/取消子任务（{failed_children} 个）")
     if terminal_children < total_children:
         # 仍有运行中的子任务：回队退避轮询。
         ctx.requeue_after = 10
         await db.flush()
         return
 
+    if failed_children:
+        # 任一 child 最终失败 -> batch/parent failed（父任务绝不假 completed）。
+        await _finalize_batch_failed(db, batch, status_counts)
+        raise GenerationRunError("CHILD_FAILED", f"存在失败/取消子任务（{failed_children} 个）")
     # 全部 completed：batch/parent completed。
     await _finalize_batch_completed(db, batch)
     await db.flush()
@@ -387,15 +391,16 @@ def _make_batch_terminal_hook(batch_id: uuid.UUID, document_id: uuid.UUID):
                 )
             ).scalars().all()
         ]
+        settled = all(r.status in ("completed", "failed", "cancelled") for r in runs)
         await db.execute(
             update(GenerationBatch)
             .where(
                 GenerationBatch.id == batch_id,
-                GenerationBatch.status.in_(("pending", "processing")),
+                GenerationBatch.status.in_(("pending", "processing", terminal)),
             )
             .values(
                 status=terminal,
-                completed_at=datetime.now(UTC),
+                completed_at=func.coalesce(GenerationBatch.completed_at, datetime.now(UTC)),
                 completed_chunks=succeeded,
                 summary_json={
                     "succeeded": succeeded,
@@ -403,15 +408,11 @@ def _make_batch_terminal_hook(batch_id: uuid.UUID, document_id: uuid.UUID):
                     "cancelled": cancelled,
                     "candidate_ids": candidate_ids,
                     "failures": failures,
-                },
+                } if settled else None,
             )
         )
-        # 未开始 Chunk 状态恢复（不残留 generating）。
-        await db.execute(
-            update(Chunk)
-            .where(Chunk.document_id == document_id, Chunk.status == "generating")
-            .values(status="ready")
-        )
+        # Each child owns its Chunk transition. Touching a live child's Chunk here
+        # would reverse Task→business lock order and deadlock cancellation.
         doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one()
         if doc.status == "generating":
             doc.status = "chunked"

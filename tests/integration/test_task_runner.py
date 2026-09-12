@@ -278,7 +278,7 @@ async def test_heartbeat_and_lease_refresh_are_visible_to_other_sessions(
         await setup_db.execute(
             update(Task)
             .where(Task.id == task.id)
-            .values(heartbeat_at=old, lease_expires_at=old)
+            .values(heartbeat_at=old, lease_expires_at=datetime.now(UTC) + timedelta(seconds=60))
         )
         await setup_db.commit()
 

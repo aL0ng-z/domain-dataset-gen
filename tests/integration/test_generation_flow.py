@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -257,6 +257,22 @@ async def _run_handler_and_transition(
     ctx = _make_ctx(db, fresh, queue=q)
     try:
         await handler(ctx)
+        if ctx.requeue_after is not None:
+            ok = await q.transition(
+                task_id=_tid, run_token=_rt,
+                from_status="processing", to_status="queued",
+                expected_state_version=_sv,
+                next_run_at=datetime.now(UTC) + timedelta(seconds=ctx.requeue_after),
+            )
+            if ok:
+                await q.finish_attempt(
+                    task_id=_tid, run_token=_rt, attempt_no=fresh.attempt_count,
+                    status="completed",
+                )
+                await db.commit()
+            else:
+                await db.rollback()
+            return (await db.execute(select(Task).where(Task.id == _tid))).scalar_one()
         # 业务写入 + completed 转换原子提交。
         ok = await q.transition(
             task_id=_tid, run_token=_rt,

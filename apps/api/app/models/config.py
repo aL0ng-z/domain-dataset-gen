@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -81,6 +81,17 @@ class ExportProfile(Base):
 
 class TaskPolicy(Base):
     __tablename__ = "task_policies"
+    __table_args__ = (
+        CheckConstraint("max_retries >= 0", name="ck_task_policies_retries_nonnegative"),
+        CheckConstraint("timeout_seconds > 0", name="ck_task_policies_timeout_positive"),
+        CheckConstraint("concurrency_limit > 0", name="ck_task_policies_concurrency_positive"),
+        CheckConstraint(
+            "task_type IN ('parse','clean','chunk','generate','generate_batch','export')",
+            name="ck_task_policies_task_type_valid",
+        ),
+        Index("uq_task_policies_default_type", "project_id", "task_type", unique=True,
+              postgresql_where=text("is_default = true")),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"))

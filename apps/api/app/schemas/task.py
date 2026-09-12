@@ -21,6 +21,8 @@ class TaskResponse(BaseSchema):
     # ---- T07：可恢复执行记录字段 ----
     state_version: int
     attempt_count: int
+    policy_snapshot: dict | None = None
+    timeout_seconds: int
     max_attempts: int
     next_run_at: datetime
     cancel_requested_at: datetime | None
@@ -56,6 +58,8 @@ class TaskResponse(BaseSchema):
             completed_at=task.completed_at,
             state_version=task.state_version,
             attempt_count=task.attempt_count,
+            policy_snapshot=task.policy_snapshot,
+            timeout_seconds=task.timeout_seconds,
             max_attempts=task.max_attempts,
             next_run_at=task.next_run_at,
             cancel_requested_at=task.cancel_requested_at,

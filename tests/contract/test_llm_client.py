@@ -66,7 +66,8 @@ class FakeOpenAI:
 
 
 def _build_client(monkeypatch, calls: list, *, fail_times: int = 0) -> LLMClient:
-    def _factory(base_url, api_key):
+    def _factory(base_url, api_key, max_retries):
+        assert max_retries == 0  # Task is the sole retry owner by default
         return FakeOpenAI(base_url, api_key, FakeCompletions(calls, fail_times=fail_times))
 
     monkeypatch.setattr("llm.client.AsyncOpenAI", _factory)
@@ -115,7 +116,7 @@ async def test_chat_completion_retries_on_rate_limit(monkeypatch, no_backoff):
     calls: list = []
     client = _build_client(monkeypatch, calls, fail_times=1)
 
-    response = await client.chat_completion([{"role": "user", "content": "x"}])
+    response = await client.chat_completion([{"role": "user", "content": "x"}], max_retries=1)
 
     assert len(calls) == 2  # 一次失败 + 一次成功
     assert response.content == "你好，世界"
@@ -128,5 +129,23 @@ async def test_chat_completion_raises_after_all_retries(monkeypatch, no_backoff)
     with pytest.raises(RateLimitError):
         await client.chat_completion([{"role": "user", "content": "x"}], max_retries=3)
 
-    # max_retries=3 -> 3 次尝试
-    assert len(calls) == 3
+    # max_retries=3 -> 初次 + 3 次重试
+    assert len(calls) == 4
+
+
+async def test_chat_completion_default_zero_retries_calls_provider_once(monkeypatch):
+    calls: list = []
+    client = _build_client(monkeypatch, calls, fail_times=1)
+    with pytest.raises(RateLimitError):
+        await client.chat_completion([{"role": "user", "content": "x"}])
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status, retriable", [(401, False), (400, False), (429, True), (500, True)])
+def test_provider_status_error_task_classification(status, retriable):
+    from openai import APIStatusError
+
+    from app.workers.runner import classify_error
+    response = httpx.Response(status, request=httpx.Request("POST", "https://llm.test/v1/chat/completions"))
+    _, actual = classify_error(APIStatusError("provider error", response=response, body=None))
+    assert actual is retriable

@@ -78,6 +78,7 @@ class Task(Base):
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("300"))
+    policy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     # ---- 执行 lease / 取消 ----

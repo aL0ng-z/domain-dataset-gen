@@ -128,6 +128,21 @@ async def _prepare_export_retry(db: AsyncSession, source_task: Task, new_task: T
         raise RetryPreparationError("EXPORT_RETRY_CONFLICT", "导出重试发生并发冲突")
 
 
+async def _prepare_chunk_retry(db: AsyncSession, source_task: Task, new_task: Task) -> None:
+    from app.models.chunk_set import ChunkSet
+    chunk_set_id = (source_task.payload or {}).get("chunk_set_id")
+    if chunk_set_id is None:
+        raise RetryPreparationError("CHUNK_RETRY_INVALID", "切分任务缺少集合来源")
+    result = await db.execute(update(ChunkSet).where(
+        ChunkSet.id == uuid.UUID(str(chunk_set_id)), ChunkSet.status == "failed",
+    ).values(status="pending", error_message=None, completed_at=None))
+    if result.rowcount != 1:
+        raise RetryPreparationError("CHUNK_RETRY_CONFLICT", "切分集合已变更，无法重试")
+
+
+retry_preparation_registry.register("chunk_document", 2, _prepare_chunk_retry)
+
+
 for _export_handler in ("export_dataset", "export_benchmark"):
     retry_preparation_registry.register(_export_handler, 1, _prepare_export_retry)
 
@@ -158,6 +173,8 @@ class TaskService:
         timeout_seconds: int | None = None,
         next_run_at: datetime | None = None,
         task_subtype: str | None = None,
+        policy_snapshot: dict | None = None,
+        resolve_policy: bool = True,
     ) -> Task:
         """创建持久化 Task（调用方事务内，不自行 commit）。
 
@@ -187,6 +204,8 @@ class TaskService:
             max_attempts=max_attempts or DEFAULT_MAX_ATTEMPTS.get(task_type, 2),
             timeout_seconds=timeout_seconds or DEFAULT_TIMEOUT_SECONDS.get(task_type, 300),
             next_run_at=next_run_at,
+            policy_snapshot=policy_snapshot,
+            resolve_policy=resolve_policy,
         )
 
     async def _find_by_idempotency(
@@ -252,57 +271,10 @@ class TaskService:
         )
         if not ok:
             return None
-        # 父任务取消传播：向所有非终态子任务请求取消。
-        if status in ("cancelled", "cancelling"):
-            await self._cancel_children(task_id, cancel_requested_by)
-            # T06：chunk Task queued 取消后，关联 ChunkSet 原子收敛为 cancelled。
-            await self._converge_chunk_set_on_cancel(task_id)
         task = await self.get_task(task_id)
         if task is not None:
             await self._publish_event(task, f"task.{task.status}")
         return task
-
-    async def _converge_chunk_set_on_cancel(self, task_id: uuid.UUID) -> None:
-        """queued chunk Task 取消后把关联 ChunkSet 收敛为 cancelled（不覆盖已完成产物）。"""
-        task = await self.get_task(task_id)
-        if task is None or task.task_type != "chunk":
-            return
-        chunk_set_id = (task.payload or {}).get("chunk_set_id")
-        if not chunk_set_id:
-            return
-        from datetime import UTC, datetime
-
-        from sqlalchemy import update
-
-        from app.models.chunk_set import ChunkSet
-
-        await self.db.execute(
-            update(ChunkSet)
-            .where(
-                ChunkSet.id == uuid.UUID(str(chunk_set_id)),
-                ChunkSet.status.in_(("pending", "processing", "review_pending")),
-            )
-            .values(status="cancelled", error_message="切分任务已取消", completed_at=datetime.now(UTC))
-        )
-
-    async def _cancel_children(
-        self, parent_task_id: uuid.UUID, cancel_requested_by: uuid.UUID
-    ) -> None:
-        """向所有非终态子任务传播取消请求。"""
-        result = await self.db.execute(
-            select(Task).where(
-                Task.parent_task_id == parent_task_id,
-                Task.status.in_(("queued", "processing", "cancelling")),
-            )
-        )
-        children = list(result.scalars().all())
-        for child in children:
-            await self.queue.request_cancel(
-                task_id=child.id, cancel_requested_by=cancel_requested_by
-            )
-        if children:
-            for child in children:
-                await self._publish_event(child, f"task.{child.status}")
 
     # ------------------------------------------------------------------
     # Retry
@@ -320,6 +292,8 @@ class TaskService:
         返回 (新 Task, 是否新建)。若已存在非终态后继返回 (已存在后继, False)，
         调用方决定 200/409 幂等语义。
         """
+        if source_task.handler in ("generate_batch", "generate_single"):
+            return await self._retry_generation(source_task, idempotency_key, created_by)
         new_task, newly_created = await self.queue.create_retry(
             source_task_id=source_task.id,
             idempotency_key=idempotency_key,
@@ -342,6 +316,9 @@ class TaskService:
                 return None, False
             return new_task, False
 
+        from app.workers.lifecycle import bind_document_job
+        await bind_document_job(self.db, new_task, source=source_task)
+
         preparer = retry_preparation_registry.resolve(
             source_task.handler, source_task.payload_version or 1
         )
@@ -350,6 +327,45 @@ class TaskService:
         if new_task.status == "queued":
             await self._publish_event(new_task, "task.created")
         return new_task, True
+
+    async def _retry_generation(self, source: Task, key: str,
+                                created_by: uuid.UUID) -> tuple[Task | None, bool]:
+        from app.models.generation_batch import GenerationBatch
+        from app.services.generation_retry_service import (
+            GenerationProvenanceInvalidError,
+            GenerationRetryExistsError,
+            GenerationRetryNotRetryableError,
+            GenerationRetryPlanner,
+        )
+        batch_id = (source.payload or {}).get("generation_batch_id")
+        if not batch_id:
+            raise RetryPreparationError("GENERATION_NOT_RETRYABLE", "生成任务缺少批次来源")
+        # The batch row serializes retries from both task and batch APIs.
+        batch = await self.db.scalar(select(GenerationBatch).where(
+            GenerationBatch.id == uuid.UUID(str(batch_id)),
+        ).with_for_update())
+        if batch is None:
+            raise RetryPreparationError("GENERATION_NOT_FOUND", "生成批次不存在")
+        successor = await self.db.scalar(select(GenerationBatch).where(
+            GenerationBatch.retry_of_generation_batch_id == batch.id,
+        ))
+        if successor is not None:
+            task = await self.db.scalar(select(Task).where(
+                Task.entity_id == successor.id, Task.handler == "generate_batch",
+            ))
+            if task is not None and task.idempotency_key == key:
+                return task, False
+            return None, False
+        if source.status != "failed" or batch.status not in ("failed", "cancelled"):
+            raise RetryPreparationError("GENERATION_BATCH_ACTIVE", "请等待当前批次结束后重试")
+        planner = GenerationRetryPlanner(self.db, self)
+        try:
+            _, task = await planner.plan_retry(source_batch=batch, project_id=source.project_id,
+                                               created_by=created_by, idempotency_key=key)
+        except (GenerationProvenanceInvalidError, GenerationRetryExistsError,
+                GenerationRetryNotRetryableError) as exc:
+            raise RetryPreparationError("GENERATION_NOT_RETRYABLE", str(exc)) from exc
+        return task, True
 
     # ------------------------------------------------------------------
     # 事件发布（版本化，仅提示刷新；REST 是真源）

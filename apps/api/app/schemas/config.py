@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, field_serializer, field_validator, model_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
 
 from app.security.snapshot import find_forbidden_keys, redact, validate_parser_options
+from domain.enums import TaskType
 from domain.schemas import BaseSchema, RequestSchema
 
 
@@ -246,18 +247,25 @@ class ExportProfileResponse(BaseSchema):
 # --- TaskPolicy ---
 class TaskPolicyCreate(RequestSchema):
     name: str
-    task_type: str
-    max_retries: int = 3
-    timeout_seconds: int = 300
-    concurrency_limit: int = 5
+    task_type: TaskType
+    max_retries: int = Field(default=3, ge=0)
+    timeout_seconds: int = Field(default=300, gt=0)
+    concurrency_limit: int = Field(default=5, gt=0)
 
 
 class TaskPolicyUpdate(RequestSchema):
     name: str | None = None
-    task_type: str | None = None
-    max_retries: int | None = None
-    timeout_seconds: int | None = None
-    concurrency_limit: int | None = None
+    task_type: TaskType | None = None
+    max_retries: int | None = Field(default=None, ge=0)
+    timeout_seconds: int | None = Field(default=None, gt=0)
+    concurrency_limit: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def reject_explicit_null(self):
+        for field in self.model_fields_set:
+            if getattr(self, field) is None:
+                raise ValueError(f"{field} 不可为 null")
+        return self
 
 
 class TaskPolicyResponse(BaseSchema):
@@ -266,7 +274,7 @@ class TaskPolicyResponse(BaseSchema):
     name: str
     version: int
     is_default: bool
-    task_type: str
+    task_type: TaskType
     max_retries: int
     timeout_seconds: int
     concurrency_limit: int

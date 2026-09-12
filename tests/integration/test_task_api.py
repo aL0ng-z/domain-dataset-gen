@@ -44,21 +44,27 @@ async def _seed_task(
     status: str = "queued",
     idempotency_key: str | None = None,
 ) -> Task:
+    from tests.conftest import ResourceFactory
+    factory = ResourceFactory(db)
+    document = await factory.create_document(project_id, created_by)
+    profile = await factory.create_parser_profile(project_id)
+    job = await factory.create_parse_job(document.id, profile.id)
     q = TaskQueue(db)
     task = await q.create_task(
         project_id=project_id,
         task_type="parse",
         entity_type="document",
-        entity_id=uuid.uuid4(),
+        entity_id=document.id,
         created_by=created_by,
         handler=handler,
-        payload={"document_id": str(uuid.uuid4()), "parse_job_id": str(uuid.uuid4())},
+        payload={"document_id": str(document.id), "parse_job_id": str(job.id)},
         payload_version=1,
         idempotency_key=idempotency_key,
         max_attempts=2,
         timeout_seconds=300,
     )
     if status != "queued":
+        job.status = "processing" if status == "cancelling" else status
         task.status = status
         if status in ("processing", "cancelling"):
             # 约束 ck_tasks_lease_required：processing/cancelling 必须有 run token 与 lease。

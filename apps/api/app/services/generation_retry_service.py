@@ -59,8 +59,17 @@ class GenerationRetryPlanner:
         返回 (new_batch, new_parent_task)。旧 Batch/Run/Task 永不改写或复活。
         调用方在同一事务提交后由 runner 派发。
         """
+        source_batch = await self.db.scalar(select(GenerationBatch).where(
+            GenerationBatch.id == source_batch.id,
+        ).with_for_update().execution_options(populate_existing=True))
         if source_batch.is_legacy or source_batch.provenance_status != "verified":
             raise GenerationProvenanceInvalidError("源 Batch provenance 非 verified")
+        active = await self.db.scalar(select(Task.id).where(
+            Task.payload["generation_batch_id"].astext == str(source_batch.id),
+            Task.status.in_(("queued", "processing", "cancelling")),
+        ).limit(1))
+        if active is not None:
+            raise GenerationRetryNotRetryableError("当前批次仍有执行中的任务，请等待任务结束")
 
         # 同一源 Batch 已有直接 retry 后继 -> 409（不产生分叉链）。
         existing_successor = (
@@ -71,7 +80,11 @@ class GenerationRetryPlanner:
             )
         ).scalars().all()
         if existing_successor:
-            # 同 key 并发：返回已存在后继（幂等），否则 409。
+            successor = existing_successor[0]
+            successor_task = await self._find_source_parent_task(successor)
+            if (idempotency_key is not None and successor_task is not None
+                    and successor_task.idempotency_key == idempotency_key):
+                return successor, successor_task
             raise GenerationRetryExistsError("源 Batch 已有 retry 后继")
 
         # 复制旧 Batch 快照（verified 模板/模型快照、hash、renderer）。
@@ -132,6 +145,7 @@ class GenerationRetryPlanner:
             payload=parent_payload,
             handler="generate_batch",
             idempotency_key=idempotency_key,
+            **self._frozen_policy(source_parent_task),
         )
         if source_parent_task is not None:
             parent_task.retry_of_task_id = source_parent_task.id
@@ -165,6 +179,11 @@ class GenerationRetryPlanner:
                 "generation_batch_id": str(new_batch.id),
                 "generation_run_id": str(run.id),
             }
+            source_child = await self.db.scalar(select(Task).where(
+                Task.handler == "generate_single",
+                Task.payload["generation_batch_id"].astext == str(source_batch.id),
+                Task.entity_id == chunk.id,
+            ).order_by(Task.created_at.desc()).limit(1))
             await self.task_service.create_task(
                 project_id=project_id,
                 task_type="generate",
@@ -174,10 +193,18 @@ class GenerationRetryPlanner:
                 payload=child_payload,
                 handler="generate_single",
                 parent_task_id=parent_task.id,
+                **self._frozen_policy(source_child),
             )
 
         await self.db.flush()
         return new_batch, parent_task
+
+    @staticmethod
+    def _frozen_policy(task: Task | None) -> dict:
+        if task is None:
+            return {}
+        return {"max_attempts": task.max_attempts, "timeout_seconds": task.timeout_seconds,
+                "policy_snapshot": task.policy_snapshot, "resolve_policy": False}
 
     async def _select_uncompleted_chunks(self, batch: GenerationBatch) -> list[Chunk]:
         """旧 Batch 中没有 completed Run + Candidate 的 Chunk（按 ordinal 排序）。

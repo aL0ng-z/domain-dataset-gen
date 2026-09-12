@@ -372,6 +372,9 @@ async def list_cleaning_jobs(
             document_id=job.document_id,
             parse_job_id=job.parse_job_id,
             status=job.status,
+            task_id=job.task_id,
+            error_code=job.error_code,
+            error_message=job.error_message,
             started_by=job.started_by,
             parser_profile_id=parse_job.parser_profile_id,
             parser_profile_name=profile.name,
@@ -416,19 +419,30 @@ async def start_cleaning(
         if parse_job is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="没有已完成的解析任务")
 
+    # Serialize same-document creation so double clicks share one live workbench.
+    await db.execute(select(Document).where(Document.id == did).with_for_update())
+    from sqlalchemy import or_
+
+    from app.models.task import Task
+
     existing_result = await db.execute(
         select(CleaningJob)
         .where(
             CleaningJob.document_id == did,
             CleaningJob.parse_job_id == parse_job.id,
-            CleaningJob.status.in_(("queued", "processing", "completed")),
+            or_(CleaningJob.status == "completed", (
+                CleaningJob.status.in_(("queued", "processing"))
+                & CleaningJob.task_id.in_(select(Task.id).where(
+                    Task.status.in_(("queued", "processing")),
+                ))
+            )),
         )
         .order_by(CleaningJob.created_at.desc())
     )
     existing_job = existing_result.scalars().first()
     if existing_job is not None:
         return {
-            "task_id": None,
+            "task_id": existing_job.task_id if existing_job.status != "completed" else None,
             "cleaning_job_id": existing_job.id,
             "reused": True,
             "message": "已存在该解析结果的清洗工作台",

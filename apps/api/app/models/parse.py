@@ -7,7 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 
-parse_job_status_enum = ENUM("queued", "processing", "completed", "failed", name="parse_job_status", create_type=True)
+parse_job_status_enum = ENUM("queued", "processing", "completed", "failed", "cancelled", name="parse_job_status", create_type=True)
 
 
 class ParseJob(Base):
@@ -17,6 +17,8 @@ class ParseJob(Base):
     document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"))
     parser_profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("parser_profiles.id"))
     status: Mapped[str] = mapped_column(parse_job_status_enum, nullable=False, default="queued")
+    task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     raw_markdown_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     structured_json_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     page_mapping: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

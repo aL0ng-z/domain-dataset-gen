@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from datetime import UTC, datetime
@@ -59,22 +60,25 @@ async def run_clean_handler(ctx: ExecutionContext) -> None:
     if cleaning_job is None:
         # 项目链已保证 doc/parse_job 同项目；cleaning_job 必须匹配该 doc+parse_job。
         raise ProjectChainError("清洗任务不存在")
+    if cleaning_job.task_id is not None and cleaning_job.task_id != ctx.task_id:
+        from app.workers.execution import TaskProtocolError
+        raise TaskProtocolError("清洗任务已由其他 Task 接管")
     cleaning_job.status = "processing"
     await db.flush()
     await ctx.checkpoint()
 
     # Download parser artifacts
-    md_bytes = storage.download_file(settings.minio_bucket_outputs, parse_job.raw_markdown_key)
+    md_bytes = await asyncio.to_thread(storage.download_file, settings.minio_bucket_outputs, parse_job.raw_markdown_key)
     raw_markdown = md_bytes.decode("utf-8")
     structured_json: dict = {}
     if parse_job.structured_json_key:
-        json_bytes = storage.download_file(settings.minio_bucket_outputs, parse_job.structured_json_key)
+        json_bytes = await asyncio.to_thread(storage.download_file, settings.minio_bucket_outputs, parse_job.structured_json_key)
         structured_json = json.loads(json_bytes.decode("utf-8"))
     await ctx.checkpoint()
 
     # Split into sections
-    section_data_list = split_into_sections(
-        raw_markdown,
+    section_data_list = await asyncio.to_thread(
+        split_into_sections, raw_markdown,
         page_mapping=parse_job.page_mapping if isinstance(parse_job.page_mapping, list) else None,
         structured_json=structured_json if isinstance(structured_json, dict) else None,
     )

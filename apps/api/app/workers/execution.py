@@ -161,6 +161,23 @@ class ExecutionContext:
     # 业务写辅助
     # ------------------------------------------------------------------
 
+    async def lock_for_publish(self) -> None:
+        """Fence a short publication transaction before acquiring business aggregate locks.
+
+        Never call before external IO. Task→aggregate lock order matches cancellation.
+        The lock is held until the runner atomically commits business writes + Task.
+        """
+        task = await self.db.scalar(select(Task).where(Task.id == self.task_id)
+                                    .with_for_update().execution_options(populate_existing=True))
+        if task is None or task.run_token != self.run_token:
+            raise TaskProtocolError("发布 run token 已失效")
+        if task.status == "cancelling" or task.cancel_requested_at is not None:
+            raise TaskCancelledError("任务已请求取消")
+        if task.status != "processing" or task.lease_expires_at <= datetime.now(UTC):
+            raise TaskProtocolError("发布任务 lease 已过期")
+        if datetime.now(UTC) >= self.deadline:
+            raise TaskTimeoutError("任务执行超时")
+
     def checkpoint_before_publish(self) -> Awaitable[None]:
         """发布事务前门禁：校验 run token + cancel，防止取消后仍发布产物。"""
         return self.checkpoint()

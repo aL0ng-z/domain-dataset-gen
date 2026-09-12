@@ -49,6 +49,10 @@ async def run_parse_handler(ctx: ExecutionContext) -> None:
     if parse_job is None:
         raise ProjectChainError("解析任务不存在")
 
+    if parse_job.task_id is not None and parse_job.task_id != ctx.task_id:
+        from app.workers.execution import TaskProtocolError
+        raise TaskProtocolError("解析任务已由其他 Task 接管")
+
     # ---- 执行前复核（PDF 下载/联网前失败）----
     _validate_frozen_snapshot(parse_job)
 

@@ -10,6 +10,7 @@ worker 崩溃后由 reaper 回收 lease，Task 可恢复执行。
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import os
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 # 心跳间隔（秒）。
 HEARTBEAT_INTERVAL_SECONDS = 30
 # 领取批次大小。
-CLAIM_BATCH = 5
+CLAIM_BATCH = 1
 # 轮询空队列的退避（秒）。
 IDLE_POLL_INTERVAL_SECONDS = 2.0
 # reaper 回收间隔（秒）。
@@ -58,6 +59,16 @@ def classify_error(exc: Exception) -> tuple[TaskErrorCode, bool]:
 
     if isinstance(exc, TaskError):
         return exc.code, exc.retriable
+    from openai import APIConnectionError, APIStatusError
+
+    if isinstance(exc, APIConnectionError):
+        return TaskErrorCode.NETWORK_ERROR, True
+    if isinstance(exc, APIStatusError):
+        if exc.status_code == 429:
+            return TaskErrorCode.RATE_LIMITED, True
+        if exc.status_code in (408, 409) or exc.status_code >= 500:
+            return TaskErrorCode.TEMPORARY_INFRA_ERROR, True
+        return TaskErrorCode.BUSINESS_ERROR, False
     # 已知异常类型 -> 可重试。
     if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
         return TaskErrorCode.NETWORK_ERROR, True
@@ -102,28 +113,38 @@ class TaskRunner:
         self._stop.set()
 
     async def run(self) -> None:
-        """主循环：claim -> execute -> reap，直到收到停止信号。"""
-        logger.info("runner %s 启动", self.worker_id)
-        last_reap = _now()
-        while not self._stop.is_set():
-            try:
-                await self._claim_and_execute()
-            except Exception:  # noqa: BLE001 - 主循环不因单轮异常退出
-                logger.exception("runner 单轮执行异常，继续轮询")
-                await asyncio.sleep(IDLE_POLL_INTERVAL_SECONDS)
-
-            if _now() - last_reap >= timedelta(seconds=REAP_INTERVAL_SECONDS):
+        """One execution slot, with lease recovery independent from handler duration."""
+        logger.info("runner %s started", self.worker_id)
+        reaper = asyncio.create_task(self._reaper_loop())
+        try:
+            while not self._stop.is_set():
                 try:
-                    await self._reap()
+                    await self._claim_and_execute()
                 except Exception:  # noqa: BLE001
-                    logger.exception("reaper 异常")
-                last_reap = _now()
+                    logger.exception("runner polling failed")
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(self._stop.wait(), IDLE_POLL_INTERVAL_SECONDS)
+        finally:
+            reaper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reaper
+        logger.info("runner %s stopped", self.worker_id)
 
-            if self._stop.is_set():
-                break
-            # 避免空转：本轮没有任务时稍作退避。
-            await asyncio.sleep(IDLE_POLL_INTERVAL_SECONDS)
-        logger.info("runner %s 已停止", self.worker_id)
+    async def _reaper_loop(self) -> None:
+        while not self._stop.is_set():
+            await self._reap()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stop.wait(), REAP_INTERVAL_SECONDS)
+
+    async def _heartbeat_loop(self, ctx: ExecutionContext, timeout_seconds: int) -> None:
+        interval = min(HEARTBEAT_INTERVAL_SECONDS, max(0.1, timeout_seconds / 3))
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                if not await ctx.heartbeat():
+                    return
+            except Exception:  # noqa: BLE001 - a temporary failure must not kill the loop
+                logger.exception("task %s heartbeat failed", ctx.task_id)
 
     async def _claim_and_execute(self) -> None:
         # claim 在独立事务提交；每个任务在执行时再打开自己的会话。
@@ -190,8 +211,9 @@ class TaskRunner:
                 )
 
                 outcome: _Outcome
+                heartbeat = asyncio.create_task(self._heartbeat_loop(ctx, task.timeout_seconds))
                 try:
-                    await handler(ctx)
+                    await asyncio.wait_for(handler(ctx), timeout=max(1, task.timeout_seconds))
                     # 发布事务前门禁：校验 run token + cancel。
                     await ctx.checkpoint()
                     if ctx.requeue_after is not None:
@@ -203,7 +225,7 @@ class TaskRunner:
                         outcome = _Outcome(status="completed")
                 except TaskCancelledError:
                     outcome = _Outcome(status="cancelled")
-                except TaskTimeoutError:
+                except (TaskTimeoutError, TimeoutError):
                     outcome = _Outcome(
                         status="failed", retriable=True,
                         error_code=TaskErrorCode.TEMPORARY_INFRA_ERROR, error="任务执行超时",
@@ -219,6 +241,11 @@ class TaskRunner:
                         status="failed", retriable=retriable,
                         error_code=error_code, error=str(exc),
                     )
+
+                finally:
+                    heartbeat.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await heartbeat
 
                 # 捕获 handler 注册的业务终态钩子（ChunkSet failed/cancelled 收敛）。
                 terminal_hook = ctx._terminal_hook
@@ -292,53 +319,48 @@ class TaskRunner:
                 if current is None or current.run_token != run_token:
                     await session.rollback()
                     return
-                if outcome.status == "cancelled":
-                    # cancel 请求已由 request_cancel 将 processing 置为 cancelling；
-                    # 但可能存在竞态（checkpoint 读到 cancel 标志时状态仍为 processing），
-                    # 两种来源都按状态图收敛到 cancelled。
-                    if current.status == "cancelling":
-                        await queue.transition(
-                            task_id=task_id, run_token=run_token,
-                            from_status="cancelling", to_status="cancelled",
-                            expected_state_version=current.state_version,
-                        )
-                    else:
-                        await queue.transition(
+                # Cancellation wins over a concurrent handler exception.
+                if current.status == "cancelling" or outcome.status == "cancelled":
+                    version = current.state_version
+                    if current.status == "processing":
+                        ok = await queue.transition(
                             task_id=task_id, run_token=run_token,
                             from_status="processing", to_status="cancelling",
-                            expected_state_version=current.state_version,
+                            expected_state_version=version,
                         )
-                        await queue.transition(
-                            task_id=task_id, run_token=run_token,
-                            from_status="cancelling", to_status="cancelled",
-                            expected_state_version=current.state_version + 1,
-                        )
+                        if not ok:
+                            await session.rollback()
+                            return
+                        version += 1
+                    ok = await queue.transition(
+                        task_id=task_id, run_token=run_token,
+                        from_status="cancelling", to_status="cancelled",
+                        expected_state_version=version,
+                        error_code=TaskErrorCode.TASK_CANCELLED.value,
+                    )
+                    if not ok:
+                        await session.rollback()
+                        return
                     await queue.finish_attempt(
                         task_id=task_id, run_token=run_token, attempt_no=attempt_no,
                         status="cancelled", error_code=TaskErrorCode.TASK_CANCELLED.value,
                         error_message="任务已请求取消",
                     )
+                    final_status = "cancelled"
                 else:
-                    failure_outcome = await self._handle_failure(
+                    final_status = await self._handle_failure(
                         queue, current, run_token, attempt_no,
                         outcome.error_code, outcome.error, retriable=outcome.retriable,
                     )
-                # handler 注册的业务终态钩子（如 ChunkSet failed/cancelled 收敛）。
-                # 钩子内部用 CAS 收敛，且不覆盖已完成产物。
-                should_run_terminal_hook = outcome.status == "cancelled" or (
-                    outcome.status == "failed" and failure_outcome == "failed"
-                )
-                if terminal_hook is not None and should_run_terminal_hook:
-                    try:
-                        await terminal_hook(
-                            session,
-                            "cancelled" if outcome.status == "cancelled" else "failed",
-                            outcome.error,
-                        )
-                    except Exception:  # noqa: BLE001 - 业务收敛失败不阻断任务终态落库
-                        logger.exception("task %s 业务终态钩子执行失败", task_id)
+                # Built-in callbacks have already run inside queue.transition. Retain
+                # custom handler hooks; their failures roll back Task as well.
+                from app.workers.lifecycle import lifecycle_registry
+                if (terminal_hook is not None and final_status in ("failed", "cancelled")
+                        and lifecycle_registry.resolve(current.handler, current.payload_version or 1) is None):
+                    await terminal_hook(session, final_status, outcome.error)
                 await session.commit()
             except Exception:  # noqa: BLE001
+                logger.exception("task %s terminal transaction failed", task_id)
                 await session.rollback()
 
     async def _fail_permanent(
@@ -362,7 +384,7 @@ class TaskRunner:
         error_code: TaskErrorCode, message: str, *, retriable: bool,
     ) -> str:
         """按错误分类决定：可重试且有额度 -> 回 queued 退避；否则 failed。"""
-        if retriable and task.attempt_count < task.max_attempts:
+        if retriable and await queue.has_retry_budget(task):
             from app.workers.queue import _backoff_delay
 
             delay = _backoff_delay(task.attempt_count)
@@ -407,6 +429,7 @@ class TaskRunner:
                 if any(stats.values()):
                     logger.info("reaper 回收：%s", stats)
             except Exception:  # noqa: BLE001
+                logger.exception("reaper transaction failed")
                 await session.rollback()
 
 

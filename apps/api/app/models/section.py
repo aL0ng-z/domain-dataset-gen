@@ -17,7 +17,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
-cleaning_job_status_enum = ENUM("queued", "processing", "completed", "failed", name="cleaning_job_status", create_type=True)
+cleaning_job_status_enum = ENUM("queued", "processing", "completed", "failed", "cancelled", name="cleaning_job_status", create_type=True)
 section_status_enum = ENUM("draft", "in_cleaning", "review_pending", "accepted", "rejected", name="section_status", create_type=True)
 comment_type_enum = ENUM("parse_issue", "ocr_issue", "layout_issue", "general", name="comment_type", create_type=True)
 section_assignment_status_enum = ENUM(
@@ -33,6 +33,9 @@ class CleaningJob(Base):
     document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"))
     parse_job_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("parse_jobs.id"))
     status: Mapped[str] = mapped_column(cleaning_job_status_enum, nullable=False, default="queued")
+    task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_by: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

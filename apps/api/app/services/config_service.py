@@ -1,11 +1,11 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base
-from app.models.config import ParserProfile
+from app.models.config import ParserProfile, TaskPolicy
 
 
 class ConfigService:
@@ -53,6 +53,16 @@ class ConfigService:
         if obj is None:
             return None
         mapped = self._map_fields(kwargs)
+        if self.model_class is TaskPolicy:
+            # A project row lock serializes category changes as well as per-type defaults.
+            from app.models.project import Project
+            await self.db.execute(select(Project.id).where(Project.id == obj.project_id).with_for_update())
+            await self.db.refresh(obj)
+            for task_type in sorted({obj.task_type, mapped.get("task_type") or obj.task_type}):
+                await self._lock_task_policy(obj.project_id, task_type)
+            await self.db.refresh(obj)
+            if mapped.get("task_type", obj.task_type) != obj.task_type:
+                obj.is_default = False  # Defaults belong to their original task category.
         for key, value in mapped.items():
             if value is not None:
                 setattr(obj, key, value)
@@ -69,20 +79,30 @@ class ConfigService:
         await self.db.flush()
         return True
 
+    async def _lock_task_policy(self, project_id: uuid.UUID, task_type: str) -> None:
+        await self.db.execute(text(
+            "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
+        ), {"key": f"task-policy:{project_id}:{task_type}"})
+
     async def set_default(self, project_id: uuid.UUID, config_id: uuid.UUID) -> Any | None:
-        # Clear existing default
-        result = await self.db.execute(
-            select(self.model_class).where(
-                self.model_class.project_id == project_id, self.model_class.is_default == True  # noqa: E712
-            )
+        obj = await self.get(config_id)
+        if obj is None or obj.project_id != project_id:
+            return None
+        query = select(self.model_class).where(
+            self.model_class.project_id == project_id, self.model_class.is_default.is_(True),
         )
+        if self.model_class is TaskPolicy:
+            from app.models.project import Project
+            await self.db.execute(select(Project.id).where(Project.id == project_id).with_for_update())
+            await self.db.refresh(obj)
+            await self._lock_task_policy(project_id, obj.task_type)
+            await self.db.refresh(obj)
+            query = query.where(TaskPolicy.task_type == obj.task_type)
+        result = await self.db.execute(query.execution_options(populate_existing=True))
         for existing in result.scalars().all():
             existing.is_default = False
-
-        # Set new default
-        obj = await self.get(config_id)
-        if obj is None:
-            return None
+        # Clear first to satisfy the partial unique index irrespective of ORM update order.
+        await self.db.flush()
         obj.is_default = True
         await self.db.flush()
         await self.db.refresh(obj)
