@@ -288,6 +288,23 @@ export interface paths {
         patch: operations["project_update"];
         trace?: never;
     };
+    "/api/projects/{pid}/access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Project Access */
+        get: operations["project_get_access"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/benchmarks/": {
         parameters: {
             query?: never;
@@ -4114,6 +4131,10 @@ export interface components {
             /** Version */
             version: number;
         };
+        /** ProjectAccessResponse */
+        ProjectAccessResponse: {
+            effective_role: components["schemas"]["UserRole"];
+        };
         /** ProjectCreate */
         ProjectCreate: {
             /** Description */
@@ -4859,6 +4880,11 @@ export interface components {
             /** Username */
             username: string;
         };
+        /**
+         * UserRole
+         * @enum {string}
+         */
+        UserRole: "admin" | "reviewer" | "editor" | "viewer";
         /** UserUpdate */
         UserUpdate: {
             /** Email */
@@ -6234,6 +6260,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectResponse"];
+                };
+            };
+            /** @description 认证失败 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 权限不足 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求参数校验失败 */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationErrorResponse"];
+                };
+            };
+            /** @description 服务器内部错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    project_get_access: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectAccessResponse"];
                 };
             };
             /** @description 认证失败 */

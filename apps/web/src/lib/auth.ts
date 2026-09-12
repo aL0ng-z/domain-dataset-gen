@@ -175,30 +175,38 @@ export function resetAuthFailureGuard(): void {
 
 export async function login(
   username: string,
-  password: string
+  password: string,
+  options?: { signal?: AbortSignal },
 ): Promise<AuthData> {
+  const generation = TokenStore.currentGeneration();
   // Step 1: Get tokens
   const res = await fetch(`${API_URL}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
+    signal: options?.signal,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: "登录失败" }));
-    throw new Error(err.detail || "登录失败");
+    throw new Error(err.message || err.detail || "登录失败");
   }
   const tokenData: TokenData = await res.json();
-  resetAuthFailureGuard();
-  TokenStore.setTokens(tokenData.access_token, tokenData.refresh_token);
+  if (!tokenData.access_token || !tokenData.refresh_token) throw new Error("登录响应无效");
 
   // Step 2: Fetch user profile
   const meRes = await fetch(`${API_URL}/auth/me`, {
     headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    signal: options?.signal,
   });
   if (!meRes.ok) {
     throw new Error("获取用户信息失败");
   }
   const user = await meRes.json();
+  if (options?.signal?.aborted || generation !== TokenStore.currentGeneration()) {
+    throw new DOMException("登录已取消", "AbortError");
+  }
+  resetAuthFailureGuard();
+  TokenStore.setTokens(tokenData.access_token, tokenData.refresh_token);
 
   return {
     access_token: tokenData.access_token,
@@ -240,11 +248,17 @@ function notifyStorageEvent(type: AuthStorageEventType): void {
 
 if (TokenStore.isBrowser()) {
   window.addEventListener("storage", (e) => {
-    if (e.key === null) return; // clear() 全清，忽略
+    if (e.key === null) {
+      tokenGeneration += 1;
+      notifyStorageEvent(TokenStore.getAccessToken() ? "tokens-set" : "tokens-cleared");
+      return;
+    }
     if (e.key !== ACCESS_KEY && e.key !== REFRESH_KEY) return;
     // 只处理 access 变化避免重复广播；刷新/登录总会更新 access。
     if (e.key === REFRESH_KEY) return;
     if (e.newValue === e.oldValue) return;
+    tokenGeneration += 1;
+    resetAuthFailureGuard();
     if (e.newValue === null) {
       notifyStorageEvent("tokens-cleared");
     } else {

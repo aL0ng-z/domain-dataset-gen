@@ -181,6 +181,7 @@ async function fetchApi(
     timeout,
     signal,
   );
+  if (signal?.aborted) throw new DOMException("Request cancelled", "AbortError");
 
   // 401 处理：仅对非登录/刷新请求触发一次 single-flight 刷新，并各重试一次。
   if (res.status === 401 && !isNoRetryPath(url)) {
@@ -197,6 +198,7 @@ async function fetchApi(
   }
 
   // 重试后仍然 401（或刷新失败）：原子清理并触发一次统一认证失败回调
+  if (signal?.aborted) throw new DOMException("Request cancelled", "AbortError");
   if (res.status === 401) {
     handleAuthFailure();
   }

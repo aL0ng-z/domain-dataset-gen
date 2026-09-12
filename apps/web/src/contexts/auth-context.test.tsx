@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { AuthProvider } from "@/contexts/auth-context";
@@ -91,6 +91,56 @@ describe("AuthProvider 认证状态机", () => {
     expect(screen.getByTestId("status").textContent).toBe("bootstrapping");
     expect(screen.getByTestId("loading").textContent).toBe("true");
 
-    await waitFor(() => expect(screen.getByTestId("loading").textContent).toBe("false"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 25)); });
+    expect(screen.getByTestId("loading").textContent).toBe("true");
+    await waitFor(() => expect(screen.getByTestId("username").textContent).toBe("alice"));
+    expect(screen.getByTestId("loading").textContent).toBe("false");
+    expect(screen.getByTestId("token").textContent).toBe("access-1");
+  });
+
+  it("退出后晚到的 me 响应不能恢复用户", async () => {
+    localStorage.setItem("access_token", "old");
+    server.onGet("/auth/me", { username: "old-user", role: "admin" }, { delay: 80 });
+    renderProbe();
+    fireEvent.click(screen.getByText("logout"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 120)); });
+    expect(screen.getByTestId("username").textContent).toBe("null");
+    expect(screen.getByTestId("status").textContent).toBe("anonymous");
+  });
+
+  it("登录请求期间退出，晚到的登录结果不能写回令牌", async () => {
+    server.onPost("/auth/login", { access_token: "late", refresh_token: "late-refresh" }, { delay: 50 });
+    server.onGet("/auth/me", { username: "late-user", role: "viewer" });
+    // AuthProbe 的按钮调用主动捕获取消，避免把预期 AbortError 当作未处理异常。
+    function Probe() {
+      const auth = useAuth();
+      return <><div data-testid="state">{auth.status}</div>
+        <button onClick={() => { void auth.login("alice", "pw").catch(() => {}); }}>start</button>
+        <button onClick={auth.logout}>stop</button></>;
+    }
+    render(<AuthProvider><Probe /></AuthProvider>);
+    await waitFor(() => expect(screen.getByTestId("state").textContent).toBe("anonymous"));
+    fireEvent.click(screen.getByText("start"));
+    fireEvent.click(screen.getByText("stop"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+    expect(localStorage.getItem("access_token")).toBeNull();
+    expect(screen.getByTestId("state").textContent).toBe("anonymous");
+  });
+
+  it("跨标签页切换账号必须重新获取用户，旧响应不能覆盖", async () => {
+    localStorage.setItem("access_token", "old");
+    server.mock("GET", "/auth/me", ({ init }) => ({
+      delay: (init?.headers as Record<string, string>)?.Authorization === "Bearer old" ? 100 : 5,
+      body: { username: (init?.headers as Record<string, string>)?.Authorization === "Bearer old" ? "old-user" : "new-user", role: "viewer" },
+    }));
+    renderProbe();
+    await act(async () => {
+      localStorage.setItem("access_token", "new");
+      window.dispatchEvent(new StorageEvent("storage", { key: "access_token", oldValue: "old", newValue: "new" }));
+    });
+    await waitFor(() => expect(screen.getByTestId("username").textContent).toBe("new-user"));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 120)); });
+    expect(screen.getByTestId("username").textContent).toBe("new-user");
+    expect(screen.getByTestId("token").textContent).toBe("new");
   });
 });

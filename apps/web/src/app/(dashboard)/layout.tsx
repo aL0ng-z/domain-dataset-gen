@@ -13,7 +13,7 @@ export default function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { user, loading } = useAuth();
+  const { user, loading, status } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
@@ -23,10 +23,11 @@ export default function DashboardLayout({
 
   // Redirect to login if not authenticated
   React.useEffect(() => {
-    if (!loading && !user) {
-      router.push("/login");
+    if (status === "anonymous") {
+      const next = window.location.pathname + window.location.search;
+      router.replace(`/login?next=${encodeURIComponent(next)}`);
     }
-  }, [loading, user, router]);
+  }, [status, router]);
 
   if (loading) {
     return (

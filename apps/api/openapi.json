@@ -5221,6 +5221,18 @@
         "title": "PinnedRevisionRef",
         "type": "object"
       },
+      "ProjectAccessResponse": {
+        "properties": {
+          "effective_role": {
+            "$ref": "#/components/schemas/UserRole"
+          }
+        },
+        "required": [
+          "effective_role"
+        ],
+        "title": "ProjectAccessResponse",
+        "type": "object"
+      },
       "ProjectCreate": {
         "additionalProperties": false,
         "properties": {
@@ -6885,6 +6897,16 @@
         ],
         "title": "UserResponse",
         "type": "object"
+      },
+      "UserRole": {
+        "enum": [
+          "admin",
+          "reviewer",
+          "editor",
+          "viewer"
+        ],
+        "title": "UserRole",
+        "type": "string"
       },
       "UserUpdate": {
         "additionalProperties": false,
@@ -8942,6 +8964,84 @@
           }
         ],
         "summary": "Update Project",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/projects/{pid}/access": {
+      "get": {
+        "operationId": "project_get_access",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectAccessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "认证失败"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "权限不足"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationErrorResponse"
+                }
+              }
+            },
+            "description": "请求参数校验失败"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "服务器内部错误"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Project Access",
         "tags": [
           "projects"
         ]

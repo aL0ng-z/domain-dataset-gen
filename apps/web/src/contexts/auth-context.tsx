@@ -5,6 +5,7 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import {
@@ -50,103 +51,100 @@ export const AuthContext = createContext<AuthContextValue>({
 const ME_REQUEST_TIMEOUT = 10000;
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [status, setStatus] = useState<AuthStatus>("bootstrapping");
+  const [state, setState] = useState<{ user: User | null; token: string | null; status: AuthStatus }>({
+    user: null, token: null, status: "bootstrapping",
+  });
+  const requestGeneration = useRef(0);
+  const pending = useRef<AbortController | null>(null);
 
-  // 退出登录：清除令牌、用户态，进入 anonymous（不跳转，由路由守卫处理）
+  const invalidate = useCallback(() => {
+    requestGeneration.current += 1;
+    pending.current?.abort();
+    pending.current = null;
+    return requestGeneration.current;
+  }, []);
+
+  const becomeAnonymous = useCallback(() => {
+    invalidate();
+    setState({ user: null, token: null, status: "anonymous" });
+  }, [invalidate]);
+
   const logout = useCallback(() => {
+    becomeAnonymous();
     authLogout();
-    setUser(null);
-    setToken(null);
-    setStatus("anonymous");
-  }, []);
+  }, [becomeAnonymous]);
 
-  // 同步本地 React 状态与统一令牌存储（登录/刷新/退出/跨标签页都会写存储）
-  useEffect(() => {
-    const syncFromStorage = () => {
-      // token 可能为 null（已登出）——此时不读取，由 storage 事件/失败回调处理状态
-      setToken(TokenStoreSnapshot());
-    };
-    const unsubscribe = subscribeToTokenChange(syncFromStorage);
-    return unsubscribe;
-  }, []);
-
-  // 认证失败回调：一次清理 + 一次 anonymous 状态（跳转由路由守卫按状态触发）
-  useEffect(() => {
-    const unsubscribe = onAuthFailure(() => {
-      setUser(null);
-      setToken(null);
-      setStatus("anonymous");
-    });
-    return unsubscribe;
-  }, []);
-
-  // 跨标签页同步：其它标签页登录/退出时收敛到同一状态
-  useEffect(() => {
-    const unsubscribe = subscribeToAuthStorage((event) => {
-      if (event.type === "tokens-cleared") {
-        setUser(null);
-        setToken(null);
-        setStatus("anonymous");
-      } else if (event.type === "tokens-set") {
-        setStatus("authenticated");
-      }
-    });
-    return unsubscribe;
-  }, []);
-
-  // 初始化：bootstrapping -> 有 token 则拉取 /auth/me，无 token 则 anonymous
-  useEffect(() => {
-    const hasToken = TokenStoreSnapshot() !== null;
-    if (!hasToken) {
-      queueMicrotask(() => setStatus("anonymous"));
+  const restoreSession = useCallback(async () => {
+    const generation = invalidate();
+    const access = TokenStore.getAccessToken();
+    if (!access) {
+      setState({ user: null, token: null, status: "anonymous" });
       return;
     }
+    const controller = new AbortController();
+    pending.current = controller;
+    setState({ user: null, token: access, status: "bootstrapping" });
+    try {
+      const user = await api.get("/auth/me", { signal: controller.signal, timeout: ME_REQUEST_TIMEOUT });
+      if (generation !== requestGeneration.current || controller.signal.aborted) return;
+      setState({ user, token: TokenStore.getAccessToken(), status: "authenticated" });
+    } catch {
+      if (generation !== requestGeneration.current || controller.signal.aborted) return;
+      logout();
+    } finally {
+      if (pending.current === controller) pending.current = null;
+    }
+  }, [invalidate, logout]);
 
-    // 与仓库既有约定一致：避免 effect 内同步 setState，延迟到下一事件循环
-    queueMicrotask(() => setStatus("authenticated"));
-
-    // Safety timeout: if /auth/me takes > 10s, treat as failed
-    const timeout = setTimeout(() => {
-      authLogout();
-      setUser(null);
-      setToken(null);
-      setStatus("anonymous");
-    }, ME_REQUEST_TIMEOUT);
-
-    api
-      .get("/auth/me")
-      .then((u) => {
-        setUser(u as User);
-      })
-      .catch(() => {
-        authLogout();
-        setUser(null);
-        setToken(null);
-        setStatus("anonymous");
-      })
-      .finally(() => {
-        clearTimeout(timeout);
-      });
-  }, []);
+  useEffect(() => {
+    // React StrictMode replay and unmount must invalidate scheduled/ongoing work.
+    let active = true;
+    const initialGeneration = requestGeneration.current;
+    queueMicrotask(() => {
+      if (active && requestGeneration.current === initialGeneration) void restoreSession();
+    });
+    const offTokens = subscribeToTokenChange(() => {
+      const access = TokenStore.getAccessToken();
+      if (!access) becomeAnonymous();
+      else setState((previous) => ({ ...previous, token: access }));
+    });
+    const offFailure = onAuthFailure(becomeAnonymous);
+    const offStorage = subscribeToAuthStorage((event) => {
+      if (event.type === "tokens-cleared") becomeAnonymous();
+      else void restoreSession();
+    });
+    return () => {
+      active = false;
+      invalidate();
+      offTokens();
+      offFailure();
+      offStorage();
+    };
+  }, [becomeAnonymous, invalidate, restoreSession]);
 
   const login = useCallback(async (username: string, password: string) => {
-    const data: AuthData = await authLogin(username, password);
-    setToken(data.access_token);
-    setUser(data.user);
-    setStatus("authenticated");
-  }, []);
+    authLogout();
+    const generation = invalidate();
+    const controller = new AbortController();
+    pending.current = controller;
+    setState({ user: null, token: null, status: "bootstrapping" });
+    try {
+      const data: AuthData = await authLogin(username, password, { signal: controller.signal });
+      if (generation !== requestGeneration.current || controller.signal.aborted) {
+        throw new DOMException("Login cancelled", "AbortError");
+      }
+      setState({ user: data.user, token: data.access_token, status: "authenticated" });
+    } catch (error) {
+      if (generation === requestGeneration.current) becomeAnonymous();
+      throw error;
+    } finally {
+      if (pending.current === controller) pending.current = null;
+    }
+  }, [becomeAnonymous, invalidate]);
 
   const value = useMemo(
-    () => ({ user, token, status, loading: status === "bootstrapping", login, logout }),
-    [user, token, status, login, logout]
+    () => ({ ...state, loading: state.status === "bootstrapping", login, logout }),
+    [state, login, logout],
   );
-
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-}
-
-/** 统一令牌读取：仅经 TokenStore，其它模块不得直接读 localStorage（任务卡 §6）。 */
-function TokenStoreSnapshot(): string | null {
-  return TokenStore.getAccessToken();
 }

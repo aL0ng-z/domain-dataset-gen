@@ -129,7 +129,7 @@ const revisions = {
 };
 
 function onMe() {
-  server.onGet("/auth/me", { id: "u2", username: "reviewer", email: "r@x", role: "reviewer" });
+  server.onGet("/projects/p1/access", { effective_role: "reviewer" });
 }
 
 beforeEach(() => {

@@ -1,7 +1,12 @@
 import uuid
 from datetime import datetime
 
+from domain.enums import UserRole
 from domain.schemas import BaseSchema, RequestSchema
+
+
+class ProjectAccessResponse(BaseSchema):
+    effective_role: UserRole
 
 
 class ProjectCreate(RequestSchema):

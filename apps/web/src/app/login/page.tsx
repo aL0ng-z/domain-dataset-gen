@@ -29,7 +29,16 @@ export default function LoginPage() {
 
     try {
       await login(username, password);
-      router.push("/projects");
+      const next = new URLSearchParams(window.location.search).get("next");
+      // 只允许同站路径，禁止协议相对 URL 或反斜杠重定向。
+      let destination = "/projects";
+      if (next?.startsWith("/") && !next.startsWith("//") && !next.includes("\\")) {
+        const target = new URL(next, window.location.origin);
+        if (target.origin === window.location.origin && !target.pathname.startsWith("/login")) {
+          destination = target.pathname + target.search + target.hash;
+        }
+      }
+      router.push(destination);
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败");
     } finally {

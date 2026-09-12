@@ -157,7 +157,7 @@ const itemDetail = {
 };
 
 function defaultRoutes(meRole = "editor") {
-  server.onGet("/auth/me", { id: "u1", username: "editor", email: "e@x", role: meRole });
+  server.onGet("/projects/p1/access", { effective_role: meRole });
   server.onGet("/projects/p1/datasets/ds-1", datasetDetail);
   server.onGet("/projects/p1/datasets/ds-1/items?page=1&page_size=20", {
     items: [itemDetail],
@@ -228,7 +228,7 @@ describe("Dataset 详情页", () => {
   });
 
   it("finalized 容器只读并展示 finalized 摘要", async () => {
-    server.onGet("/auth/me", { id: "u1", username: "editor", email: "e@x", role: "reviewer" });
+    server.onGet("/projects/p1/access", { effective_role: "reviewer" });
     server.onGet("/projects/p1/datasets/ds-1", {
       ...datasetDetail,
       status: "finalized",

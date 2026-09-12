@@ -1,5 +1,6 @@
 "use client";
 
+import { useProjectAccess } from "@/hooks/use-project-access";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -438,7 +439,7 @@ export default function CleaningWorkbenchPage() {
     }
   }, [workbench.isDirty, doMerge]);
 
-  const isAdmin = currentUser?.role === "admin" || currentUser?.role === "reviewer";
+  const { canReview: isAdmin } = useProjectAccess(projectId);
 
   const filteredSections = useMemo(() => {
     let base = sections;

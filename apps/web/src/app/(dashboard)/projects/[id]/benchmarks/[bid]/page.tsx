@@ -15,6 +15,7 @@ import {
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { StatusBadge } from "@/components/status-badge";
 import { EligibleItemPicker } from "@/components/eligible-item-picker";
+import { useProjectAccess } from "@/hooks/use-project-access";
 import { usePagination } from "@/hooks/use-pagination";
 import { api, ApiErrorException, formatJsonPreview } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
@@ -32,13 +33,6 @@ type BenchmarkCase = components["schemas"]["BenchmarkCaseDetailResponse"];
 type ExportProfile = components["schemas"]["ExportProfileResponse"];
 type ExportProfilesPage = components["schemas"]["PaginatedResponse_ExportProfileResponse_"];
 
-const ROLE_LEVEL: Record<string, number> = {
-  admin: 4,
-  reviewer: 3,
-  editor: 2,
-  viewer: 1,
-};
-
 export default function BenchmarkDetailPage() {
   const params = useParams<{ id: string; bid: string }>();
   const projectId = params.id;
@@ -55,8 +49,7 @@ export default function BenchmarkDetailPage() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [finalizing, setFinalizing] = useState(false);
-  const [canEdit, setCanEdit] = useState(false);
-  const [canReview, setCanReview] = useState(false);
+  const { canEdit, canReview } = useProjectAccess(projectId);
   const [finalizeGate, setFinalizeGate] = useState<string | null>(null);
 
   const fetchData = useCallback(() => {
@@ -75,19 +68,12 @@ export default function BenchmarkDetailPage() {
           query: { page: 1, page_size: 50 },
         })
         .catch(() => ({ items: [] as ExportProfile[] } as ExportProfilesPage)),
-      api
-        .get("/auth/me")
-        .then((u) => (u as { role?: string }).role)
-        .catch(() => undefined),
     ])
-      .then(([bm, casesData, profiles, role]) => {
+      .then(([bm, casesData, profiles]) => {
         setBenchmark(bm);
         setCases(casesData.items);
         setTotal(casesData.total);
         setExportProfiles(profiles.items);
-        const level = role ? ROLE_LEVEL[role] ?? 0 : 0;
-        setCanEdit(level >= (ROLE_LEVEL.editor ?? 0));
-        setCanReview(level >= (ROLE_LEVEL.reviewer ?? 0));
         if (profiles.items.length > 0 && !selectedProfile) {
           setSelectedProfile(profiles.items[0].id);
         }

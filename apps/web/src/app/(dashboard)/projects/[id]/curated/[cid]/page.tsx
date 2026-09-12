@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useProjectAccess } from "@/hooks/use-project-access";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -48,7 +49,7 @@ export default function CuratedItemDetailPage() {
   const [saving, setSaving] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [serverRevision, setServerRevision] = useState<number | null>(null);
-  const [isReviewer, setIsReviewer] = useState(false);
+  const { canReview: isReviewer, canEdit } = useProjectAccess(projectId);
 
   const fetchItem = useCallback(() => {
     const pid = { pid: projectId, iid: itemId };
@@ -66,19 +67,13 @@ export default function CuratedItemDetailPage() {
           query: { page: 1, page_size: 20 },
         })
         .catch(() => ({ items: [] as CuratedRevision[], total: 0 })),
-      api
-        .get("/auth/me")
-        .then((u) => (u as { role?: string }).role)
-        .catch(() => undefined),
     ])
-      .then(([data, links, revs, globalRole]) => {
+      .then(([data, links, revs]) => {
         setItem(data);
         setEditContent(formatJsonPreview(data.content));
         setServerRevision(data.current_revision);
         setEvidenceLinks(links.items);
         setRevisions(revs.items);
-        // reviewer 以上（全局角色）可见审批控件；editor 不展示（后端仍权威）。
-        setIsReviewer(globalRole === "reviewer" || globalRole === "admin");
       })
       .catch(() => toast.error("加载知识资产详情失败"))
       .finally(() => setLoading(false));
@@ -246,7 +241,7 @@ export default function CuratedItemDetailPage() {
               修订历史
             </Button>
             {item.status === "draft" && (
-              <Button onClick={handleSave} disabled={saving}>
+              <Button onClick={handleSave} disabled={saving || !canEdit}>
                 {saving ? (
                   <Loader2Icon className="size-4 animate-spin" />
                 ) : (

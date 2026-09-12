@@ -4,10 +4,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.authz import effective_project_role
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.models.user import User
 from app.schemas.project import (
+    ProjectAccessResponse,
     ProjectCreate,
     ProjectMemberAdd,
     ProjectMemberResponse,
@@ -47,13 +49,23 @@ async def list_projects(
 async def get_project(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    await effective_project_role(db, pid, current_user)
     service = ProjectService(db)
     project = await service.get_project(pid)
     if project is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
     return project
+
+
+@router.get("/{pid}/access", response_model=ProjectAccessResponse, operation_id="project_get_access")
+async def get_project_access(
+    pid: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    current_user: Annotated[User, Depends(get_current_user)],
+):
+    return ProjectAccessResponse(effective_role=await effective_project_role(db, pid, current_user))
 
 
 @router.patch("/{pid}", response_model=ProjectResponse, operation_id="project_update")
@@ -96,8 +108,9 @@ async def add_member(
 async def list_members(
     pid: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_db)],
-    _: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_current_user)],
 ):
+    await effective_project_role(db, pid, current_user)
     service = ProjectService(db)
     return await service.list_members(pid)
 

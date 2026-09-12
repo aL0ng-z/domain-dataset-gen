@@ -153,7 +153,7 @@ const caseDetail = {
 };
 
 function defaultRoutes(meRole = "editor") {
-  server.onGet("/auth/me", { id: "u1", username: "editor", email: "e@x", role: meRole });
+  server.onGet("/projects/p1/access", { effective_role: meRole });
   server.onGet("/projects/p1/benchmarks/bm-1", benchmarkDetail);
   server.onGet("/projects/p1/benchmarks/bm-1/cases?page=1&page_size=20", {
     items: [caseDetail],
@@ -209,7 +209,7 @@ describe("Benchmark 详情页", () => {
   });
 
   it("条目退审后：当前 status 变化但 pinned preview 不变，显示修订提示", async () => {
-    server.onGet("/auth/me", { id: "u1", username: "editor", email: "e@x", role: "editor" });
+    server.onGet("/projects/p1/access", { effective_role: "editor" });
     server.onGet("/projects/p1/benchmarks/bm-1", benchmarkDetail);
     server.onGet("/projects/p1/benchmarks/bm-1/cases?page=1&page_size=20", {
       items: [

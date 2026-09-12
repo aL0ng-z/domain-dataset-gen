@@ -31,6 +31,7 @@ describe("登录页", () => {
   afterEach(() => {
     server.restore();
     mockPush.mockReset();
+    window.history.replaceState(null, "", "/login");
   });
 
   it("成功登录后跳转到项目页", async () => {
@@ -69,6 +70,23 @@ describe("登录页", () => {
     // 错误信息渲染到页面（真实 HTTP 401 + JSON detail）
     expect(await screen.findByText("用户名或密码错误")).toBeInTheDocument();
     expect(mockPush).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["/projects/p1/documents/d1?tab=clean", "/projects/p1/documents/d1?tab=clean"],
+    ["//example.com", "/projects"],
+    ["/\\example.com", "/projects"],
+    ["/\n/example.com", "/projects"],
+  ])("登录仅允许安全的站内回跳 %s", async (next, expected) => {
+    const user = userEvent.setup();
+    window.history.replaceState(null, "", `/login?next=${encodeURIComponent(next)}`);
+    server.onPost("/auth/login", { access_token: "a", refresh_token: "r" });
+    server.onGet("/auth/me", { id: "u", username: "alice", role: "viewer" });
+    renderLogin();
+    await user.type(screen.getByPlaceholderText("请输入用户名"), "alice");
+    await user.type(screen.getByPlaceholderText("请输入密码"), "pw");
+    await user.click(screen.getByRole("button", { name: /登录/ }));
+    await waitFor(() => expect(mockPush).toHaveBeenCalledWith(expected));
   });
 
   it("登录期间按钮进入 loading 状态", async () => {

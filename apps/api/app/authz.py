@@ -35,7 +35,7 @@ from app.models.export import Export, SnapshotManifest
 from app.models.generation import Candidate, CandidateComment, GenerationRun
 from app.models.generation_batch import GenerationBatch
 from app.models.parse import ParseJob
-from app.models.project import ProjectMember
+from app.models.project import Project, ProjectMember
 from app.models.prompt_template import PromptTemplate, PromptTemplateVersion
 from app.models.section import CleaningJob, Section
 from app.models.task import LlmUsageLog, Task
@@ -46,6 +46,22 @@ logger = logging.getLogger(__name__)
 
 # 允许 admin 绕过成员/角色检查的全局角色。
 GLOBAL_ADMIN_ROLE = UserRole.admin
+
+
+async def effective_project_role(db: AsyncSession, pid: uuid.UUID, user: User) -> UserRole:
+    """项目入口先确认项目存在，再读取有效成员角色；不提升全局管理权限。"""
+    from fastapi import HTTPException
+
+    if (await db.execute(select(Project.id).where(Project.id == pid))).scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="项目不存在")
+    if UserRole(user.role) == UserRole.admin:
+        return UserRole.admin
+    role = (await db.execute(select(ProjectMember.role).where(
+        ProjectMember.project_id == pid, ProjectMember.user_id == user.id,
+    ))).scalar_one_or_none()
+    if role is None:
+        raise HTTPException(status_code=403, detail="非项目成员")
+    return UserRole(role)
 
 
 def _role_level(role: str | UserRole) -> int:
