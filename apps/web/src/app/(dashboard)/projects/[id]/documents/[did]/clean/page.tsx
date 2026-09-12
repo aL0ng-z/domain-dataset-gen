@@ -292,14 +292,15 @@ export default function CleaningWorkbenchPage() {
   // 首次选中 section 后加载详情 + 租约；cleanup 由 hook 内的 effect 负责（只释放自身 lease）。
   useEffect(() => {
     if (!workbench.selectedSectionId) return;
+    if (workbench.acquiringLease || workbench.selectedSection?.id === workbench.selectedSectionId) return;
     workbench.loadSection(workbench.selectedSectionId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workbench.selectedSectionId]);
 
   // 保存 / 提交：工具栏按钮触发。
   const handleSave = useCallback(async () => {
-    await workbench.save();
-    fetchSections();
+    const saved = await workbench.save();
+    if (saved.ok) fetchSections();
   }, [workbench, fetchSections]);
 
   const handleSubmitReview = useCallback(async () => {
@@ -497,10 +498,11 @@ export default function CleaningWorkbenchPage() {
 
   // 版本冲突/租约丢失时编辑器只读。
   const editorReadOnly =
-    workbench.acquiringLease || workbench.leaseLost || workbench.conflictState !== null || !workbench.lease;
+    workbench.submitting || workbench.acquiringLease || workbench.leaseLost || workbench.conflictState !== null || !workbench.lease;
 
   // dirty guard：切换章节/来源前确认。
   const guardedSwitchSection = useCallback((sectionId: string) => {
+    if (workbench.submitting) return;
     if (workbench.isDirty) {
       setGuardPrompt({
         pendingTarget: () => workbench.switchSection(sectionId),
@@ -515,6 +517,7 @@ export default function CleaningWorkbenchPage() {
 
   // 切换清洗来源：仅当有当前脏内容且持有租约时提示。
   const guardedSwitchCleaningContext = useCallback((id: string) => {
+    if (workbench.submitting) return;
     if (workbench.isDirty) {
       setGuardPrompt({ pendingTarget: () => switchCleaningContext(id) });
     } else {
@@ -579,7 +582,7 @@ export default function CleaningWorkbenchPage() {
       <Dialog
         open={guardPrompt !== null}
         onOpenChange={(open) => {
-          if (!open) setGuardPrompt(null);
+          if (!open && !workbench.saving) setGuardPrompt(null);
         }}
       >
         <DialogContent showCloseButton={false}>
@@ -595,6 +598,7 @@ export default function CleaningWorkbenchPage() {
               onClick={() => {
                 setGuardPrompt(null);
               }}
+              disabled={workbench.saving}
             >
               留在当前页
             </Button>
@@ -602,9 +606,11 @@ export default function CleaningWorkbenchPage() {
               variant="outline"
               onClick={async () => {
                 const pending = guardPrompt?.pendingTarget;
-                setGuardPrompt(null);
-                await workbench.save();
-                if (pending) pending();
+                const saved = await workbench.save();
+                if (saved.ok) {
+                  setGuardPrompt(null);
+                  if (pending) pending();
+                }
               }}
               disabled={workbench.saving}
             >
@@ -613,6 +619,7 @@ export default function CleaningWorkbenchPage() {
             </Button>
             <Button
               variant="destructive"
+              disabled={workbench.saving}
               onClick={() => {
                 const pending = guardPrompt?.pendingTarget;
                 setGuardPrompt(null);
@@ -629,9 +636,6 @@ export default function CleaningWorkbenchPage() {
       {/* 版本冲突对话框 */}
       <Dialog
         open={workbench.conflictState !== null}
-        onOpenChange={(open) => {
-          if (!open) workbench.reloadFromServer();
-        }}
       >
         <DialogContent showCloseButton={false}>
           <DialogHeader>
@@ -668,6 +672,14 @@ export default function CleaningWorkbenchPage() {
           <div className="p-2 border-b flex items-center justify-between">
             <Link
               href={`/projects/${projectId}/documents/${docId}`}
+              onClick={(event) => {
+                if (workbench.submitting) {
+                  event.preventDefault();
+                } else if (workbench.isDirty) {
+                  event.preventDefault();
+                  setGuardPrompt({ pendingTarget: () => router.push(`/projects/${projectId}/documents/${docId}`) });
+                }
+              }}
               className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
             >
               <ArrowLeftIcon className="size-3" />
@@ -814,7 +826,19 @@ export default function CleaningWorkbenchPage() {
           />
           <div className="flex-1" />
           {workbench.leaseLost && (
-            <Badge variant="outline" className="text-orange-600">租约已失效 · 只读</Badge>
+            <>
+              <Badge variant="outline" className="text-orange-600">租约已失效 · 只读</Badge>
+              <Button variant="outline" size="sm" onClick={() => void workbench.relock()} disabled={workbench.acquiringLease}>
+                <RefreshCcwIcon className="size-3" />
+                重新获取租约
+              </Button>
+              {workbench.isDirty && (
+                <Button variant="outline" size="sm" onClick={handleCopyLocal}>
+                  <ClipboardIcon className="size-3" />
+                  复制草稿
+                </Button>
+              )}
+            </>
           )}
           {editorReadOnly && !workbench.leaseLost && (
             <Badge variant="outline" className="text-muted-foreground">只读</Badge>

@@ -337,6 +337,55 @@ async def test_section_save_and_submit_release_lease(
     assert hb.status_code == 409, hb.text
 
 
+@pytest.mark.integration
+async def test_empty_section_survives_http_merge_preview_and_revision(
+    client: AsyncClient, full_resources, _test_session_factory, monkeypatch
+):
+    """R08：显式删除经 API 保存、合并预览、再次编辑的历史修订都不能恢复原文。"""
+    from app.services import clean_version_service as cvs
+
+    a = full_resources["projects"]["a"]
+    section_id = a["section"].id
+    editor = _bearer((await _login(client, "editor_user"))["access_token"])
+    reviewer = _bearer((await _login(client, "reviewer_user"))["access_token"])
+    async with _test_session_factory() as session:
+        session.add(Section(
+            document_id=a["document"].id, cleaning_job_id=a["cleaning_job"].id,
+            ordinal=1, heading_path="保留章节", raw_markdown="保留正文", cleaned_markdown="保留正文",
+        ))
+        await session.commit()
+    lease_response = await client.post(f"/api/sections/{section_id}/lease/acquire", headers=editor)
+    assert lease_response.status_code == 200, lease_response.text
+    lease_id = lease_response.json()["id"]
+    cleared = await client.patch(f"/api/sections/{section_id}", headers=editor, json={
+        "cleaned_markdown": "", "expected_revision": 0, "lease_id": lease_id,
+    })
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["cleaned_markdown"] == ""
+
+    recorder = _RecorderStorage()
+    monkeypatch.setattr(cvs, "get_storage_client", lambda *args, **kwargs: recorder)
+    merged = await client.post(
+        f"/api/projects/{a['pid']}/documents/{a['document'].id}/cleaning/merge",
+        params={"cleaning_job_id": str(a["cleaning_job"].id)},
+        headers={**reviewer, "Idempotency-Key": "empty-section-regression"},
+    )
+    assert merged.status_code == 201, merged.text
+    preview = await client.get(f"/api/cleaned-versions/{merged.json()['id']}", headers=editor)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["merged_markdown"] == "保留正文\n"
+    assert next(iter(recorder.objects.values())).decode("utf-8") == "保留正文\n"
+
+    changed_again = await client.patch(f"/api/sections/{section_id}", headers=editor, json={
+        "cleaned_markdown": "新的正文", "expected_revision": 1, "lease_id": lease_id,
+    })
+    assert changed_again.status_code == 200, changed_again.text
+    revisions = await client.get(f"/api/sections/{section_id}/revisions", headers=editor)
+    assert revisions.status_code == 200, revisions.text
+    before_second_edit = next(row for row in revisions.json() if row["from_revision"] == 1)
+    assert before_second_edit["cleaned_markdown"] == ""
+
+
 # ---------------------------------------------------------------------------
 # 合并并发（验收 9/10）：独立 session 并发调 create_merged_version。
 # ---------------------------------------------------------------------------

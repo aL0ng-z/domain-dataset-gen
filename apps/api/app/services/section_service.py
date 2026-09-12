@@ -260,7 +260,7 @@ class SectionService:
             raise SectionVersionConflictError(section.content_revision)
 
         # 修订记录与正文同事务；content_revision 严格 +1。
-        prev = section.cleaned_markdown or section.raw_markdown
+        prev = section.raw_markdown if section.cleaned_markdown is None else section.cleaned_markdown
         revision = SectionRevision(
             section_id=section_id,
             revised_by=user_id,

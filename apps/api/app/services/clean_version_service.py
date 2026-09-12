@@ -126,7 +126,7 @@ class CleanVersionService:
 
         parts: list[str] = []
         for s in sections:
-            body = s.cleaned_markdown if s.cleaned_markdown else s.raw_markdown
+            body = s.raw_markdown if s.cleaned_markdown is None else s.cleaned_markdown
             if not body:
                 continue
             parts.append(body.strip())
