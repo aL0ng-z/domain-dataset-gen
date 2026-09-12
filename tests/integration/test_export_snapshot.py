@@ -34,7 +34,8 @@ from sqlalchemy.exc import DBAPIError
 
 from app.models.chunk import Chunk
 from app.models.chunk_set import ChunkSet
-from app.models.config import ExportProfile, ModelConfig, ParserProfile
+from app.models.cleaned_document_version import CleanedDocumentVersion
+from app.models.config import ChunkProfile, ExportProfile, ModelConfig, ParserProfile
 from app.models.curated import CuratedItem, CuratedRevision
 from app.models.dataset import Dataset
 from app.models.document import Document
@@ -44,7 +45,10 @@ from app.models.parse import ParseJob
 from app.models.prompt_template import PromptTemplate
 from app.models.review_record import ReviewRecord
 from app.models.section import CleaningJob, Section
+from app.models.task import Task
+from app.services.clean_version_service import content_sha256, revision_map_sha256
 from domain.manifest import manifest_cjson, manifest_sha256
+from splitters import canonical_output_sha256, splitter_version
 
 PASSWORD = "password-123"
 _OUTPUTS = "outputs-test"
@@ -124,8 +128,29 @@ async def _make_doc_chain(db_session, project_id, uploaded_by, *, content: str =
     db_session.add(section)
     await db_session.flush()
 
+    revision_map = {str(section.id): section.content_revision}
+    clean_version = CleanedDocumentVersion(
+        document_id=doc.id, source_cleaning_job_id=cleaning_job.id, version=1,
+        section_count=1, merged_markdown=content, content_sha256=content_sha256(content),
+        source_revision_map=revision_map, source_revision_sha256=revision_map_sha256(revision_map),
+        status="accepted", created_by=uploaded_by,
+    )
+    chunk_profile = ChunkProfile(project_id=project_id, name="Chunks")
+    chunk_task = Task(
+        project_id=project_id, task_type="chunk", entity_type="document", entity_id=doc.id,
+        handler="chunk_document", payload={}, payload_version=2, status="completed",
+        next_run_at=datetime.now(UTC), completed_at=datetime.now(UTC), created_by=uploaded_by,
+    )
+    db_session.add_all([clean_version, chunk_profile, chunk_task])
+    await db_session.flush()
     chunk_set = ChunkSet(
-        document_id=doc.id, status="completed", version=1, is_legacy=True,
+        document_id=doc.id, status="completed", version=1, is_legacy=False,
+        cleaned_document_version_id=clean_version.id, chunk_profile_id=chunk_profile.id,
+        task_id=chunk_task.id, strategy="hybrid_heading_recursive",
+        config_json={"strategy": "hybrid_heading_recursive", "max_tokens": 512, "overlap_tokens": 0},
+        source_sha256=clean_version.content_sha256,
+        output_sha256=canonical_output_sha256([(1, "1.1", content, 30)]),
+        splitter_version=splitter_version(), completed_at=datetime.now(UTC),
         summary_json={"provenance": "test"}, created_by=uploaded_by,
     )
     db_session.add(chunk_set)
@@ -137,6 +162,7 @@ async def _make_doc_chain(db_session, project_id, uploaded_by, *, content: str =
     db_session.add(chunk)
     await db_session.flush()
     # 文档 active chunk set 指向该集合（供 manifest 版本图）。
+    doc.active_clean_version_id = clean_version.id
     doc.active_chunk_set_id = chunk_set.id
     await db_session.flush()
 
@@ -148,6 +174,9 @@ async def _make_doc_chain(db_session, project_id, uploaded_by, *, content: str =
         "chunk": chunk,
         "section": section,
         "chunk_set": chunk_set,
+        "parse_job": parse_job,
+        "cleaning_job": cleaning_job,
+        "clean_version": clean_version,
     }
 
 
@@ -161,7 +190,7 @@ def _span(chunk_id, content: str, quote: str) -> dict:
     }
 
 
-async def _make_verified_candidate(db_session, res, *, content=None, actor_uid):
+async def _make_verified_candidate(db_session, res, *, content=None, actor_uid, item_type="qa_generation"):
     """构造带 verified 生成批次的 Candidate（T08 冻结 prompt/model 快照齐全）。"""
     batch = GenerationBatch(
         document_id=res["doc"].id,
@@ -213,7 +242,7 @@ async def _make_verified_candidate(db_session, res, *, content=None, actor_uid):
         generation_run_id=run.id,
         chunk_id=res["chunk"].id,
         content=content or {"question": "什么是压比?", "answer": "压比是出口与进口压力之比"},
-        candidate_type="qa_generation",
+        candidate_type=item_type,
         status="ai_generated",
         source_generation_batch_id=batch.id,
     )
@@ -224,11 +253,11 @@ async def _make_verified_candidate(db_session, res, *, content=None, actor_uid):
 
 
 async def _make_approved_item(
-    client, db_session, project_id, *, verdict="supported", content=None, actor="reviewer_user"
+    client, db_session, project_id, *, verdict="supported", content=None, actor="reviewer_user", item_type="qa_generation"
 ) -> dict:
     """构造 approved CuratedItem（verified 生成链路 + EvidenceLink + approve 记录）。"""
     res = await _make_doc_chain(db_session, project_id, await org_uid(db_session, actor))
-    candidate, run, batch = await _make_verified_candidate(db_session, res, content=content, actor_uid=await org_uid(db_session, actor))
+    candidate, run, batch = await _make_verified_candidate(db_session, res, content=content, actor_uid=await org_uid(db_session, actor), item_type=item_type)
     await db_session.flush()
     await db_session.commit()
 
@@ -277,9 +306,9 @@ async def _approve_item(client, project_id, item_id, *, expected_revision=1, act
     return r.json()
 
 
-async def _make_finalized_dataset(client, db_session, project_id, *, content=None) -> dict:
+async def _make_finalized_dataset(client, db_session, project_id, *, content=None, item_type="qa_generation") -> dict:
     """构造 finalized Dataset（含一个 approved item）。"""
-    approved = await _make_approved_item(client, db_session, project_id, content=content)
+    approved = await _make_approved_item(client, db_session, project_id, content=content, item_type=item_type)
     dataset = Dataset(project_id=project_id, name="T11 数据集", created_by=await org_uid(db_session, "editor_user"))
     db_session.add(dataset)
     await db_session.flush()

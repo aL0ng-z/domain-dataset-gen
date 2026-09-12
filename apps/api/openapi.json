@@ -2728,7 +2728,9 @@
               "EXPORT_REVISION_CONFLICT",
               "EXPORT_IMMUTABLE",
               "EXPORT_INTEGRITY_ERROR",
-              "EXPORT_PROVENANCE_GAP"
+              "EXPORT_PROVENANCE_GAP",
+              "EXPORT_FORMAT_INCOMPATIBLE",
+              "EXPORT_CONTENT_INVALID"
             ],
             "title": "Code",
             "type": "string"

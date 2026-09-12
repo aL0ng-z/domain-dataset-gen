@@ -24,7 +24,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chunk import Chunk
@@ -168,12 +168,15 @@ async def run_chunk_handler(ctx: ExecutionContext) -> None:
     await ctx.checkpoint_before_publish()
 
     # 发布事务：再次锁定 Document，复核 active clean version 仍为来源。
-    doc = (
+    # 标量读取不会复用 identity map 中切分开始时的旧 Document。
+    active_clean_version_id = (
         await db.execute(
-            select(Document).where(Document.id == document_id).with_for_update()
+            select(Document.active_clean_version_id)
+            .where(Document.id == document_id)
+            .with_for_update()
         )
     ).scalar_one()
-    if doc.active_clean_version_id != clean_version.id:
+    if active_clean_version_id != clean_version.id:
         raise CleanVersionStaleError("来源清洗版本已不是 active，本次切分作废")
 
     # 计算 canonical 输出 hash（按 ordinal 串联）。
@@ -190,8 +193,13 @@ async def run_chunk_handler(ctx: ExecutionContext) -> None:
     chunk_set.error_message = None
 
     # 切 active pointer（文档状态：chunked）。返回后由 runner 在完成事务中原子提交。
-    doc.active_chunk_set_id = chunk_set.id
-    doc.status = "chunked"
+    published = await db.execute(
+        update(Document)
+        .where(Document.id == document_id, Document.active_clean_version_id == clean_version.id)
+        .values(active_chunk_set_id=chunk_set.id, status="chunked")
+    )
+    if published.rowcount != 1:
+        raise CleanVersionStaleError("来源清洗版本已不是 active，本次切分作废")
     await db.flush()
 
 

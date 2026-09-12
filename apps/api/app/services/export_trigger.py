@@ -19,8 +19,10 @@ from app.models.config import ExportProfile
 from app.models.dataset import Benchmark, Dataset
 from app.models.export import Export
 from app.services.export_service import ExportService
+from app.services.export_validation import load_export_memberships, validate_membership_content
 from app.services.idempotency import idempotent_create_task
 from app.services.task_service import TaskService
+from domain.export_content import EXPORT_FORMATS, ExportContentError
 from domain.schemas import ErrorResponse
 
 #: 稳定 409 错误 code（与 domain.schemas ERROR_CODES 对齐）。
@@ -124,6 +126,18 @@ async def create_export_trigger(
             "task_id": str(existing_export.task_id) if existing_export.task_id else "",
             "status": existing_export.status,
         }
+
+    # 首次请求必须在创建 Task/Export 前校验全部固定 revision；不能部分导出。
+    if profile.format not in EXPORT_FORMATS:
+        raise HTTPException(status_code=422, detail="不支持的导出格式")
+    memberships = await load_export_memberships(db, source_type, source_id)
+    try:
+        await validate_membership_content(db, memberships, profile.format)
+    except ExportContentError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": exc.code, "message": str(exc),
+            "context": {"format": profile.format, "items": exc.issues},
+        }) from exc
 
     # 3. 创建 queued Export（先不绑定 task，task 创建后回填）。
     export = await export_service.create_export_request(

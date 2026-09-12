@@ -79,10 +79,13 @@ class CandidateService:
         - offset 以 Unicode code point 左闭右开计数；越界 -> 422。
         - chunk.content[start:end] == quote_text（NFC 比较）-> 否则 422。
         """
-        chunk_id = span["chunk_id"]
-        start = int(span["start_char"])
-        end = int(span["end_char"])
-        quote = span["quote_text"]
+        try:
+            chunk_id = uuid.UUID(str(span["chunk_id"]))
+            start, end, quote = span["start_char"], span["end_char"], span["quote_text"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise EvidenceValidationError("证据 span 字段缺失或非法") from exc
+        if type(start) is not int or type(end) is not int or not isinstance(quote, str):
+            raise EvidenceValidationError("证据 span 范围必须为整数，引用必须为字符串")
 
         chunk = (
             await self.db.execute(select(Chunk).where(Chunk.id == chunk_id))
@@ -255,6 +258,15 @@ class CandidateService:
         if project_id is None:
             raise ValueError("关联文档不存在")
 
+        # 审核后至提升前也可能发生数据变化；先复核全部 span，再写入产物。
+        resolved_spans = []
+        for span in spans:
+            resolved = await self._resolve_span(candidate, span)
+            source_chunk = (
+                await self.db.execute(select(Chunk).where(Chunk.id == uuid.UUID(resolved["chunk_id"])))
+            ).scalar_one()
+            resolved_spans.append((resolved, source_chunk))
+
         # 物化 CuratedItem（v1 revision 在同一事务）。
         curated_item = CuratedItem(
             project_id=project_id,
@@ -280,17 +292,17 @@ class CandidateService:
         self.db.add(revision)
 
         # EvidenceLink 服务端派生：document/页码/标题/quote 全来自 Chunk 与已验证 span。
-        for span in spans:
+        for span, source_chunk in resolved_spans:
             self.db.add(
                 EvidenceLink(
                     curated_item_id=curated_item.id,
-                    document_id=chunk.document_id,
-                    chunk_id=uuid.UUID(span["chunk_id"]),
+                    document_id=source_chunk.document_id,
+                    chunk_id=source_chunk.id,
                     start_char=span["start_char"],
                     end_char=span["end_char"],
-                    source_pages=chunk.source_pages,
-                    heading_path=chunk.heading_path,
-                    quote_text=span["quote_text"],
+                    source_pages=source_chunk.source_pages,
+                    heading_path=source_chunk.heading_path,
+                    quote_text=source_chunk.content[span["start_char"]:span["end_char"]],
                 )
             )
         await self.db.flush()

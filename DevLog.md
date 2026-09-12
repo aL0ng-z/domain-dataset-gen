@@ -1594,3 +1594,13 @@ code-reviewer subagent 检查后裁定 **APPROVE WITH NITS**，两条重要建�
 - 合并正文和编辑前修订仅在 `cleaned_markdown is None` 时回退原文，明确清空的空字符串保持删除语义；全库检索未发现其他同类回退路径。
 - 回归先行：新增前端时序回归在修复前 9 项失败；后端明确清空的合并、修订用例在修复前各 1 项失败。修复后前端全量 113 项通过（清洗 hook 17 项、真实页面 HTTP mock 测试 7 项），TypeScript、定向 ESLint、Ruff 通过；后端独立服务回归 4 项通过。
 - 新增 PostgreSQL/API 集成用例验证清空、合并全文/对象、再次编辑的历史修订；该用例与原清洗并发集成套件留待主线程在共享测试库独占时统一执行。本批未改数据库接口，无需更新 OpenAPI；Vitest 配置模块警告由第六批处理。
+## 2026-09-12：用户工作流审查第三批修复（R12、R16–R19）
+
+- 修复切分发布时 ORM 缓存导致的旧版本覆盖：以加锁标量读取最新清洗版本，并通过来源版本条件更新活动分块指针。
+- 候选提升前重新校验每个证据 span 的项目、字符范围和引用；文档、页码、章节与正文均由该 span 自身的 Chunk 派生。
+- 导出溯源统一沿 Chunk → 所属 ChunkSet → 固定清洗版本 → CleaningJob → ParseJob 查询；活动集合和最新解析任务不再参与历史证据解析，缺失、错配和清洗正文 hash 不一致均阻断导出。
+- manifest 升级为 schema 2 / exporter-v2，纳入固定清洗正文、revision 来源、清洗任务及解析端点策略快照；保留既有 canonical hash、不可变快照和对象版本封存合同。
+- API 在首次创建 Export/Task 前检查编组的固定批准 revision，worker 在封存前独立复核，格式化器只渲染已通过同一校验器的快照。QA 支持全部六种格式，benchmark_case 仅支持 benchmark_json，knowledge_extraction 暂无兼容格式。
+- QA 优先使用 question/answer，仅在字段缺失时兼容 instruction/output；必需字段必须是非空字符串。混合无效批次整体返回 409，并通过 EXPORT_FORMAT_INCOMPATIBLE / EXPORT_CONTENT_INVALID 及条目、字段上下文说明原因；未知格式返回 422。
+- 新增类型格式矩阵、字段优先级、API 无产物拒绝、worker 独立复核、多解析版本、历史集合、跨文档证据和真实 PostgreSQL 双 Session 发布竞态回归；导出 fixture 改为完整版本来源链，并同步 OpenAPI/TypeScript 错误码契约。
+- 验证：DatasetGen 环境下相关单元、导出、分块及候选审批测试共 112 项通过（390.61 秒）；末次改动和新增场景另跑 13 项重点回归全部通过（87.35 秒）。Ruff、OpenAPI 漂移检查和 `git diff --check` 通过。测试使用隔离 PostgreSQL/MinIO，未调用真实 LLM 或付费解析服务。

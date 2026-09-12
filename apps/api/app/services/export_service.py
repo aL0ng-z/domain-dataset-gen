@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.config import ExportProfile
 from app.models.export import Export, ExportArtifactSeal, SnapshotManifest
 from app.models.task import Task
-from domain.manifest import EXPORTER_VERSION, seal_sha256
+from domain.manifest import EXPORTER_VERSION, MANIFEST_SCHEMA_VERSION, seal_sha256
 
 #: 导出状态。
 EXPORT_QUEUED = "queued"
@@ -129,7 +129,7 @@ class ExportService:
             export_id=export_id,
             project_id=project_id,
             manifest=manifest,
-            schema_version=1,
+            schema_version=MANIFEST_SCHEMA_VERSION,
             canonicalization_version=MANIFEST_CJSON_VERSION,
             manifest_sha256=manifest_hash,
             sealed_at=_now(),
@@ -167,7 +167,7 @@ class ExportService:
         output_sha256: str,
         output_size: int,
         output_content_type: str,
-        schema_version: int = 1,
+        schema_version: int = MANIFEST_SCHEMA_VERSION,
         formatter_version: str = EXPORTER_VERSION,
     ) -> ExportArtifactSeal:
         """构建精确 seal_payload（不含 seal_sha256 自身）并 INSERT。

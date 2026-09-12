@@ -401,6 +401,45 @@ async def test_stale_clean_version_at_publish_fails(
     assert fresh_doc.active_clean_version_id == cv2.id
 
 
+async def test_clean_version_changes_in_other_session_during_chunking(
+    db_session, org, _test_session_factory, monkeypatch,
+):
+    """R12：缓存旧 Document 后，另一事务在发布前接受新版；旧结果必须回滚。"""
+    from sqlalchemy import update
+
+    from app.workers.chunk_worker import CleanVersionStaleError, run_chunk_handler
+    from tests.conftest import ResourceFactory
+
+    doc = await ResourceFactory(db_session).create_document(org["projects"]["a"].id, org["users"]["admin"].id)
+    first = await _make_clean_version(db_session, org, doc, version=1)
+    second = await _make_clean_version(db_session, org, doc, version=2, markdown="# 新版本\n新正文")
+    doc.active_clean_version_id = first.id
+    profile = await _make_chunk_profile(db_session, org)
+    chunk_set, _ = await _create_set_and_task(db_session, org, doc, profile, first, idem_key=f"concurrent-{uuid.uuid4()}")
+    task = (await TaskQueue(db_session).claim_due(worker_id="review-r12", batch=1))[0]
+    await db_session.commit()
+    doc_id, set_id, new_version_id = doc.id, chunk_set.id, second.id
+    ctx = _make_ctx(db_session, task, {"document_id": str(doc_id), "chunk_set_id": str(set_id)})
+    original_checkpoint = ctx.checkpoint_before_publish
+
+    async def accept_new_version():
+        # 真正的新 Session 提交，不直接改 worker identity map 中的对象。
+        async with _test_session_factory() as other:
+            await other.execute(update(Document).where(Document.id == doc_id).values(active_clean_version_id=new_version_id))
+            await other.commit()
+        await original_checkpoint()
+
+    monkeypatch.setattr(ctx, "checkpoint_before_publish", accept_new_version)
+    with pytest.raises(CleanVersionStaleError):
+        await run_chunk_handler(ctx)
+    await db_session.rollback()
+    async with _test_session_factory() as verify:
+        fresh = await verify.get(Document, doc_id)
+        assert fresh.active_clean_version_id == new_version_id
+        assert fresh.active_chunk_set_id is None
+        assert (await verify.execute(select(func.count()).select_from(Chunk).where(Chunk.chunk_set_id == set_id))).scalar_one() == 0
+
+
 # ---------------------------------------------------------------------------
 # 验收标准：completed set 不可变；Profile 修改不改变历史 config。
 # ---------------------------------------------------------------------------

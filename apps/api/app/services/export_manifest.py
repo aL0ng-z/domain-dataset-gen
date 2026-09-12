@@ -25,15 +25,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.chunk import Chunk
-from app.models.chunk_set import ChunkSet
 from app.models.curated import CuratedItem, CuratedRevision
 from app.models.dataset import Benchmark, Dataset
-from app.models.document import Document
 from app.models.generation import Candidate
 from app.models.generation_batch import GenerationBatch
-from app.models.parse import ParseJob
 from app.models.review_record import ReviewRecord
+from app.services.evidence_provenance import ProvenanceSnapshotMissingError, resolve_evidence_source
+from app.services.export_validation import validate_membership_content
 from domain.manifest import (
     EXPORTER_VERSION,
     MANIFEST_CJSON_VERSION,
@@ -43,10 +41,6 @@ from domain.manifest import (
 
 #: 生成链路缺失/不可验证时的 provenance_gap 标记。
 PROVENANCE_GAP_KEY = "provenance_gap"
-
-
-class ProvenanceSnapshotMissingError(Exception):
-    """任一冻结引用缺失或 hash 不符；导出必须失败而非降级。"""
 
 
 def _sha256(data: str) -> str:
@@ -72,83 +66,52 @@ async def _get(db: AsyncSession, model, obj_id) -> Any:
     return result.scalar_one_or_none()
 
 
-async def _build_evidence_provenance(db: AsyncSession, evidence: dict) -> dict:
-    """从 EvidenceLink 冻结坐标构建证据的完整版本图（Document/ParseJob/ChunkSet/Chunk）。
-
-    任一证据引用缺失 -> provenance_gap（不伪造）。
-    """
-    chunk_id = evidence.get("chunk_id")
-    document_id = evidence.get("document_id")
-    document = await _get(db, Document, uuid.UUID(str(document_id)))
-    if document is None:
-        return {"document_id": str(document_id), PROVENANCE_GAP_KEY: "document_missing"}
-
-    # Document -> ParseJob（T03 快照）。
-    parse_job_row = (
-        await db.execute(
-            select(ParseJob)
-            .where(ParseJob.document_id == document.id)
-            .order_by(ParseJob.created_at.desc())
-        )
-    ).scalar_one_or_none()
-    parse_snapshot = None
-    if parse_job_row is not None:
-        if parse_job_row.parser_profile_snapshot is None:
-            parse_snapshot = {PROVENANCE_GAP_KEY: "parser_profile_snapshot_missing"}
-        else:
-            parse_snapshot = {
-                "parse_job_id": str(parse_job_row.id),
-                "parser_profile_snapshot": parse_job_row.parser_profile_snapshot,
-                "parser_profile_sha256": parse_job_row.parser_profile_sha256,
-                "endpoint_policy_ref": parse_job_row.endpoint_policy_ref,
-                "endpoint_policy_version": parse_job_row.endpoint_policy_version,
-                "endpoint_policy_sha256": parse_job_row.endpoint_policy_sha256,
-            }
-    else:
-        parse_snapshot = {PROVENANCE_GAP_KEY: "parse_job_missing"}
-
-    # Document -> ChunkSet（T06 快照）。
-    chunk_set_row = None
-    if document.active_chunk_set_id is not None:
-        chunk_set_row = await _get(db, ChunkSet, document.active_chunk_set_id)
-    chunk_set_snapshot = None
-    if chunk_set_row is None:
-        chunk_set_snapshot = {PROVENANCE_GAP_KEY: "chunk_set_missing"}
-    else:
-        chunk_set_snapshot = {
-            "chunk_set_id": str(chunk_set_row.id),
-            "version": chunk_set_row.version,
-            "source_sha256": chunk_set_row.source_sha256,
-            "output_sha256": chunk_set_row.output_sha256,
-            "splitter_version": chunk_set_row.splitter_version,
-            "config_json": chunk_set_row.config_json,
-        }
-
-    # Chunk 冻结内容。
-    chunk = None
-    if chunk_id is not None:
-        chunk = await _get(db, Chunk, uuid.UUID(str(chunk_id)))
-    chunk_snapshot = None
-    if chunk is None:
-        chunk_snapshot = {PROVENANCE_GAP_KEY: "chunk_missing"}
-    else:
-        chunk_snapshot = {
-            "chunk_id": str(chunk.id),
-            "ordinal": chunk.ordinal,
-            "content": chunk.content,
-            "content_sha256": _sha256(chunk.content),
-        }
-
+async def _build_evidence_provenance(db: AsyncSession, evidence: dict, project_id: uuid.UUID) -> dict:
+    """沿证据 Chunk 所属集合的固定来源链构建完整版本图。"""
+    source = await resolve_evidence_source(
+        db, chunk_id=evidence.get("chunk_id"), document_id=evidence.get("document_id"),
+        project_id=project_id,
+    )
+    document, chunk, chunk_set = source.document, source.chunk, source.chunk_set
+    clean_version, cleaning_job, parse_job = source.clean_version, source.cleaning_job, source.parse_job
+    start, end = evidence.get("start_char"), evidence.get("end_char")
+    if (not isinstance(start, int) or not isinstance(end, int) or not 0 <= start < end <= len(chunk.content)
+            or _nfc(chunk.content[start:end]) != _nfc(evidence.get("quote_text"))):
+        raise ProvenanceSnapshotMissingError("证据字符范围或引用与固定 Chunk 不一致")
+    if evidence.get("source_pages") != chunk.source_pages or evidence.get("heading_path") != chunk.heading_path:
+        raise ProvenanceSnapshotMissingError("证据页码或章节与固定 Chunk 不一致")
     return {
         "document": {
-            "document_id": str(document.id),
-            "filename": _nfc(document.filename),
+            "document_id": str(document.id), "filename": _nfc(document.filename),
             "sha256": document.sha256,
-            "status": document.status,
         },
-        "parse": parse_snapshot,
-        "chunk_set": chunk_set_snapshot,
-        "chunk": chunk_snapshot,
+        "parse": {
+            "parse_job_id": str(parse_job.id),
+            "parser_profile_snapshot": parse_job.parser_profile_snapshot,
+            "parser_profile_sha256": parse_job.parser_profile_sha256,
+            "endpoint_policy_snapshot": parse_job.endpoint_policy_snapshot,
+            "endpoint_policy_ref": parse_job.endpoint_policy_ref,
+            "endpoint_policy_version": parse_job.endpoint_policy_version,
+            "endpoint_policy_sha256": parse_job.endpoint_policy_sha256,
+        },
+        "cleaning_job": {"cleaning_job_id": str(cleaning_job.id), "parse_job_id": str(cleaning_job.parse_job_id)},
+        "cleaned_document_version": {
+            "cleaned_document_version_id": str(clean_version.id), "version": clean_version.version,
+            "source_cleaning_job_id": str(cleaning_job.id), "content_sha256": clean_version.content_sha256,
+            "merged_markdown": clean_version.merged_markdown,
+            "source_revision_map": clean_version.source_revision_map,
+            "source_revision_sha256": clean_version.source_revision_sha256,
+        },
+        "chunk_set": {
+            "chunk_set_id": str(chunk_set.id), "version": chunk_set.version,
+            "cleaned_document_version_id": str(clean_version.id),
+            "source_sha256": chunk_set.source_sha256, "output_sha256": chunk_set.output_sha256,
+            "splitter_version": chunk_set.splitter_version, "config_json": chunk_set.config_json,
+        },
+        "chunk": {
+            "chunk_id": str(chunk.id), "ordinal": chunk.ordinal,
+            "content": chunk.content, "content_sha256": _sha256(chunk.content),
+        },
     }
 
 
@@ -225,6 +188,7 @@ async def build_export_manifest(
     container_id = container.id
     container_name = container.name
 
+    await validate_membership_content(db, memberships, export_format)
     member_sections: list[dict] = []
     for m in memberships:
         # 固定 CuratedRevision（T09，不可变）。
@@ -254,7 +218,7 @@ async def build_export_manifest(
                     "heading_path": _nfc(ev.get("heading_path")),
                     "start_char": ev.get("start_char"),
                     "end_char": ev.get("end_char"),
-                    "provenance": await _build_evidence_provenance(db, ev),
+                    "provenance": await _build_evidence_provenance(db, ev, project_id),
                 }
             )
 

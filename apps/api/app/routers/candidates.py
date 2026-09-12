@@ -212,6 +212,11 @@ async def promote_to_curated(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "CANDIDATE_EVIDENCE_REQUIRED", "message": str(e)},
         ) from e
+    except EvidenceValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"code": "VALIDATION_ERROR", "message": str(e)},
+        ) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
     return curated_item

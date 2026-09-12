@@ -27,7 +27,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.dataset import Benchmark, BenchmarkCase, Dataset, DatasetItem
+from app.models.dataset import Benchmark, Dataset
 from app.models.export import Export, SnapshotManifest
 from app.services.export_manifest import (
     ProvenanceSnapshotMissingError,
@@ -37,9 +37,11 @@ from app.services.export_service import (
     EXPORT_PROCESSING,
     ExportService,
 )
+from app.services.export_validation import load_export_memberships
 from app.storage_keys import build_storage_key
 from app.workers.errors import TaskError, TaskErrorCode
 from app.workers.execution import ExecutionContext
+from domain.export_content import ExportContentError, validate_export_members
 from domain.manifest import manifest_cjson, manifest_sha256
 from storage import get_storage_client
 
@@ -180,7 +182,7 @@ def render_payload_from_manifest(manifest: dict, fmt: str) -> str:
     members = manifest.get("members") or []
     if not members:
         raise ValueError("没有可导出的条目")
-    return handler(members)
+    return handler(validate_export_members(members, fmt))
 
 
 def render_payload_sha256(payload: str) -> str:
@@ -192,19 +194,6 @@ def render_payload_sha256(payload: str) -> str:
 # ---------------------------------------------------------------------------
 # 共享导出逻辑
 # ---------------------------------------------------------------------------
-
-
-async def _load_memberships(db: AsyncSession, source_type: str, source_id: uuid.UUID) -> list:
-    """加载 T10 finalized membership（含固定 revision/approval hash）。"""
-    if source_type == "dataset":
-        result = await db.execute(
-            select(DatasetItem).where(DatasetItem.dataset_id == source_id).order_by(DatasetItem.ordinal)
-        )
-        return list(result.scalars().all())
-    result = await db.execute(
-        select(BenchmarkCase).where(BenchmarkCase.benchmark_id == source_id).order_by(BenchmarkCase.ordinal)
-    )
-    return list(result.scalars().all())
 
 
 async def _mark_export_processing(db: AsyncSession, export_id: uuid.UUID, task_id: uuid.UUID) -> None:
@@ -347,7 +336,7 @@ async def _export_common(
             raise RuntimeError(f"{source_type} 不存在: {source_id}")
         if container.status != "finalized":
             raise RuntimeError("source 未 finalize，禁止导出")
-        memberships = await _load_memberships(db, source_type, source_id)
+        memberships = await load_export_memberships(db, source_type, source_id)
         if not memberships:
             raise RuntimeError("没有可导出的条目")
         await ctx.checkpoint()
@@ -366,6 +355,8 @@ async def _export_common(
                 profile_snapshot=profile_snapshot,
                 profile_snapshot_hash=profile_hash,
             )
+        except ExportContentError as exc:
+            raise TaskError(TaskErrorCode(exc.code), f"{exc}: {exc.issues}") from exc
         except ProvenanceSnapshotMissingError as exc:
             raise TaskError(TaskErrorCode.PROVENANCE_SNAPSHOT_MISSING, str(exc)) from exc
         await ctx.checkpoint()
@@ -381,8 +372,10 @@ async def _export_common(
         )
         await db.flush()
 
-    if fmt not in FORMAT_HANDLERS:
-        raise RuntimeError(f"不支持的导出格式: {fmt}")
+    try:
+        validate_export_members(manifest.get("members") or [], fmt)
+    except ExportContentError as exc:
+        raise TaskError(TaskErrorCode(exc.code), f"{exc}: {exc.issues}") from exc
 
     # 3. 快照封存是刻意的 durable boundary。之后失败/取消只回滚发布事务，
     # retry 始终从 SnapshotManifest 恢复，不重新快照。
@@ -432,6 +425,8 @@ async def _export_common(
         output_sha256=payload_sha256,
         output_size=len(payload_bytes),
         output_content_type=content_type,
+        schema_version=snapshot.schema_version,
+        formatter_version=manifest["formatter_version"],
     )
     ok = await export_service.finalize_completed(
         export_id=export_id,

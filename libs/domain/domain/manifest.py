@@ -24,9 +24,9 @@ from typing import Any
 #: manifest 规范版本标识（写入 SnapshotManifest.canonicalization_version）。
 MANIFEST_CJSON_VERSION = "manifest-cjson-v1"
 #: exporter 实现版本（写入 manifest.exporter_version / Export.formatter_version 来源）。
-EXPORTER_VERSION = "exporter-v1"
+EXPORTER_VERSION = "exporter-v2"
 #: manifest JSONB schema 版本（写入 SnapshotManifest.schema_version）。
-MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_SCHEMA_VERSION = 2
 #: 排除在 hash 计算之外的字段（自引用排除：manifest 与 seal 各自的 hash）。
 _HASH_EXCLUDED_KEYS = frozenset({"manifest_sha256", "seal_sha256"})
 

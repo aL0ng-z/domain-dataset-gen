@@ -31,6 +31,8 @@ class TaskErrorCode(StrEnum):
     PROVENANCE_SNAPSHOT_MISSING = "PROVENANCE_SNAPSHOT_MISSING"
     # T11：导出请求 source revision/hash 与当前 composition 不一致。
     EXPORT_REVISION_CONFLICT = "EXPORT_REVISION_CONFLICT"
+    EXPORT_FORMAT_INCOMPATIBLE = "EXPORT_FORMAT_INCOMPATIBLE"
+    EXPORT_CONTENT_INVALID = "EXPORT_CONTENT_INVALID"
 
     # ---- 可重试错误（按 Policy 退避）----
     # 网络/传输层临时失败（超时、连接重置、5xx）。
