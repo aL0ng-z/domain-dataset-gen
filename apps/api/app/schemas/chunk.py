@@ -11,7 +11,7 @@ class ChunkResponse(BaseSchema):
     ordinal: int
     heading_path: str
     content: str
-    source_pages: dict | None
+    source_pages: list[int] | dict | None
     token_count: int
     status: str
     # T06：响应项新增 chunk_set_id 与 chunk_set_version（历史集合不混入默认列表）。

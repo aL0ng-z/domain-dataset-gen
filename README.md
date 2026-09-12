@@ -509,7 +509,7 @@ logs/                     本地运行日志；不提交 Git
 在已激活的 `DatasetGen` conda 环境中，从仓库根目录执行：
 
 ```powershell
-.\scripts\test-backend.ps1     # 后端：ruff lint + pytest + 覆盖率
+.\scripts\test-backend.ps1     # 后端：ruff lint + 重建隔离 schema/迁移 + pytest + 覆盖率
 .\scripts\test-frontend.ps1    # 前端：lint + tsc + vitest + build
 ```
 
@@ -524,7 +524,9 @@ CI（`.github/workflows/ci.yml`）执行的正是与上述脚本相同的门禁�
 
 ### 8.2 后端测试
 
-在已激活的 conda 环境中，从仓库根目录执行：
+在已激活的 conda 环境中，从仓库根目录执行。推荐使用上一节的一键门禁；它会在
+确认 `datasetgen_test` 后重建其 `public` schema 并执行全部 Alembic 迁移，使数据库
+触发器和不可变性测试与 CI 保持一致。
 
 ```powershell
 python -m pytest -q
@@ -562,6 +564,16 @@ python -m pytest -q tests/integration/test_parse_job_snapshot_migration.py
 ```powershell
 .\scripts\test-infra.ps1       # 启动（PostgreSQL/Redis/MinIO，与开发环境隔离）
 .\scripts\test-infra.ps1 -Stop # 停止
+```
+
+直接运行集成 pytest 前也需要先迁移测试 schema：
+
+```powershell
+cd apps\api
+$env:TESTING = "1"; $env:POSTGRES_HOST = "localhost"; $env:POSTGRES_PORT = "55432"
+$env:POSTGRES_DB = "datasetgen_test"; $env:POSTGRES_USER = "datasetgen_test"; $env:POSTGRES_PASSWORD = "datasetgen_test_password"
+python -m alembic upgrade head
+cd ..\..
 ```
 
 ### 8.3 后端 lint

@@ -49,7 +49,11 @@ if ($Stop) {
 }
 
 Write-Host "==> Starting test infrastructure..."
-Invoke-DockerCompose @("up", "-d", "--wait")
+# minio-init is a one-shot container. Including it in `up --wait` makes
+# Compose return failure after its successful zero exit, so wait only for the
+# long-running services and execute initialization separately.
+Invoke-DockerCompose @("up", "-d", "--wait", "postgres", "redis", "minio")
+Invoke-DockerCompose @("up", "--no-deps", "minio-init")
 Write-Host "Test infrastructure ready." -ForegroundColor Green
 Write-Host "  PostgreSQL: localhost:55432 (db: datasetgen_test)"
 Write-Host "  Redis     : localhost:56379"

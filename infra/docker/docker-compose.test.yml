@@ -57,6 +57,7 @@ services:
 
   minio-init:
     image: minio/mc
+    env_file: .env.test
     depends_on:
       minio:
         condition: service_healthy

@@ -52,7 +52,8 @@ class Section(Base):
     document_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"))
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     heading_path: Mapped[str] = mapped_column(String(500), nullable=False, default="")
-    source_pages: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # 页面分段器写入页码数组；保留旧记录的 JSON object 兼容性。
+    source_pages: Mapped[list[int] | dict | None] = mapped_column(JSONB, nullable=True)
     raw_markdown: Mapped[str] = mapped_column(Text, nullable=False)
     cleaned_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

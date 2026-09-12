@@ -112,6 +112,6 @@ class EvidenceLink(Base):
     chunk_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("chunks.id"))
     start_char: Mapped[int] = mapped_column(Integer, nullable=False)
     end_char: Mapped[int] = mapped_column(Integer, nullable=False)
-    source_pages: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    source_pages: Mapped[list[int] | dict | None] = mapped_column(JSONB, nullable=True)
     heading_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     quote_text: Mapped[str | None] = mapped_column(Text, nullable=True)

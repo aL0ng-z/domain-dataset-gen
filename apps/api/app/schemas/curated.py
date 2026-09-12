@@ -83,6 +83,6 @@ class EvidenceLinkResponse(BaseSchema):
     chunk_id: uuid.UUID
     start_char: int
     end_char: int
-    source_pages: dict | None
+    source_pages: list[int] | dict | None
     heading_path: str | None
     quote_text: str | None

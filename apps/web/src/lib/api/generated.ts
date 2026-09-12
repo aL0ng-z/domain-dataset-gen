@@ -2445,7 +2445,7 @@ export interface components {
              */
             section_id: string;
             /** Source Pages */
-            source_pages: {
+            source_pages: number[] | {
                 [key: string]: unknown;
             } | null;
             /** Status */
@@ -2748,6 +2748,10 @@ export interface components {
              * Format: uuid
              */
             document_id: string;
+            /** Error Code */
+            error_code?: string | null;
+            /** Error Message */
+            error_message?: string | null;
             /**
              * Id
              * Format: uuid
@@ -2774,6 +2778,8 @@ export interface components {
             started_by: string;
             /** Status */
             status: string;
+            /** Task Id */
+            task_id?: string | null;
         };
         /** CleaningStartRequest */
         CleaningStartRequest: {
@@ -3205,7 +3211,7 @@ export interface components {
             /** Quote Text */
             quote_text: string | null;
             /** Source Pages */
-            source_pages: {
+            source_pages: number[] | {
                 [key: string]: unknown;
             } | null;
             /** Start Char */
@@ -4006,6 +4012,8 @@ export interface components {
             endpoint_policy_sha256: string | null;
             /** Endpoint Policy Version */
             endpoint_policy_version: string | null;
+            /** Error Code */
+            error_code?: string | null;
             /** Error Message */
             error_message: string | null;
             /** Frozen At */
@@ -4028,6 +4036,8 @@ export interface components {
             started_at: string | null;
             /** Status */
             status: string;
+            /** Task Id */
+            task_id?: string | null;
         };
         /** ParseRequest */
         ParseRequest: {
@@ -4483,7 +4493,7 @@ export interface components {
             /** Return Reason */
             return_reason: string | null;
             /** Source Pages */
-            source_pages: {
+            source_pages: number[] | {
                 [key: string]: unknown;
             } | null;
             /** Status */
@@ -4673,8 +4683,7 @@ export interface components {
             max_retries: number;
             /** Name */
             name: string;
-            /** Task Type */
-            task_type: string;
+            task_type: components["schemas"]["TaskType"];
             /**
              * Timeout Seconds
              * @default 300
@@ -4706,8 +4715,7 @@ export interface components {
              * Format: uuid
              */
             project_id: string;
-            /** Task Type */
-            task_type: string;
+            task_type: components["schemas"]["TaskType"];
             /** Timeout Seconds */
             timeout_seconds: number;
             /**
@@ -4726,8 +4734,7 @@ export interface components {
             max_retries?: number | null;
             /** Name */
             name?: string | null;
-            /** Task Type */
-            task_type?: string | null;
+            task_type?: components["schemas"]["TaskType"] | null;
             /** Timeout Seconds */
             timeout_seconds?: number | null;
         };
@@ -4778,6 +4785,10 @@ export interface components {
             next_run_at: string;
             /** Parent Task Id */
             parent_task_id: string | null;
+            /** Policy Snapshot */
+            policy_snapshot?: {
+                [key: string]: unknown;
+            } | null;
             /** Progress */
             progress: number;
             /**
@@ -4799,7 +4810,14 @@ export interface components {
             status: string;
             /** Task Type */
             task_type: string;
+            /** Timeout Seconds */
+            timeout_seconds: number;
         };
+        /**
+         * TaskType
+         * @enum {string}
+         */
+        TaskType: "parse" | "clean" | "chunk" | "generate" | "generate_batch" | "export";
         /** TestRunRequest */
         TestRunRequest: {
             /**

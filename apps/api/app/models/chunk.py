@@ -36,7 +36,7 @@ class Chunk(Base):
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     heading_path: Mapped[str] = mapped_column(String(500), nullable=False, default="")
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    source_pages: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    source_pages: Mapped[list[int] | dict | None] = mapped_column(JSONB, nullable=True)
     token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[str] = mapped_column(chunk_status_enum, nullable=False, default="ready")
     # T06：所有 Chunk 强制绑定一个 ChunkSet（迁移后 NOT NULL）。

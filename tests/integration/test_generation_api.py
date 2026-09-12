@@ -12,7 +12,7 @@ import uuid
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.conftest import create_access_token
@@ -350,12 +350,27 @@ async def test_retry_batch_202_and_retry_exists(
     )
     gbid = resp.json()["generation_batch_id"]
 
-    # 把 batch 置为 failed（无成功项）。
+    # 真实生命周期要求 parent 和所有 child 都已终态，才允许派生 retry；不能只
+    # 手工改 Batch 而遗留 queued 子任务。
     from app.models.generation_batch import GenerationBatch
+    from app.models.task import Task
 
     batch = (await db_session.execute(select(GenerationBatch).where(GenerationBatch.id == uuid.UUID(gbid)))).scalar_one()
     batch.status = "failed"
     batch.completed_at = datetime.now(UTC)
+    await db_session.execute(
+        update(Task)
+        .where(Task.payload["generation_batch_id"].astext == gbid)
+        .values(
+            status="failed",
+            completed_at=datetime.now(UTC),
+            run_token=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            error_code="BUSINESS_ERROR",
+            error_message="test terminal batch",
+        )
+    )
     await db_session.commit()
 
     retry_resp = await client.post(

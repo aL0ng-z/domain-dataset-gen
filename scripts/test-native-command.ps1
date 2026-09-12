@@ -45,3 +45,6 @@ try {
 if (-not $missingFailed) { throw "Missing executable must fail" }
 
 Write-Host "Native command regression tests passed (stderr/exit 0, exit 7, missing executable, caller state)."
+# The intentional nonzero child process leaves $LASTEXITCODE=7; make this
+# executable regression script report the assertions, not that simulated exit.
+exit 0

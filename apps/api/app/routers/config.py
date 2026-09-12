@@ -289,20 +289,26 @@ async def test_model_config(
     if config is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="配置不存在")
 
+    from app.generation.snapshot import build_model_config_snapshot
     from llm import LLMClient
 
     try:
+        snapshot = build_model_config_snapshot(config)
         client = LLMClient(
             base_url=config.base_url,
             api_key=config.api_key_encrypted,  # In MVP, stored as plaintext
             model_name=config.model_name,
-            temperature=0,
-            max_tokens=20,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            extra_params=snapshot.get("extra_params"),
         )
-        response = await client.chat_completion(
-            [{"role": "user", "content": "Reply with exactly: 连接成功"}],
-            max_retries=1,
-        )
+        try:
+            response = await client.chat_completion(
+                [{"role": "user", "content": "Reply with exactly: 连接成功"}],
+                max_retries=0,
+            )
+        finally:
+            await client.client.close()
         return ModelConfigTestResponse(status="success", response=response.content.strip(), latency_ms=response.latency_ms)
     except Exception as e:
         return ModelConfigTestResponse(status="error", error=str(e))

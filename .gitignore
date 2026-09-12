@@ -66,6 +66,8 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 .coverage-reports/
+.playwright-cli/
+output/playwright/
 
 # Jupyter
 .ipynb_checkpoints/

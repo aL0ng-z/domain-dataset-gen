@@ -95,6 +95,7 @@ async def test_unsafe_options_not_written_to_db(client: AsyncClient, org, db_ses
 
 async def test_endpoint_list_is_safe_projection(client: AsyncClient, org, monkeypatch):
     """端点列表只返回 endpoint_ref/display_name/parser_name/credential_configured。"""
+    from app.config import settings
     from app.security import registry as registry_module
     from app.security.registry import ParserEndpointConfig, ParserEndpointRegistry, reset_registry
 
@@ -114,6 +115,7 @@ async def test_endpoint_list_is_safe_projection(client: AsyncClient, org, monkey
             ]
         ),
     )
+    monkeypatch.setattr(settings, "mineru_api_token", None)
     reset_registry()
     pid = org["projects"]["a"].id
     resp = await client.get(
@@ -127,7 +129,9 @@ async def test_endpoint_list_is_safe_projection(client: AsyncClient, org, monkey
             "endpoint_ref": "mineru-official",
             "display_name": "mineru-official",
             "parser_name": "mineru",
-            "credential_configured": True,
+                # Safe projection reports actual server credential readiness, not
+                # merely that the endpoint declares a credential slot.
+                "credential_configured": False,
         }
     ]
     # 不得返回主机/IP/端口/allowlist 或网络区域内部细节

@@ -921,6 +921,12 @@
           "source_pages": {
             "anyOf": [
               {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
                 "additionalProperties": true,
                 "type": "object"
               },
@@ -1774,6 +1780,28 @@
             "title": "Document Id",
             "type": "string"
           },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -1820,6 +1848,18 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
           }
         },
         "required": [
@@ -2822,6 +2862,12 @@
           },
           "source_pages": {
             "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
               {
                 "additionalProperties": true,
                 "type": "object"
@@ -4910,6 +4956,17 @@
             ],
             "title": "Endpoint Policy Version"
           },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
           "error_message": {
             "anyOf": [
               {
@@ -4980,6 +5037,18 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
           }
         },
         "required": [
@@ -5995,6 +6064,12 @@
           "source_pages": {
             "anyOf": [
               {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
                 "additionalProperties": true,
                 "type": "object"
               },
@@ -6403,11 +6478,13 @@
         "properties": {
           "concurrency_limit": {
             "default": 5,
+            "exclusiveMinimum": 0.0,
             "title": "Concurrency Limit",
             "type": "integer"
           },
           "max_retries": {
             "default": 3,
+            "minimum": 0.0,
             "title": "Max Retries",
             "type": "integer"
           },
@@ -6416,11 +6493,11 @@
             "type": "string"
           },
           "task_type": {
-            "title": "Task Type",
-            "type": "string"
+            "$ref": "#/components/schemas/TaskType"
           },
           "timeout_seconds": {
             "default": 300,
+            "exclusiveMinimum": 0.0,
             "title": "Timeout Seconds",
             "type": "integer"
           }
@@ -6466,8 +6543,7 @@
             "type": "string"
           },
           "task_type": {
-            "title": "Task Type",
-            "type": "string"
+            "$ref": "#/components/schemas/TaskType"
           },
           "timeout_seconds": {
             "title": "Timeout Seconds",
@@ -6505,6 +6581,7 @@
           "concurrency_limit": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0.0,
                 "type": "integer"
               },
               {
@@ -6516,6 +6593,7 @@
           "max_retries": {
             "anyOf": [
               {
+                "minimum": 0.0,
                 "type": "integer"
               },
               {
@@ -6538,17 +6616,17 @@
           "task_type": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/TaskType"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Task Type"
+            ]
           },
           "timeout_seconds": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0.0,
                 "type": "integer"
               },
               {
@@ -6666,6 +6744,18 @@
             ],
             "title": "Parent Task Id"
           },
+          "policy_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Snapshot"
+          },
           "progress": {
             "title": "Progress",
             "type": "integer"
@@ -6722,6 +6812,10 @@
           "task_type": {
             "title": "Task Type",
             "type": "string"
+          },
+          "timeout_seconds": {
+            "title": "Timeout Seconds",
+            "type": "integer"
           }
         },
         "required": [
@@ -6740,6 +6834,7 @@
           "completed_at",
           "state_version",
           "attempt_count",
+          "timeout_seconds",
           "max_attempts",
           "next_run_at",
           "cancel_requested_at",
@@ -6750,6 +6845,18 @@
         ],
         "title": "TaskResponse",
         "type": "object"
+      },
+      "TaskType": {
+        "enum": [
+          "parse",
+          "clean",
+          "chunk",
+          "generate",
+          "generate_batch",
+          "export"
+        ],
+        "title": "TaskType",
+        "type": "string"
       },
       "TestRunRequest": {
         "additionalProperties": false,

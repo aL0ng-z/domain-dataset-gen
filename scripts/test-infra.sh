@@ -25,7 +25,10 @@ if [[ "${1:-}" == "--stop" ]]; then
 fi
 
 echo "==> Starting test infrastructure..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --wait
+# minio-init exits successfully after bucket setup; do not include that
+# one-shot container in Compose's long-running-service wait.
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d --wait postgres redis minio
+docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up --no-deps minio-init
 echo "Test infrastructure ready."
 echo "  PostgreSQL: localhost:55432 (db: datasetgen_test)"
 echo "  Redis     : localhost:56379"

@@ -5,7 +5,7 @@
 | 类别 | 脚本 | 生命周期与用途 |
 |---|---|---|
 | 开发服务 | `dev-start*`、`dev-stop*` | 本地开发长期入口；启动/停止 API、Web、worker 与依赖服务。stop 只处理脚本生成的 PID 文件。 |
-| 自动化门禁 | `test-backend*`、`test-frontend*`、`test-infra*` | 本地与 CI 的长期入口；只允许连接专用测试 PostgreSQL、Redis、MinIO。 |
+| 自动化门禁 | `test-backend*`、`test-frontend*`、`test-infra*` | 本地与 CI 的长期入口；后端门禁会重建并迁移专用 `datasetgen_test.public` schema，只允许连接专用测试 PostgreSQL、Redis、MinIO。 |
 | 原生命令回归 | `test-native-command.ps1` | 验证共享 `native-command.ps1` 对 stderr 警告、真实非零退出及调用环境恢复的处理；不连接数据库或其他服务。 |
 | 迁移验证 | `run-migration-smoke*` | 长期入口；会重建并 upgrade/downgrade 专用测试数据库 schema，禁止指向生产库。 |
 | 合同 | `export_openapi.py` | 长期入口；默认更新 OpenAPI 快照，`--check` 只比较且不写入。 |
