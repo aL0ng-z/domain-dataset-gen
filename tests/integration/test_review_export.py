@@ -147,7 +147,7 @@ async def test_export_uses_evidence_versions_with_multiple_parses_and_new_active
     await _run_export_worker(_test_session_factory, uuid.UUID(response.json()["task_id"]))
     snapshot = (await db_session.execute(select(SnapshotManifest))).scalar_one()
     assert snapshot.schema_version == MANIFEST_SCHEMA_VERSION == 2
-    assert snapshot.manifest["exporter_version"] == EXPORTER_VERSION == "exporter-v2"
+    assert snapshot.manifest["exporter_version"] == EXPORTER_VERSION == "exporter-v3"
     assert snapshot.manifest["members"][0]["curated_revision"]["content"]["answer"] == "压比是出口与进口压力之比"
     evidence = snapshot.manifest["members"][0]["evidence"][0]["provenance"]
     assert evidence["parse"]["parse_job_id"] == str(old_parse.id)
@@ -158,7 +158,7 @@ async def test_export_uses_evidence_versions_with_multiple_parses_and_new_active
     assert evidence["cleaning_job"]["cleaning_job_id"] == str(chain["cleaning_job"].id)
 
 
-async def test_promote_derives_each_span_from_its_own_chunk(db_session, org):
+async def test_review_rejects_span_outside_frozen_generation_batch(db_session, org):
     pid, uid = org["projects"]["a"].id, org["users"]["reviewer"].id
     first = await _make_doc_chain(db_session, pid, uid)
     second = await _make_doc_chain(db_session, pid, uid, content="第二文档第七页的证据正文")
@@ -166,17 +166,18 @@ async def test_promote_derives_each_span_from_its_own_chunk(db_session, org):
     second["chunk"].source_pages = {"start": 7, "end": 7}
     candidate, _, _ = await _make_verified_candidate(db_session, first, actor_uid=uid)
     service = CandidateService(db_session)
-    await service.review(candidate.id, uid, "supported", [
-        _span(first["chunk"].id, first["chunk"].content, first["chunk"].content[:3]),
-        _span(second["chunk"].id, second["chunk"].content, "证据正文"),
-    ])
-    item = await service.promote_to_curated(candidate.id, uid)
-    links = (await db_session.execute(select(EvidenceLink).where(EvidenceLink.curated_item_id == item.id))).scalars().all()
-    assert len(links) == 2
-    link = next(link for link in links if link.chunk_id == second["chunk"].id)
-    assert link.document_id == second["doc"].id
-    assert link.source_pages == {"start": 7, "end": 7}
-    assert link.heading_path == "第二章" and link.quote_text == "证据正文"
+    with pytest.raises(EvidenceValidationError, match="冻结来源"):
+        await service.review(
+            candidate.id,
+            uid,
+            "supported",
+            expected_revision=candidate.content_revision,
+            evidence_spans=[
+                _span(first["chunk"].id, first["chunk"].content, first["chunk"].content[:3]),
+                _span(second["chunk"].id, second["chunk"].content, "证据正文"),
+            ],
+        )
+    assert (await db_session.execute(select(EvidenceLink))).scalars().all() == []
 
 
 async def test_promote_revalidates_reviewed_quote_before_writes(db_session, org):
@@ -184,11 +185,17 @@ async def test_promote_revalidates_reviewed_quote_before_writes(db_session, org)
     chain = await _make_doc_chain(db_session, pid, uid)
     candidate, _, _ = await _make_verified_candidate(db_session, chain, actor_uid=uid)
     service = CandidateService(db_session)
-    await service.review(candidate.id, uid, "supported", [_span(chain["chunk"].id, chain["chunk"].content, "压比")])
+    await service.review(
+        candidate.id,
+        uid,
+        "supported",
+        expected_revision=candidate.content_revision,
+        evidence_spans=[_span(chain["chunk"].id, chain["chunk"].content, "压比")],
+    )
     # 模拟审核后存储中出现过期/非法 span，不能继续产生错误的证据链接。
     candidate.review_evidence_spans = {"spans": [{"chunk_id": str(chain["chunk"].id), "start_char": 0, "end_char": 9999, "quote_text": "压比"}]}
     with pytest.raises(EvidenceValidationError):
-        await service.promote_to_curated(candidate.id, uid)
+        await service.promote_to_curated(candidate.id, uid, expected_revision=candidate.content_revision)
     assert (await db_session.execute(select(func.count()).select_from(EvidenceLink))).scalar_one() == 0
 
 

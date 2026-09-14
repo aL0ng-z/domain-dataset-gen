@@ -6,6 +6,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -106,6 +107,11 @@ class Candidate(Base):
     __table_args__ = (
         # T08：成功 run 最多产出一个 Candidate。
         UniqueConstraint("generation_run_id", name="uq_candidates_generation_run"),
+        CheckConstraint("content_revision >= 1", name="ck_candidates_content_revision_positive"),
+        CheckConstraint(
+            "reviewed_content_revision IS NULL OR reviewed_content_revision >= 1",
+            name="ck_candidates_reviewed_content_revision_positive",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -121,6 +127,12 @@ class Candidate(Base):
     author_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     source_generation_batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("generation_batches.id"), nullable=True)
     thinking_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 内容与审核必须绑定同一 revision。编辑递增 content_revision 并清空审核；
+    # 审核写入 reviewed_content_revision，提升时再次核对二者相等。
+    content_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    reviewed_content_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

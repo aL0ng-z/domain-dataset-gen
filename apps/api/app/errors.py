@@ -50,6 +50,10 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
         message = "请求参数校验失败"
         if not detail_items and isinstance(exc.detail, str):
             message = exc.detail
+        elif not detail_items and isinstance(exc.detail, dict):
+            candidate_message = exc.detail.get("message", exc.detail.get("detail"))
+            if isinstance(candidate_message, str):
+                message = candidate_message
         return JSONResponse(
             status_code=status_code,
             headers=headers,

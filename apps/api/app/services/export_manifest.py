@@ -100,6 +100,7 @@ async def _build_evidence_provenance(db: AsyncSession, evidence: dict, project_i
             "source_cleaning_job_id": str(cleaning_job.id), "content_sha256": clean_version.content_sha256,
             "merged_markdown": clean_version.merged_markdown,
             "source_revision_map": clean_version.source_revision_map,
+            "source_intervals": clean_version.source_intervals,
             "source_revision_sha256": clean_version.source_revision_sha256,
         },
         "chunk_set": {

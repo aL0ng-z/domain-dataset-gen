@@ -100,7 +100,7 @@ def _backfill_curated_revisions(conn) -> int:
         sa.text(
             "SELECT id, curated_item_id, content FROM curated_revisions ORDER BY created_at, id"
         )
-    ).fetchall()
+    ).mappings().all()
     by_item: dict = {}
     for row in rows:
         by_item.setdefault(row["curated_item_id"], []).append(row)
@@ -141,7 +141,7 @@ def _backfill_curated_items(conn) -> tuple[int, int]:
               FROM curated_items ci
             """
         )
-    ).fetchall()
+    ).mappings().all()
 
     n_created_v1 = 0
     n_set_current = 0
@@ -178,6 +178,48 @@ def _backfill_curated_items(conn) -> tuple[int, int]:
     return n_created_v1, n_set_current
 
 
+def _find_quote_span_in_original(content: str, quote: str) -> tuple[int, int] | None:
+    """返回 NFC 等价 quote 在原始字符串中的 code point 边界。
+
+    迁移持久化的是原始 ``Chunk.content`` 的坐标，不能把 NFC 字符串的位置直接
+    写回。先走精确查找；只在需要 NFC 等价匹配时将规范化片段映射回原始边界。
+    """
+    direct = content.find(quote)
+    if direct >= 0:
+        return direct, direct + len(quote)
+
+    quote_nfc = unicodedata.normalize("NFC", quote)
+    if not quote_nfc:
+        return None
+
+    normalized_parts: list[str] = []
+    normalized_starts: list[int] = []
+    normalized_ends: list[int] = []
+    unit_start = 0
+    for index in range(1, len(content) + 1):
+        # 一个基础字符及其后续 combining marks 在 NFC 后共享同一原始边界。
+        if index < len(content) and unicodedata.combining(content[index]):
+            continue
+        normalized = unicodedata.normalize("NFC", content[unit_start:index])
+        normalized_parts.append(normalized)
+        normalized_starts.extend([unit_start] * len(normalized))
+        normalized_ends.extend([index] * len(normalized))
+        unit_start = index
+
+    normalized_content = "".join(normalized_parts)
+    search_from = 0
+    while True:
+        index = normalized_content.find(quote_nfc, search_from)
+        if index < 0:
+            return None
+        end_index = index + len(quote_nfc)
+        start = normalized_starts[index]
+        end = normalized_ends[end_index - 1]
+        if unicodedata.normalize("NFC", content[start:end]) == quote_nfc:
+            return start, end
+        search_from = index + 1
+
+
 def _backfill_evidence_offsets(conn) -> tuple[int, int]:
     """为历史 EvidenceLink 精确回填 start/end；无法精确回填的证据删除。
 
@@ -194,29 +236,22 @@ def _backfill_evidence_offsets(conn) -> tuple[int, int]:
               JOIN chunks c ON c.id = el.chunk_id
             """
         )
-    ).fetchall()
+    ).mappings().all()
 
     n_kept = 0
     n_deleted = 0
     for link in links:
         quote = link["quote_text"]
         chunk_content = link["chunk_content"] or ""
-        start = None
-        end = None
-        if quote:
-            quote_nfc = unicodedata.normalize("NFC", quote)
-            content_nfc = unicodedata.normalize("NFC", chunk_content)
-            idx = content_nfc.find(quote_nfc)
-            if idx >= 0:
-                start = idx
-                end = idx + len(quote_nfc)
-        if start is None:
+        span = _find_quote_span_in_original(chunk_content, quote) if quote else None
+        if span is None:
             conn.execute(
                 sa.text("DELETE FROM evidence_links WHERE id = :id"),
                 {"id": link["id"]},
             )
             n_deleted += 1
         else:
+            start, end = span
             conn.execute(
                 sa.text(
                     "UPDATE evidence_links SET start_char = :s, end_char = :e WHERE id = :id"
@@ -238,7 +273,7 @@ def _demote_approved_items(conn) -> int:
         sa.text(
             "SELECT id FROM curated_items WHERE status = 'approved' AND approval_record_id IS NULL"
         )
-    ).fetchall()
+    ).mappings().all()
     n = 0
     for row in rows:
         conn.execute(

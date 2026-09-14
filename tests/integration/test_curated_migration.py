@@ -56,6 +56,33 @@ class TestMigrationPrechecks:
         assert "命中停止条件" in str(excinfo.value)
 
 
+class TestMigrationBackfillRows:
+    def test_backfill_uses_mapping_rows(self):
+        """SQLAlchemy 2.x Row 需要 mappings()，不能用字符串下标访问 tuple。"""
+        updates: list[dict] = []
+
+        class _Rows:
+            def mappings(self):
+                return self
+
+            def all(self):
+                return [{"id": "r1", "curated_item_id": "item1", "content": {"question": "Q"}}]
+
+        class _FakeBind:
+            def execute(self, stmt, params=None):
+                if "SELECT id, curated_item_id, content" in str(stmt):
+                    return _Rows()
+                updates.append(params)
+                return None
+
+        assert _mig._backfill_curated_revisions(_FakeBind()) == 1
+        assert updates[0]["rid"] == "r1"
+
+    def test_nfc_quote_coordinates_remain_in_original_text(self):
+        """NFC 后 X 位于 index=2，但原文 e + combining acute 后 X 位于 index=3。"""
+        assert _mig._find_quote_span_in_original("e\u0301 X", "X") == (3, 4)
+
+
 class TestDemotePolicy:
     def test_unverifiable_items_demoted(self):
         """无审批记录的 approved 历史条目退回 draft（诚实回填，绝不自动设 approved）。"""
@@ -66,7 +93,10 @@ class TestDemotePolicy:
                 sql = str(stmt)
                 if "SELECT id FROM curated_items" in sql:
                     class _Result:
-                        def fetchall(self):
+                        def mappings(self):
+                            return self
+
+                        def all(self):
                             return [{"id": "11111111-1111-1111-1111-111111111111"}]
 
                     return _Result()

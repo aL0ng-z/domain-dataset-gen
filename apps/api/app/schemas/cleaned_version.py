@@ -14,6 +14,7 @@ class CleanedDocumentVersionResponse(BaseSchema):
     section_count: int
     artifact_key: str | None
     source_revision_sha256: str | None
+    source_intervals: list[dict] | None
     content_sha256: str | None
     status: str
     created_by: uuid.UUID

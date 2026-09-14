@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { usePagination } from "@/hooks/use-pagination";
 import {
   api,
   formatJsonPreview,
+  isAbortError,
   parseJsonObject,
   type ApiErrorException,
 } from "@/lib/api";
@@ -26,6 +27,11 @@ import {
 
 type Candidate = components["schemas"]["CandidateResponse"];
 type EvidenceSpan = components["schemas"]["EvidenceSpan"];
+
+/** OpenAPI 更新前后都以同一字段读取；后端负责把它设为必填响应字段。 */
+function contentRevision(candidate: Candidate): number {
+  return (candidate as Candidate & { content_revision?: number }).content_revision ?? 0;
+}
 
 const VERDICT_OPTIONS = [
   { value: "supported", label: "支持" },
@@ -67,8 +73,18 @@ export default function CandidatesPage() {
   const [selectedText, setSelectedText] = useState("");
   const [quoteStart, setQuoteStart] = useState(0);
   const [quoteEnd, setQuoteEnd] = useState(0);
+  const [sourceLoading, setSourceLoading] = useState(false);
+  const listRequestRef = useRef(0);
+  const listControllerRef = useRef<AbortController | null>(null);
+  const sourceRequestRef = useRef(0);
+  const sourceControllerRef = useRef<AbortController | null>(null);
+  const expandedCandidateRef = useRef<string | null>(null);
 
   const fetchCandidates = useCallback(() => {
+    const request = ++listRequestRef.current;
+    listControllerRef.current?.abort();
+    const controller = new AbortController();
+    listControllerRef.current = controller;
     setLoading(true);
     const statusParam =
       statusFilter !== "all" ? statusFilter : undefined;
@@ -80,13 +96,21 @@ export default function CandidatesPage() {
           page_size: pageSize,
           status: statusParam,
         },
+        signal: controller.signal,
       })
       .then((data) => {
+        if (request !== listRequestRef.current || controller.signal.aborted) return;
         setCandidates(data.items);
         setTotal(data.total);
       })
-      .catch(() => toast.error("加载候选列表失败"))
-      .finally(() => setLoading(false));
+      .catch((error) => {
+        if (request === listRequestRef.current && !controller.signal.aborted && !isAbortError(error)) {
+          toast.error("加载候选列表失败");
+        }
+      })
+      .finally(() => {
+        if (request === listRequestRef.current) setLoading(false);
+      });
   }, [projectId, page, pageSize, statusFilter]);
 
   useEffect(() => {
@@ -94,15 +118,35 @@ export default function CandidatesPage() {
     // （react-hooks/set-state-in-effect），并通过 cleanup 取消未完成的调度。
     const timer = setTimeout(fetchCandidates, 0);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      listRequestRef.current += 1;
+      listControllerRef.current?.abort();
+    };
   }, [fetchCandidates]);
+
+  useEffect(() => () => {
+    sourceRequestRef.current += 1;
+    sourceControllerRef.current?.abort();
+  }, []);
 
   const handleExpand = useCallback(
     (id: string) => {
       if (expandedId === id) {
+        expandedCandidateRef.current = null;
+        sourceRequestRef.current += 1;
+        sourceControllerRef.current?.abort();
         setExpandedId(null);
+        setSourceLoading(false);
+        setSourceChunk("");
+        setChunkContent("");
         return;
       }
+      const sourceRequest = ++sourceRequestRef.current;
+      sourceControllerRef.current?.abort();
+      const controller = new AbortController();
+      sourceControllerRef.current = controller;
+      expandedCandidateRef.current = id;
       setExpandedId(id);
       const c = candidates.find((x) => x.id === id);
       setReviewVerdict(c?.review_verdict || "supported");
@@ -116,24 +160,47 @@ export default function CandidatesPage() {
       setEditError(null);
       setSourceChunk(c?.chunk_id || "");
       setSelectedText("");
+      setChunkContent("");
+      setSourceLoading(Boolean(c?.chunk_id));
       // 加载源 Chunk 原文供证据选择（后端仍是权威）。
       if (c?.chunk_id) {
         api
-          .get("/chunks/{cid}", { params: { cid: c.chunk_id } })
+          .get("/chunks/{cid}", { params: { cid: c.chunk_id }, signal: controller.signal })
           .then((chunk) => {
+            if (
+              controller.signal.aborted ||
+              sourceRequest !== sourceRequestRef.current ||
+              expandedCandidateRef.current !== id
+            ) return;
             setChunkContent(chunk.content || "");
             setSourceChunk(chunk.id);
           })
-          .catch(() => setChunkContent(""));
+          .catch((error) => {
+            if (
+              sourceRequest === sourceRequestRef.current &&
+              expandedCandidateRef.current === id &&
+              !controller.signal.aborted &&
+              !isAbortError(error)
+            ) {
+              setChunkContent("");
+              setSourceChunk("");
+              toast.error("加载候选来源失败");
+            }
+          })
+          .finally(() => {
+            if (sourceRequest === sourceRequestRef.current && expandedCandidateRef.current === id) {
+              setSourceLoading(false);
+            }
+          });
       } else {
-        setChunkContent("");
+        setSourceLoading(false);
       }
     },
     [expandedId, candidates],
   );
 
   const handleReview = useCallback(
-    async (candidateId: string, verdict: string) => {
+    async (candidate: Candidate, verdict: string) => {
       try {
         const evidence_spans =
           verdict === "supported" || verdict === "partially_supported"
@@ -154,8 +221,9 @@ export default function CandidatesPage() {
             verdict,
             evidence_spans,
             reject_reason,
+            expected_revision: contentRevision(candidate),
           },
-          { params: { cid: candidateId } },
+          { params: { cid: candidate.id } },
         );
         toast.success(verdict === "supported" || verdict === "partially_supported" ? "已通过" : "已拒绝");
         setExpandedId(null);
@@ -166,6 +234,8 @@ export default function CandidatesPage() {
           toast.error("支持判定必须提供证据");
         } else if (e?.apiError?.code === "CANDIDATE_ALREADY_PROMOTED") {
           toast.error("该候选已提升，审核结论不可修改");
+        } else if (e?.apiError?.code === "CANDIDATE_REVISION_CONFLICT") {
+          toast.error("候选内容已更新，请重新加载后再提交审核");
         } else if (e?.apiError?.kind === "validation") {
           toast.error("证据或拒绝原因校验失败，请检查");
         } else {
@@ -177,10 +247,13 @@ export default function CandidatesPage() {
   );
 
   const handleSaveEdit = useCallback(
-    async (candidateId: string) => {
+    async (candidate: Candidate) => {
       try {
         const parsed = parseJsonObject(editContent);
-        await api.patch("/candidates/{cid}", { content: parsed }, { params: { cid: candidateId } });
+        await api.patch("/candidates/{cid}", {
+          content: parsed,
+          expected_revision: contentRevision(candidate),
+        }, { params: { cid: candidate.id } });
         toast.success("已保存（状态转为人工编辑）");
         setExpandedId(null);
         fetchCandidates();
@@ -188,6 +261,8 @@ export default function CandidatesPage() {
         const e = err as ApiErrorException;
         if (e?.apiError?.code === "CANDIDATE_ALREADY_PROMOTED") {
           toast.error("该候选已提升，内容不可修改");
+        } else if (e?.apiError?.code === "CANDIDATE_REVISION_CONFLICT") {
+          toast.error("候选内容已更新，请重新加载后再保存；当前草稿已保留");
         } else if (e?.apiError?.kind === "validation") {
           toast.error("内容必须是 JSON 对象");
         } else {
@@ -199,10 +274,12 @@ export default function CandidatesPage() {
   );
 
   const handlePromote = useCallback(
-    async (candidateId: string) => {
+    async (candidate: Candidate) => {
       try {
-        await api.post("/candidates/{cid}/promote-to-curated", undefined, {
-          params: { cid: candidateId },
+        await api.post("/candidates/{cid}/promote-to-curated", {
+          expected_revision: contentRevision(candidate),
+        }, {
+          params: { cid: candidate.id },
         });
         toast.success("已提升为知识资产");
         fetchCandidates();
@@ -212,6 +289,8 @@ export default function CandidatesPage() {
           toast.error("该候选已提升");
         } else if (e?.apiError?.code === "CANDIDATE_EVIDENCE_REQUIRED") {
           toast.error("缺少有效证据，无法提升");
+        } else if (e?.apiError?.code === "CANDIDATE_REVISION_CONFLICT") {
+          toast.error("候选内容已更新，请重新加载后再提升");
         } else {
           toast.error("提升失败");
         }
@@ -282,7 +361,7 @@ export default function CandidatesPage() {
       header: "",
       className: "w-8",
       render: (row) => (
-        <button onClick={() => handleExpand(row.id)}>
+        <button data-testid={`expand-${row.id}`} onClick={() => handleExpand(row.id)}>
           {expandedId === row.id ? (
             <ChevronUpIcon className="size-4" />
           ) : (
@@ -331,7 +410,7 @@ export default function CandidatesPage() {
             <Button
               variant="outline"
               size="xs"
-              onClick={() => handlePromote(row.id)}
+              onClick={() => handlePromote(row)}
             >
               <CheckCircleIcon className="size-3" />
               提升
@@ -405,7 +484,7 @@ export default function CandidatesPage() {
                           <Button
                             variant="outline"
                             size="xs"
-                            onClick={() => handleSaveEdit(c.id)}
+                            onClick={() => handleSaveEdit(c)}
                           >
                             保存编辑
                           </Button>
@@ -451,6 +530,7 @@ export default function CandidatesPage() {
                             variant="outline"
                             size="xs"
                             onClick={addSpan}
+                            disabled={sourceLoading}
                             data-testid="add-span"
                           >
                             <PlusIcon className="size-3" />
@@ -511,7 +591,8 @@ export default function CandidatesPage() {
                       )}
                       <div className="flex gap-2">
                         <Button
-                          onClick={() => handleReview(expandedId, reviewVerdict)}
+                          onClick={() => handleReview(c, reviewVerdict)}
+                          disabled={sourceLoading && (reviewVerdict === "supported" || reviewVerdict === "partially_supported")}
                           data-testid="submit-review"
                         >
                           {reviewVerdict === "unsupported" ||

@@ -83,6 +83,11 @@ def _marker_of(content: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _qa_response(ordinal: int) -> str:
+    """满足 qa_generation 冻结基础 schema 的 fake LLM 成功结果。"""
+    return f'{{"question":"Q{ordinal}","answer":"A{ordinal}"}}'
+
+
 # ---------------------------------------------------------------------------
 # 资源构建 helper：真实 active ChunkSet + ready chunks。
 # ---------------------------------------------------------------------------
@@ -293,12 +298,15 @@ async def _run_handler_and_transition(
         fresh2 = (
             await db.execute(select(Task).where(Task.id == _tid).with_for_update())
         ).scalar_one()
+        from app.workers.errors import TaskError
+
+        error_code = exc.code.value if isinstance(exc, TaskError) else "BUSINESS_ERROR"
         ok = await q.transition(
             task_id=_tid, run_token=_rt,
             from_status="processing",
             to_status="cancelling" if is_cancel else "failed",
             expected_state_version=fresh2.state_version,
-            error_code=("TASK_CANCELLED" if is_cancel else "BUSINESS_ERROR"),
+            error_code=("TASK_CANCELLED" if is_cancel else error_code),
             error_message=str(exc),
         )
         if ok and is_cancel:
@@ -352,7 +360,7 @@ async def test_single_chunk_full_chain(
 
     res = await _build_generation_doc(db_session, org, chunk_count=1)
     chunk = res["chunks"][0]
-    fake = FakeLLM({0: '{"answer": "ok"}'})
+    fake = FakeLLM({0: _qa_response(0)})
     fake.install(monkeypatch)
 
     batch, parent = await _create_batch(
@@ -427,6 +435,41 @@ async def test_single_chunk_full_chain(
     assert batch.model_config_sha256 == model_config_snapshot_sha256(batch.model_config_snapshot)
 
 
+async def test_single_generation_rejects_valid_json_with_wrong_shape(
+    db_session: AsyncSession, org, monkeypatch
+):
+    """JSON 数组不是 qa_generation 输出，必须失败且不能留下 Candidate/usage。"""
+    from app.workers.generate_worker import run_generate_single_handler
+
+    res = await _build_generation_doc(db_session, org, chunk_count=1)
+    batch, parent = await _create_batch(
+        db_session,
+        org=org,
+        doc=res["doc"],
+        tpl=res["tpl"],
+        model=res["model"],
+        selected=[res["chunks"][0].id],
+    )
+    FakeLLM({0: "[]"}).install(monkeypatch)
+    batch_id = batch.id
+    await db_session.commit()
+
+    child = (
+        await db_session.execute(select(Task).where(Task.parent_task_id == parent.id))
+    ).scalar_one()
+    claimed = (await _claim_task_async(db_session, child))[0]
+    done = await _run_handler_and_transition(db_session, claimed, run_generate_single_handler)
+
+    assert done.status == "failed"
+    assert done.error_code == "LLM_OUTPUT_INVALID"
+    candidate_count = (
+        await db_session.execute(
+            select(func.count()).select_from(Candidate).where(Candidate.source_generation_batch_id == batch_id)
+        )
+    ).scalar_one()
+    assert candidate_count == 0
+
+
 # ---------------------------------------------------------------------------
 # 验收标准 3：三 Chunk 批量全成功。
 # ---------------------------------------------------------------------------
@@ -439,7 +482,7 @@ async def test_batch_all_success(
     from app.workers.generate_worker import run_generate_single_handler
 
     res = await _build_generation_doc(db_session, org, chunk_count=3)
-    fake = FakeLLM({0: '{"a":0}', 1: '{"a":1}', 2: '{"a":2}'})
+    fake = FakeLLM({0: _qa_response(0), 1: _qa_response(1), 2: _qa_response(2)})
     fake.install(monkeypatch)
 
     batch, parent = await _create_batch(
@@ -500,7 +543,7 @@ async def test_batch_partial_failure(
     from app.workers.generate_worker import run_generate_single_handler
 
     res = await _build_generation_doc(db_session, org, chunk_count=3)
-    fake = FakeLLM({0: '{"a":0}', 1: '{"a":1}', 2: '{"a":2}'}, fail_json_for={1})
+    fake = FakeLLM({0: _qa_response(0), 1: _qa_response(1), 2: _qa_response(2)}, fail_json_for={1})
     fake.install(monkeypatch)
 
     batch, parent = await _create_batch(
@@ -591,7 +634,7 @@ async def test_batch_cancel_no_residual_generating(
     from app.workers.generate_worker import run_generate_single_handler
 
     res = await _build_generation_doc(db_session, org, chunk_count=3)
-    fake = FakeLLM({0: '{"a":0}', 1: '{"a":1}', 2: '{"a":2}'})
+    fake = FakeLLM({0: _qa_response(0), 1: _qa_response(1), 2: _qa_response(2)})
     fake.install(monkeypatch)
 
     batch, parent = await _create_batch(
@@ -660,7 +703,7 @@ async def test_retry_creates_new_chain_only_uncompleted(
     from app.workers.generate_worker import run_generate_single_handler
 
     res = await _build_generation_doc(db_session, org, chunk_count=3)
-    fake = FakeLLM({0: '{"a":0}', 1: '{"a":1}', 2: '{"a":2}'}, fail_json_for={1})
+    fake = FakeLLM({0: _qa_response(0), 1: _qa_response(1), 2: _qa_response(2)}, fail_json_for={1})
     fake.install(monkeypatch)
 
     batch, parent = await _create_batch(
@@ -876,7 +919,7 @@ async def test_retry_concurrent_only_one_successor(
     from app.workers.generate_worker import run_generate_single_handler
 
     res = await _build_generation_doc(db_session, org, chunk_count=2)
-    fake = FakeLLM({0: '{"a":0}', 1: '{"a":1}'}, fail_json_for={1})
+    fake = FakeLLM({0: _qa_response(0), 1: _qa_response(1)}, fail_json_for={1})
     fake.install(monkeypatch)
 
     batch, parent = await _create_batch(
@@ -953,7 +996,7 @@ async def test_worker_uses_frozen_snapshot_after_config_change(
 
     res = await _build_generation_doc(db_session, org, chunk_count=1)
     chunk = res["chunks"][0]
-    fake = FakeLLM({0: '{"a":0}'})
+    fake = FakeLLM({0: _qa_response(0)})
     fake.install(monkeypatch)
 
     batch, parent = await _create_batch(

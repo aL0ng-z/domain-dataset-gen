@@ -1,7 +1,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import Base
@@ -55,13 +55,12 @@ class ConfigService:
             return None
         mapped = self._map_fields(kwargs)
         if self.model_class is TaskPolicy:
-            # A project row lock serializes category changes as well as per-type defaults.
-            from app.models.project import Project
-            await self.db.execute(select(Project.id).where(Project.id == obj.project_id).with_for_update())
-            await self.db.refresh(obj)
-            for task_type in sorted({obj.task_type, mapped.get("task_type") or obj.task_type}):
-                await self._lock_task_policy(obj.project_id, task_type)
-            await self.db.refresh(obj)
+            # 项目锁串行化默认项类别迁移；锁后重新读取，避免在等待锁期间
+            # 基于过期 task_type 覆盖别的事务。
+            await self._lock_project(obj.project_id)
+            obj = await self._get_for_update(config_id)
+            if obj is None:
+                return None
             if mapped.get("task_type", obj.task_type) != obj.task_type:
                 obj.is_default = False  # Defaults belong to their original task category.
         for key, value in mapped.items():
@@ -80,24 +79,34 @@ class ConfigService:
         await self.db.flush()
         return True
 
-    async def _lock_task_policy(self, project_id: uuid.UUID, task_type: str) -> None:
-        await self.db.execute(text(
-            "SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"
-        ), {"key": f"task-policy:{project_id}:{task_type}"})
+    async def _lock_project(self, project_id: uuid.UUID) -> bool:
+        """取得项目行锁；同一项目所有配置默认项切换使用同一串行化边界。"""
+        from app.models.project import Project
+
+        project = await self.db.scalar(
+            select(Project.id).where(Project.id == project_id).with_for_update()
+        )
+        return project is not None
+
+    async def _get_for_update(self, config_id: uuid.UUID) -> Any | None:
+        return await self.db.scalar(
+            select(self.model_class)
+            .where(self.model_class.id == config_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
 
     async def set_default(self, project_id: uuid.UUID, config_id: uuid.UUID) -> Any | None:
-        obj = await self.get(config_id)
+        if not await self._lock_project(project_id):
+            return None
+        # 必须在项目锁之后读取目标和旧默认项；此前的读取可能已经过期。
+        obj = await self._get_for_update(config_id)
         if obj is None or obj.project_id != project_id:
             return None
         query = select(self.model_class).where(
             self.model_class.project_id == project_id, self.model_class.is_default.is_(True),
-        )
+        ).with_for_update()
         if self.model_class is TaskPolicy:
-            from app.models.project import Project
-            await self.db.execute(select(Project.id).where(Project.id == project_id).with_for_update())
-            await self.db.refresh(obj)
-            await self._lock_task_policy(project_id, obj.task_type)
-            await self.db.refresh(obj)
             query = query.where(TaskPolicy.task_type == obj.task_type)
         result = await self.db.execute(query.execution_options(populate_existing=True))
         for existing in result.scalars().all():

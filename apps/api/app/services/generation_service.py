@@ -19,6 +19,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.generation.output_validation import build_effective_output_schema
 from app.generation.renderer import (
     RENDERER_VERSION,
     rebuild_input_prompt_and_hash,
@@ -257,7 +258,8 @@ class GenerationOrchestrationService:
         self, template: PromptTemplate, model_config: ModelConfig
     ) -> dict[str, Any]:
         """冻结模板/模型快照与 hash；发现秘密抛 SnapshotUnsafeError（fail closed）。"""
-        tpl_snapshot = build_prompt_template_snapshot(template)
+        effective_output_schema = build_effective_output_schema(template.task_type, template.output_schema)
+        tpl_snapshot = build_prompt_template_snapshot(template, output_schema=effective_output_schema)
         model_snapshot = build_model_config_snapshot(model_config)
         return {
             "prompt_template_version": await self._materialize_template_version(template),

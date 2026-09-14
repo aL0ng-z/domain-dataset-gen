@@ -371,7 +371,7 @@ async def test_batch_waits_for_remaining_child_before_terminal_summary(db_sessio
         _run_handler_and_transition,
     )
     res = await _build_generation_doc(db_session, org, chunk_count=2)
-    FakeLLM({0: '{"a":0}', 1: '{"a":1}'}, fail_json_for={0}).install(monkeypatch)
+    FakeLLM({0: '{"question":"Q0","answer":"A0"}', 1: '{"question":"Q1","answer":"A1"}'}, fail_json_for={0}).install(monkeypatch)
     batch, parent = await _create_batch(db_session, org=org, doc=res["doc"], tpl=res["tpl"],
                                          model=res["model"], selected=None)
     parent_id, batch_id = parent.id, batch.id
@@ -447,7 +447,7 @@ async def test_parent_cancel_publication_lock_order_and_final_summary(
     )
     entered, release = asyncio.Event(), asyncio.Event()
     res = await _build_generation_doc(db_session, org, chunk_count=2)
-    FakeLLM({0: '{"a":0}', 1: '{"a":1}'}).install(monkeypatch)
+    FakeLLM({0: '{"question":"Q0","answer":"A0"}', 1: '{"question":"Q1","answer":"A1"}'}).install(monkeypatch)
     if stage == "during_llm":
         original = generate_worker.LLMClient.chat_completion
         async def gate(self, *args, **kwargs):

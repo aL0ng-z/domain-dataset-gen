@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 
 import { createWsClient, type WsClient } from "@/lib/ws";
 import { TokenStore } from "@/lib/auth";
+import { createApiMockServer } from "@/lib/__mocks__/api-server";
 
 /** 内存 WebSocket mock：记录发送消息与 close，模拟 onmessage/onclose。 */
 class FakeWebSocket {
@@ -54,7 +55,7 @@ afterEach(() => {
 describe("ws client", () => {
   it("带 token 时把 token 附加到 URL 并订阅/分发事件", () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
-    localStorage.setItem("access_token", "token-abc");
+    TokenStore.setTokens("token-abc", "refresh-1");
 
     const client: WsClient = createWsClient("ws://test/ws/projects/1/tasks");
     const handler = vi.fn();
@@ -79,7 +80,7 @@ describe("ws client", () => {
     vi.useFakeTimers();
     try {
       vi.stubGlobal("WebSocket", FakeWebSocket);
-      localStorage.removeItem("access_token");
+      TokenStore.setTokens("token-abc", "refresh-1");
 
       const client: WsClient = createWsClient("ws://test/ws");
       client.connect();
@@ -125,6 +126,7 @@ describe("ws client", () => {
       expect(FakeWebSocket.instances.length).toBe(2);
       const second = FakeWebSocket.instances[1];
       expect(second.url).toContain("token=new-access");
+      client.disconnect();
     } finally {
       vi.useRealTimers();
       vi.unstubAllGlobals();
@@ -157,7 +159,7 @@ describe("ws client", () => {
 
   it("4401 认证失败：触发统一认证恢复且不自动重连", () => {
     vi.stubGlobal("WebSocket", FakeWebSocket);
-    localStorage.setItem("access_token", "token-abc");
+    TokenStore.setTokens("token-abc", "refresh-1");
 
     const client: WsClient = createWsClient("ws://test/ws");
     client.connect();
@@ -166,7 +168,7 @@ describe("ws client", () => {
 
     // 服务端以 4401 关闭 -> 应触发认证恢复（handleAuthFailure 清除令牌）
     ws.close(4401);
-    expect(localStorage.getItem("access_token")).toBeNull();
+    expect(TokenStore.getAccessToken()).toBeNull();
     // 不自动重连
     expect(FakeWebSocket.instances.length).toBe(1);
 
@@ -177,7 +179,7 @@ describe("ws client", () => {
     vi.useFakeTimers();
     try {
       vi.stubGlobal("WebSocket", FakeWebSocket);
-      localStorage.setItem("access_token", "token-abc");
+      TokenStore.setTokens("token-abc", "refresh-1");
 
       const client: WsClient = createWsClient("ws://test/ws");
       const handler = vi.fn();
@@ -221,8 +223,63 @@ describe("ws client", () => {
       expect(FakeWebSocket.instances.length).toBe(2);
       const second = FakeWebSocket.instances[1];
       expect(second.url).toContain("token=new-access");
+      client.disconnect();
     } finally {
       vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("带 projectId 时先通过受保护 access 检查，再建立 WebSocket", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const server = createApiMockServer();
+    server.install();
+    try {
+      TokenStore.setTokens("token-abc", "refresh-1");
+      const access = server.onGet("/projects/p1/access", {
+        project_id: "p1",
+        effective_role: "viewer",
+      });
+      const client = createWsClient("ws://test/ws/projects/p1/tasks", { projectId: "p1" });
+
+      client.connect();
+      expect(FakeWebSocket.instances).toHaveLength(0);
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(access.callCount).toBe(1);
+      expect((access.calls[0].options?.headers as Record<string, string>).Authorization).toBe("Bearer token-abc");
+      expect(FakeWebSocket.instances).toHaveLength(1);
+      client.disconnect();
+    } finally {
+      server.restore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("access 检查拒绝时停止重连，并通知 ws_forbidden", async () => {
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    const server = createApiMockServer();
+    server.install();
+    try {
+      TokenStore.setTokens("token-abc", "refresh-1");
+      server.mock("GET", "/projects/p1/access", {
+        status: 403,
+        body: { code: "PERMISSION_DENIED", message: "forbidden" },
+      });
+      const client = createWsClient("ws://test/ws/projects/p1/tasks", { projectId: "p1" });
+      const handler = vi.fn();
+      client.subscribe("*", handler);
+
+      client.connect();
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(handler).toHaveBeenCalledWith(expect.objectContaining({ event: "ws_forbidden" }));
+      expect(FakeWebSocket.instances).toHaveLength(0);
+      client.disconnect();
+    } finally {
+      server.restore();
       vi.unstubAllGlobals();
     }
   });

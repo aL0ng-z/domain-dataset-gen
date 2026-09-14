@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.generation.output_validation import OutputContentError, validate_generated_content
 from app.generation.renderer import (
     RENDERER_VERSION,
     rebuild_input_prompt_and_hash,
@@ -34,6 +35,7 @@ from app.models.document import Document
 from app.models.generation import Candidate, GenerationRun
 from app.models.generation_batch import GenerationBatch
 from app.models.task import LlmUsageLog, Task
+from app.workers.errors import TaskError, TaskErrorCode
 from app.workers.execution import ExecutionContext
 from app.workers.queue import TERMINAL_STATUSES
 from llm import LLMClient
@@ -112,17 +114,33 @@ async def run_generate_single_handler(ctx: ExecutionContext) -> None:
     try:
         response = await client.chat_completion(messages, response_format={"type": "json_object"})
     except Exception as exc:  # noqa: BLE001 - preserve Task retry classification without provider secrets
-        from app.workers.errors import TaskError
         from app.workers.runner import classify_error
         code, retriable = classify_error(exc)
         raise TaskError(code, f"LLM 调用失败: {type(exc).__name__}", retriable=retriable) from exc
     await ctx.checkpoint()
 
-    # 解析输出：非 JSON -> run failed（不得创建看似合格的 Candidate）。
+    # 解析并校验冻结输出 schema：任何语法、类型、必填字段或空白字段错误都
+    # 不能创建 Candidate、usage 或增加批次成功计数。
     try:
         content = json.loads(response.content)
     except json.JSONDecodeError as exc:
-        raise GenerationRunError("LLM_INVALID_JSON", "LLM 返回非 JSON，run 失败") from exc
+        raise TaskError(
+            TaskErrorCode.LLM_OUTPUT_INVALID,
+            "LLM 返回非 JSON，生成内容无效",
+            retriable=False,
+        ) from exc
+    try:
+        content = validate_generated_content(
+            str(prompt_snapshot.get("task_type", "")),
+            prompt_snapshot.get("output_schema"),
+            content,
+        )
+    except OutputContentError as exc:
+        raise TaskError(
+            TaskErrorCode.LLM_OUTPUT_INVALID,
+            f"LLM 返回内容不符合冻结输出结构: {exc}",
+            retriable=False,
+        ) from exc
 
     await ctx.lock_for_publish()
 

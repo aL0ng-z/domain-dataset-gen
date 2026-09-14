@@ -64,6 +64,7 @@ def _inject_error_responses(op: dict[str, Any], path: str, method: str) -> None:
         or "section_update" in opid
         or "section_submit" in opid
         # T09：Candidate 审核/提升、CuratedItem 修订/审批均可能返回 409。
+        or "candidate_update" in opid
         or "candidate_review" in opid
         or "promote_to_curated" in opid
         or "curated_item_update" in opid

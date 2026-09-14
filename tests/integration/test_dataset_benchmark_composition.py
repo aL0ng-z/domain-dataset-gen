@@ -37,6 +37,7 @@ from app.models.chunk import Chunk
 from app.models.curated import CuratedItem, CuratedRevision, EvidenceLink
 from app.models.dataset import Benchmark, Dataset, DatasetItem
 from app.models.generation import Candidate, GenerationRun
+from app.models.generation_batch import GenerationBatch
 from app.models.review_record import ReviewRecord
 from domain.composition import COMPOSITION_CJSON_VERSION, composition_sha256
 
@@ -132,10 +133,29 @@ async def _make_doc_chain(db_session, project_id, uploaded_by, *, content: str =
 
 
 async def _make_candidate(db_session, res, *, content=None, status="ai_generated"):
+    # Candidate 审核现在只允许引用生成时冻结的 selected_chunk_ids。该轻量
+    # fixture 使用 legacy 批次避免复制 T08 全量快照，但仍真实绑定来源 Chunk。
+    batch = GenerationBatch(
+        document_id=res["doc"].id,
+        chunk_set_id=res["chunk"].chunk_set_id,
+        model_config_id=res["model"].id,
+        prompt_template_id=res["tpl"].id,
+        selected_chunk_ids=[str(res["chunk"].id)],
+        status="completed",
+        total_chunks=1,
+        completed_chunks=1,
+        created_by=res["doc"].uploaded_by,
+        is_legacy=True,
+        provenance_status="legacy_unavailable",
+        provenance_error_code="LEGACY_TEST_FIXTURE",
+    )
+    db_session.add(batch)
+    await db_session.flush()
     run = GenerationRun(
         chunk_id=res["chunk"].id,
         prompt_template_id=res["tpl"].id,
         model_config_id=res["model"].id,
+        generation_batch_id=batch.id,
         context_mode="single_chunk",
         status="completed",
         is_legacy=True,
@@ -150,6 +170,7 @@ async def _make_candidate(db_session, res, *, content=None, status="ai_generated
         content=content or {"question": "什么是压比?", "answer": "压比是出口与进口压力之比"},
         candidate_type="qa_generation",
         status=status,
+        source_generation_batch_id=batch.id,
     )
     db_session.add(candidate)
     await db_session.flush()
@@ -176,11 +197,18 @@ async def _review_and_promote(
     r = await client.post(
         f"/api/candidates/{candidate_id}/review",
         headers=headers,
-        json={"verdict": verdict, "evidence_spans": [span], "reject_reason": None},
+        json={
+            "expected_revision": 1,
+            "verdict": verdict,
+            "evidence_spans": [span],
+            "reject_reason": None,
+        },
     )
     assert r.status_code == 200, r.text
     p = await client.post(
-        f"/api/candidates/{candidate_id}/promote-to-curated", headers=headers, json={}
+        f"/api/candidates/{candidate_id}/promote-to-curated",
+        headers=headers,
+        json={"expected_revision": 1},
     )
     assert p.status_code == 201, p.text
     return p.json()["id"]
@@ -238,11 +266,18 @@ async def _approve_from_chain(client, db_session, project_id, res, *, verdict="s
     r = await client.post(
         f"/api/candidates/{candidate.id}/review",
         headers=headers,
-        json={"verdict": verdict, "evidence_spans": [span], "reject_reason": None},
+        json={
+            "expected_revision": candidate.content_revision,
+            "verdict": verdict,
+            "evidence_spans": [span],
+            "reject_reason": None,
+        },
     )
     assert r.status_code == 200, r.text
     p = await client.post(
-        f"/api/candidates/{candidate.id}/promote-to-curated", headers=headers, json={}
+        f"/api/candidates/{candidate.id}/promote-to-curated",
+        headers=headers,
+        json={"expected_revision": candidate.content_revision},
     )
     assert p.status_code == 201, p.text
     item_id = p.json()["id"]

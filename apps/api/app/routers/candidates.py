@@ -11,6 +11,7 @@ from app.models.user import User
 from app.schemas.candidate import (
     CandidateCommentCreate,
     CandidateCommentResponse,
+    CandidatePromote,
     CandidateResponse,
     CandidateReview,
     CandidateUpdate,
@@ -19,6 +20,7 @@ from app.schemas.curated import CuratedItemResponse
 from app.services.candidate_service import (
     CandidateAlreadyPromotedError,
     CandidateEvidenceRequiredError,
+    CandidateRevisionConflictError,
     CandidateService,
     CandidateStateConflictError,
     EvidenceValidationError,
@@ -82,7 +84,18 @@ async def update_candidate(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="内容不能为空")
     service = CandidateService(db)
     try:
-        candidate = await service.update_content(cid, body.content)
+        candidate = await service.update_content(
+            cid, body.content, expected_revision=body.expected_revision
+        )
+    except CandidateRevisionConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "CANDIDATE_REVISION_CONFLICT",
+                "message": str(e),
+                "context": {"content_revision": e.current_revision},
+            },
+        ) from e
     except CandidateAlreadyPromotedError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -113,9 +126,19 @@ async def review_candidate(
             candidate_id=cid,
             reviewer_id=current_user.id,
             verdict=body.verdict,
+            expected_revision=body.expected_revision,
             evidence_spans=[s.model_dump() for s in body.evidence_spans] if body.evidence_spans else None,
             reject_reason=body.reject_reason,
         )
+    except CandidateRevisionConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "CANDIDATE_REVISION_CONFLICT",
+                "message": str(e),
+                "context": {"content_revision": e.current_revision},
+            },
+        ) from e
     except CandidateStateConflictError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -124,7 +147,7 @@ async def review_candidate(
     except CandidateAlreadyPromotedError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "CANDIDATE_REVIEW_STATE_CONFLICT", "message": str(e)},
+            detail={"code": "CANDIDATE_ALREADY_PROMOTED", "message": str(e)},
         ) from e
     except CandidateEvidenceRequiredError as e:
         raise HTTPException(
@@ -179,6 +202,7 @@ async def list_comments(
 @router.post("/{cid}/promote-to-curated", response_model=CuratedItemResponse, status_code=status.HTTP_201_CREATED, operation_id="candidate_promote_to_curated")
 async def promote_to_curated(
     cid: uuid.UUID,
+    body: CandidatePromote,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(get_current_user)],
 ):
@@ -191,7 +215,18 @@ async def promote_to_curated(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="候选项不存在")
     service = CandidateService(db)
     try:
-        curated_item = await service.promote_to_curated(cid, current_user.id)
+        curated_item = await service.promote_to_curated(
+            cid, current_user.id, expected_revision=body.expected_revision
+        )
+    except CandidateRevisionConflictError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "CANDIDATE_REVISION_CONFLICT",
+                "message": str(e),
+                "context": {"content_revision": e.current_revision},
+            },
+        ) from e
     except CandidateAlreadyPromotedError as e:
         # 409 + context 只返回同项目可见 item id（不创建第二份记录）。
         raise HTTPException(

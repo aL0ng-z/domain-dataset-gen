@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api, ApiErrorException, isAbortError } from "@/lib/api";
-import { onAuthFailure, resetAuthFailureGuard } from "@/lib/auth";
+import { onAuthFailure, resetAuthFailureGuard, TokenStore } from "@/lib/auth";
 import { createApiMockServer } from "@/lib/__mocks__/api-server";
 
 describe("api client with mock server", () => {
@@ -27,8 +27,7 @@ describe("api client with mock server", () => {
   });
 
   it("GET 401 触发 refresh 并重试成功", async () => {
-    localStorage.setItem("access_token", "old-token");
-    localStorage.setItem("refresh_token", "refresh-1");
+    TokenStore.setTokens("old-token", "refresh-1");
 
     // /auth/me 第一次返回 401，之后返回成功（401→refresh→重试的序列响应）。
     server.mock("GET", "/auth/me", ({ callCount }) =>
@@ -43,7 +42,7 @@ describe("api client with mock server", () => {
     expect(data.username).toBe("alice");
     // 第一次调用 401，第二次成功 -> callCount 2
     expect(server.getHandler("GET", "/auth/me")?.callCount).toBe(2);
-    expect(localStorage.getItem("access_token")).toBe("new-token");
+    expect(TokenStore.getAccessToken()).toBe("new-token");
   });
 
   it("非 2xx 抛 ApiErrorException，按稳定 code 分支而非中文 detail", async () => {
@@ -138,8 +137,7 @@ describe("api client with mock server", () => {
   });
 
   it("20 个并发 401 只产生 1 次 refresh，成功后各自重试 1 次", async () => {
-    localStorage.setItem("access_token", "old-token");
-    localStorage.setItem("refresh_token", "refresh-1");
+    TokenStore.setTokens("old-token", "refresh-1");
 
     // /items 每次都 401，之后 refresh 成功，重试也 401（用于统计重试次数）
     server.mock("GET", "/projects/", () => ({
@@ -172,8 +170,7 @@ describe("api client with mock server", () => {
     const failureListener = vi.fn();
     const unsub = onAuthFailure(failureListener);
     try {
-      localStorage.setItem("access_token", "old-token");
-      localStorage.setItem("refresh_token", "refresh-1");
+      TokenStore.setTokens("old-token", "refresh-1");
 
       server.mock("GET", "/projects/", () => ({
         status: 401,
@@ -199,15 +196,15 @@ describe("api client with mock server", () => {
       // 只触发一次统一清理回调
       expect(failureListener).toHaveBeenCalledTimes(1);
       // 令牌已原子清除
-      expect(localStorage.getItem("access_token")).toBeNull();
-      expect(localStorage.getItem("refresh_token")).toBeNull();
+      expect(TokenStore.getAccessToken()).toBeNull();
+      expect(TokenStore.getRefreshToken()).toBeNull();
     } finally {
       unsub();
     }
   });
 
   it("login/refresh 请求本身不做 401 重试（排除刷新逻辑）", async () => {
-    localStorage.setItem("refresh_token", "refresh-1");
+    TokenStore.setTokens("old-token", "refresh-1");
     server.mock("POST", "/auth/refresh", {
       status: 401,
       body: { detail: "invalid" },
@@ -216,5 +213,112 @@ describe("api client with mock server", () => {
     await expect(api.post("/auth/refresh", { refresh_token: "x" })).rejects.toThrow();
     // 只调用 1 次，不触发刷新循环
     expect(server.getHandler("POST", "/auth/refresh")?.callCount).toBe(1);
+  });
+
+  it("旧会话在等待刷新时切换账号，不会用新身份重发旧请求", async () => {
+    vi.useFakeTimers();
+    try {
+      TokenStore.setTokens("old-access", "old-refresh");
+      const update = server.mock("PATCH", "/candidates/c1", {
+        status: 401,
+        body: { code: "AUTH_REQUIRED", message: "expired" },
+      });
+      server.mock("POST", "/auth/refresh", {
+        body: { access_token: "late", refresh_token: "late-refresh" },
+        delay: 100,
+      });
+
+      const oldRequest = api.patch("/candidates/{cid}", {
+        content: { question: "old" },
+        expected_revision: 1,
+      }, {
+        params: { cid: "c1" },
+      });
+      const oldOutcome = oldRequest.then(
+        () => new Error("unexpected resolve"),
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      TokenStore.startSession("new-access", "new-refresh");
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(await oldOutcome).toMatchObject({ name: "AbortError" });
+      expect(update.callCount).toBe(1);
+      expect((update.calls[0].options?.headers as Record<string, string>).Authorization).toBe("Bearer old-access");
+      expect(TokenStore.getAccessToken()).toBe("new-access");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("截止时间覆盖已收到响应头后的 JSON body 读取", async () => {
+    vi.useFakeTimers();
+    const previousFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: () => new Promise((resolve) => setTimeout(() => resolve({ items: [] }), 100)),
+      })) as unknown as typeof fetch;
+
+      const pending = api.get("/projects/", { timeout: 10 });
+      const outcome = pending.then(
+        () => new Error("unexpected resolve"),
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await outcome).toMatchObject({ name: "TimeoutError" });
+    } finally {
+      globalThis.fetch = previousFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("外部 AbortSignal 覆盖已收到响应头后的 JSON body 读取", async () => {
+    const previousFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: () => new Promise((resolve) => setTimeout(() => resolve({ items: [] }), 100)),
+      })) as unknown as typeof fetch;
+      const controller = new AbortController();
+
+      const pending = api.get("/projects/", { signal: controller.signal });
+      const outcome = pending.then(
+        () => new Error("unexpected resolve"),
+        (error: unknown) => error,
+      );
+      await Promise.resolve();
+      controller.abort();
+      expect(await outcome).toMatchObject({ name: "AbortError" });
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
+  it("请求总截止时间也覆盖 401 后等待共享刷新", async () => {
+    vi.useFakeTimers();
+    try {
+      TokenStore.setTokens("old-access", "refresh-1");
+      server.mock("GET", "/projects/", {
+        status: 401,
+        body: { code: "AUTH_REQUIRED", message: "expired" },
+      });
+      server.mock("POST", "/auth/refresh", {
+        body: { access_token: "late", refresh_token: "late-refresh" },
+        delay: 100,
+      });
+
+      const pending = api.get("/projects/", { timeout: 10 });
+      const outcome = pending.then(
+        () => new Error("unexpected resolve"),
+        (error: unknown) => error,
+      );
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await outcome).toMatchObject({ name: "TimeoutError" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

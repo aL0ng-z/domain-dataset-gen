@@ -49,7 +49,7 @@ from app.services.chunk_set_service import (
     chunk_client_key,
 )
 from app.services.clean_version_service import CleanVersionService
-from app.services.document_service import DocumentService
+from app.services.document_service import DocumentInUseError, DocumentService
 from app.services.generation_service import (
     GenerationConfigUnavailableError,
     GenerationIdempotencyConflictError,
@@ -67,6 +67,9 @@ from domain.schemas import ErrorResponse, PaginatedResponse
 from storage import get_storage_client
 
 router = APIRouter(prefix="/api/projects/{pid}/documents", tags=["documents"])
+
+MAX_UPLOAD_SIZE = 200 * 1024 * 1024
+UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
 
 
 def _gen_http_error(status_code: int, code: str, message: str, context: dict | None = None) -> HTTPException:
@@ -120,13 +123,29 @@ async def upload_document(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
-    file_data = await file.read()
-    if len(file_data) > 200 * 1024 * 1024:  # 200MB limit
+    # Starlette 在已知 multipart 长度时会提供 size；先快速拒绝，仍通过受限读取
+    # 覆盖未知/不可信长度，绝不调用无参数 file.read()。
+    if file.size is not None and file.size > MAX_UPLOAD_SIZE:
+        await file.close()
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="文件大小超过 200MB 限制")
+
+    filename = file.filename or "unknown.pdf"
+    file_data = bytearray()
+    try:
+        while len(file_data) <= MAX_UPLOAD_SIZE:
+            remaining = MAX_UPLOAD_SIZE + 1 - len(file_data)
+            chunk = await file.read(min(UPLOAD_READ_CHUNK_SIZE, remaining))
+            if not chunk:
+                break
+            file_data.extend(chunk)
+        if len(file_data) > MAX_UPLOAD_SIZE:
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="文件大小超过 200MB 限制")
+    finally:
+        await file.close()
 
     service = DocumentService(db)
     try:
-        return await service.upload(pid, file.filename or "unknown.pdf", file_data, current_user.id)
+        return await service.upload(pid, filename, bytes(file_data), current_user.id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)) from e
 
@@ -218,7 +237,15 @@ async def delete_document(
     if doc is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
     service = DocumentService(db)
-    await service.delete_document(did)
+    try:
+        await service.delete_document(did)
+    except DocumentInUseError as exc:
+        raise _gen_http_error(
+            status.HTTP_409_CONFLICT,
+            "DOCUMENT_IN_USE",
+            str(exc),
+            {"document_id": str(did)},
+        ) from exc
 
 
 @router.post("/{did}/parse", response_model=AsyncTaskAcceptedResponse, status_code=status.HTTP_202_ACCEPTED, operation_id="document_trigger_parse")
@@ -347,7 +374,15 @@ async def delete_parse_job(
     if job is None or job.document_id != did:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="解析任务不存在")
     service = DocumentService(db)
-    await service.delete_parse_job(jid)
+    try:
+        await service.delete_parse_job(jid)
+    except DocumentInUseError as exc:
+        raise _gen_http_error(
+            status.HTTP_409_CONFLICT,
+            "DOCUMENT_IN_USE",
+            str(exc),
+            {"document_id": str(did), "parse_job_id": str(jid)},
+        ) from exc
 
 
 @router.get("/{did}/cleaning-jobs", response_model=list[CleaningJobResponse], operation_id="document_list_cleaning_jobs")

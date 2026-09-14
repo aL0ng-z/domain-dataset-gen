@@ -55,6 +55,8 @@ const candidate = {
   review_verdict: null,
   review_evidence_spans: null,
   reject_reason: null,
+  content_revision: 3,
+  reviewed_content_revision: null,
   created_at: "2026-08-01T00:00:00Z",
   updated_at: "2026-08-01T00:00:00Z",
 };
@@ -113,7 +115,7 @@ describe("候选审核页", () => {
     });
 
     // 展开
-    await userEvent.click(screen.getAllByRole("button")[0]);
+    await userEvent.click(screen.getByTestId("expand-cand-1"));
 
     const editor = await screen.findByTestId("candidate-json-editor");
     // 修改为非法 JSON（用 fireEvent 避免 userEvent 解析 { 特殊键）
@@ -148,7 +150,7 @@ describe("候选审核页", () => {
       expect(screen.getByText(/压比/)).toBeTruthy();
     });
 
-    await userEvent.click(screen.getAllByRole("button")[0]);
+    await userEvent.click(screen.getByTestId("expand-cand-1"));
     await screen.findByTestId("candidate-json-editor");
 
     await userEvent.click(screen.getByTestId("submit-review"));
@@ -156,5 +158,32 @@ describe("候选审核页", () => {
     await waitFor(() => {
       expect(toast.error).toHaveBeenCalledWith("支持判定必须提供证据");
     });
+    const review = server.getHandler("POST", "/candidates/cand-1/review");
+    expect(JSON.parse(review?.calls[0].options?.body as string)).toMatchObject({ expected_revision: 3 });
+  });
+
+  it("快速切换候选时，迟到的旧来源响应不能覆盖当前候选", async () => {
+    const candidateB = {
+      ...candidate,
+      id: "cand-2",
+      chunk_id: "chunk-2",
+      content_revision: 4,
+      content: { question: "B", answer: "B" },
+    };
+    server.onGet(
+      "/candidates?project_id=p1&page=1&page_size=20",
+      { items: [candidate, candidateB], total: 2, page: 1, page_size: 20 },
+    );
+    server.onGet("/chunks/chunk-1", { ...chunk, id: "chunk-1", content: "旧候选来源" }, { delay: 80 });
+    server.onGet("/chunks/chunk-2", { ...chunk, id: "chunk-2", content: "当前候选来源" }, { delay: 5 });
+
+    render(<CandidatesPage />);
+    await screen.findByText(/压比/);
+    await userEvent.click(screen.getByTestId("expand-cand-1"));
+    await userEvent.click(screen.getByTestId("expand-cand-2"));
+
+    await waitFor(() => expect(screen.getByTestId("chunk-text")).toHaveValue("当前候选来源"));
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(screen.getByTestId("chunk-text")).toHaveValue("当前候选来源");
   });
 });

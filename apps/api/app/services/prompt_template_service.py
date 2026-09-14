@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.generation.output_validation import validate_template_output_schema
 from app.models.chunk import Chunk
 from app.models.config import ModelConfig
 from app.models.prompt_template import PromptTemplate, PromptTemplateVersion
@@ -13,6 +14,7 @@ class PromptTemplateService:
         self.db = db
 
     async def create(self, project_id: uuid.UUID, **kwargs) -> PromptTemplate:
+        validate_template_output_schema(kwargs["task_type"], kwargs.get("output_schema"))
         template = PromptTemplate(project_id=project_id, **kwargs)
         self.db.add(template)
         await self.db.flush()
@@ -55,6 +57,8 @@ class PromptTemplateService:
         template = await self.get(template_id)
         if template is None:
             return None
+        if "output_schema" in kwargs:
+            validate_template_output_schema(template.task_type, kwargs["output_schema"])
 
         # Save current state as a version before updating
         version_snapshot = PromptTemplateVersion(

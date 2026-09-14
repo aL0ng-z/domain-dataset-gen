@@ -32,13 +32,13 @@ def test_split_uses_markdown_ranges_when_structured_pages_are_absent():
     assert [section.source_pages for section in sections] == [[1], [2]]
 
 
-def test_split_supports_explicit_page_markers():
-    markdown = "<!-- Page 1 -->\n\nfirst\n\n<!-- Page 2 -->\n\nsecond"
+def test_plain_markdown_page_mentions_are_not_treated_as_physical_page_mapping():
+    markdown = "# A\n\nPage 888 是正文引用，不是 PDF 页码。\n\n# B\n\n<!-- Page 2 -->"
 
     sections = split_into_sections(markdown)
 
-    assert [section.heading_path for section in sections] == ["第 1 页", "第 2 页"]
-    assert [section.raw_markdown for section in sections] == ["first", "second"]
+    assert [section.heading_path for section in sections] == ["A", "B"]
+    assert [section.source_pages for section in sections] == [[], []]
 
 
 def test_split_falls_back_to_headings_for_legacy_markdown():

@@ -498,6 +498,22 @@
         "title": "CandidateCommentResponse",
         "type": "object"
       },
+      "CandidatePromote": {
+        "additionalProperties": false,
+        "description": "提升请求必须绑定审核时读取的内容版本。",
+        "properties": {
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "CandidatePromote",
+        "type": "object"
+      },
       "CandidateResponse": {
         "properties": {
           "candidate_type": {
@@ -513,6 +529,10 @@
             "additionalProperties": true,
             "title": "Content",
             "type": "object"
+          },
+          "content_revision": {
+            "title": "Content Revision",
+            "type": "integer"
           },
           "created_at": {
             "format": "date-time",
@@ -575,6 +595,17 @@
             ],
             "title": "Reviewed By"
           },
+          "reviewed_content_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed Content Revision"
+          },
           "status": {
             "title": "Status",
             "type": "string"
@@ -592,6 +623,8 @@
           "content",
           "candidate_type",
           "status",
+          "content_revision",
+          "reviewed_content_revision",
           "reviewed_by",
           "review_verdict",
           "review_evidence_spans",
@@ -620,6 +653,11 @@
             ],
             "title": "Evidence Spans"
           },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
           "reject_reason": {
             "anyOf": [
               {
@@ -637,7 +675,8 @@
           }
         },
         "required": [
-          "verdict"
+          "verdict",
+          "expected_revision"
         ],
         "title": "CandidateReview",
         "type": "object"
@@ -657,8 +696,16 @@
               }
             ],
             "title": "Content"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
           }
         },
+        "required": [
+          "expected_revision"
+        ],
         "title": "CandidateUpdate",
         "type": "object"
       },
@@ -1527,6 +1574,21 @@
             ],
             "title": "Source Cleaning Job Id"
           },
+          "source_intervals": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Intervals"
+          },
           "source_revision_map": {
             "anyOf": [
               {
@@ -1572,6 +1634,7 @@
           "section_count",
           "artifact_key",
           "source_revision_sha256",
+          "source_intervals",
           "content_sha256",
           "status",
           "created_by",
@@ -1669,6 +1732,21 @@
             ],
             "title": "Source Cleaning Job Id"
           },
+          "source_intervals": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Intervals"
+          },
           "source_revision_sha256": {
             "anyOf": [
               {
@@ -1702,6 +1780,7 @@
           "section_count",
           "artifact_key",
           "source_revision_sha256",
+          "source_intervals",
           "content_sha256",
           "status",
           "created_by",
@@ -2753,8 +2832,10 @@
               "GENERATION_RETRY_EXISTS",
               "GENERATION_PROVENANCE_INVALID",
               "CANDIDATE_REVIEW_STATE_CONFLICT",
+              "CANDIDATE_REVISION_CONFLICT",
               "CANDIDATE_EVIDENCE_REQUIRED",
               "CANDIDATE_ALREADY_PROMOTED",
+              "DOCUMENT_IN_USE",
               "CURATED_REVISION_CONFLICT",
               "CURATED_APPROVAL_GATE_FAILED",
               "CURATED_REVIEW_STATE_CONFLICT",
@@ -7758,6 +7839,16 @@
             },
             "description": "资源不存在"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "冲突"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -7983,6 +8074,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CandidatePromote"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "201": {
             "content": {

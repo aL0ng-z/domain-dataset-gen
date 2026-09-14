@@ -2,6 +2,17 @@
 
 > 本文件记录项目开发进度，每个阶段完成后更新。
 
+## 审查问题修复与开发数据重置（2026-09-14）
+
+- 修复审查确认的构建、数据一致性、候选审核、生成门禁、认证请求、任务通知、WebSocket、页码追溯与导出内容问题：CI/Compose 固定可用 MinIO 镜像并显式 shell 初始化；Candidate 新增内容版本并把编辑、审核、提升绑定到同一版本和冻结生成批次；LLM 输出按冻结 JSON Schema 与任务类型基础字段校验；文档和解析任务删除改为数据库提交成功后再清理对象；T09 回填改用 SQLAlchemy mapping rows，并将 NFC 匹配位置映射回原始 Chunk 文本坐标。
+- 前端令牌改为带 `session_id` 的单条会话记录；请求超时覆盖刷新、重试和 body 读取；候选、导出和文档详情页隔离迟到响应。任务状态在事务提交后发布事件，WebSocket 广播不再覆盖校验期间的新连接，页码链路改为冻结可信来源区间并跨 overlap 传播。
+- 新增 `r05_candidate_integrity` 迁移：Candidate 内容/审核版本、四类配置的项目级默认项唯一索引，以及清洗版本的 `source_intervals`。模板输出 schema 使用 `jsonschema` 校验并冻结；导出 formatter 升为 `exporter-v3`。
+- 当前开发库的 Alembic 记录停在 T07、实际残留 T11 表，无法安全增量升级。按“新项目开发”约定，在容器内临时备份并恢复账号、项目、成员、配置、提示词版本和 Documents 后重建 `public` schema，迁移至 `r05_candidate_integrity`；清空全部派生表和 `outputs` bucket 对象版本，Document 统一重置为 `uploaded/not_started`。原始 PDF 经实际读取确认保留，临时备份随后删除。
+- 新增受控 `scripts/reset_processing_data.py`，默认 dry-run，完整开发重置需显式确认数据库、输出桶和服务已停止；支持精确登记对象清理及显式输出桶全量清理。
+- 验证：固定 Quay MinIO 镜像的隔离基础设施启动、bucket 初始化与 versioning 成功；`r05 -> r04 -> r05` 迁移往返通过；候选/编组/导出 37 项、生成/API/任务恢复 48 项、审查回归 4 项、认证/任务/切分/清洗 71 项、合同/迁移/WebSocket 59 项、T09 回填 5 项通过。OpenAPI 合同子进程显式使用 UTF-8 后，15 项 OpenAPI 合同无警告通过；前端 152 项 Vitest、ESLint、TypeScript、OpenAPI 检查和生产构建通过。npm 10.9.8 的干净安装及 dry-run 均通过。
+
+---
+
 ## 清理已整合的工作副本与分支（2026-09-14）
 
 - 按用户确认，使用 `git worktree remove --force` 移除 `domain-dataset-gen-worktrees` 下的 batch-ui、cleaning、config、provenance、tasks 五个工作副本，清理其中的依赖和构建缓存，并删除空父目录。

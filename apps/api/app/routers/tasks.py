@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.authz import ProjectResourceResolver
@@ -70,6 +70,7 @@ async def list_task_attempts(
 async def cancel_task(
     pid: uuid.UUID,
     tid: uuid.UUID,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
@@ -77,10 +78,14 @@ async def cancel_task(
     task = await resolver.task(pid, tid)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
-    service = TaskService(db)
+    service = TaskService(db, request.app.state.redis)
     updated = await service.cancel_task(tid, current_user.id)
     if updated is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="任务不存在")
+    # Redis 只是提示刷新，必须在数据库取消提交后再发布。
+    await db.commit()
+    await db.refresh(updated)
+    await service.publish_transition(updated, f"task.{updated.status}")
     return TaskCancelResponse(
         id=updated.id,
         status=updated.status,
@@ -93,6 +98,7 @@ async def cancel_task(
 async def retry_task(
     pid: uuid.UUID,
     tid: uuid.UUID,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[User, Depends(require_project_member(UserRole.editor))],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
@@ -112,7 +118,7 @@ async def retry_task(
             detail={"code": "VALIDATION_ERROR", "message": "重试需要 Idempotency-Key"},
         )
 
-    service = TaskService(db)
+    service = TaskService(db, request.app.state.redis)
     try:
         new_task, newly_created = await service.retry_task(
             task, idempotency_key=idempotency_key, created_by=current_user.id
@@ -124,4 +130,9 @@ async def retry_task(
         ) from exc
     if new_task is None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="任务重试创建失败")
+    # 新任务对其他 worker 可见后才广播创建事件。
+    await db.commit()
+    await db.refresh(new_task)
+    if newly_created:
+        await service.publish_transition(new_task, "task.created")
     return _task_response(new_task)

@@ -35,7 +35,9 @@ export function WsProvider({ projectId, children }: WsProviderProps) {
     const wsBase = apiUrl.replace(/^http/, "ws").replace(/\/api$/, "");
     const url = `${wsBase}/ws/projects/${projectId}/tasks`;
 
-    const client = createWsClient(url);
+    // 初次握手前先经受保护的项目 access 接口确认权限。服务端在 accept 前拒绝时
+    // 浏览器只能看到 HTTP 握手失败，不能把私有 WebSocket close code 当作真源。
+    const client = createWsClient(url, { projectId });
     clientRef.current = client;
     client.connect();
 

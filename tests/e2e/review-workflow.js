@@ -143,11 +143,6 @@ async (page) => {
     const acceptedA1 = await cleanAndAccept(pid, docA.id, parseA1.id, cleanText, `e2e-clean-a1-${uid}`);
     const sourceA1 = await chunk(pid, docA.id, chunkProfile.id, `e2e-chunk-a1-${uid}`);
 
-    const docB = await upload(pid, `e2e-B-${uid}.pdf`, "Independent cross-document compressor evidence");
-    const parseB = await parse(pid, docB.id, parser.id, `e2e-b-${uid}`);
-    await cleanAndAccept(pid, docB.id, parseB.id, "# Evidence B\nIndependent compressor evidence.\n", `e2e-clean-b-${uid}`);
-    const sourceB = await chunk(pid, docB.id, chunkProfile.id, `e2e-chunk-b-${uid}`);
-
     const generated = await api(`/projects/${pid}/documents/${docA.id}/generate-batch`, {
       method: "POST",
       headers: { "Idempotency-Key": `e2e-generate-${uid}` },
@@ -162,9 +157,15 @@ async (page) => {
       return { chunk_id: chunk.id, start_char: 0, end_char: quote.length, quote_text: quote };
     };
     await api(`/candidates/${candidate.id}/review`, {
-      method: "POST", json: { verdict: "supported", evidence_spans: [span(sourceA1.chunk), span(sourceB.chunk)] },
+      method: "POST", json: {
+        verdict: "supported",
+        expected_revision: candidate.content_revision,
+        evidence_spans: [span(sourceA1.chunk)],
+      },
     });
-    const curated = await api(`/candidates/${candidate.id}/promote-to-curated`, { method: "POST" });
+    const curated = await api(`/candidates/${candidate.id}/promote-to-curated`, {
+      method: "POST", json: { expected_revision: candidate.content_revision },
+    });
     const approved = await api(`/projects/${pid}/curated-items/${curated.id}/review`, {
       method: "POST", json: { action: "approve", expected_revision: curated.current_revision },
     });
@@ -191,22 +192,15 @@ async (page) => {
     const manifest = await api(`/projects/${pid}/exports/${created.export_id}/manifest`);
     const entries = manifest.manifest.members[0].evidence;
     const aEvidence = entries.find((entry) => entry.provenance.document.document_id === docA.id);
-    const bEvidence = entries.find((entry) => entry.provenance.document.document_id === docB.id);
-    if (!aEvidence || !bEvidence) throw new Error("导出 manifest 缺少跨文档证据");
+    if (!aEvidence) throw new Error("导出 manifest 缺少候选的冻结来源证据");
     if (aEvidence.provenance.parse.parse_job_id !== parseA1.id || aEvidence.provenance.chunk_set.chunk_set_id !== sourceA1.chunkSetId) {
       throw new Error("导出错误地使用了 A 的最新解析或活动分块版本");
-    }
-    if (bEvidence.provenance.parse.parse_job_id !== parseB.id || bEvidence.provenance.chunk.chunk_id !== sourceB.chunk.id) {
-      throw new Error("跨文档证据来源不一致");
-    }
-    if (aEvidence.provenance.cleaned_document_version.merged_markdown.includes("Independent")) {
-      throw new Error("导出来源混入其他文档正文");
     }
     const link = await api(`/projects/${pid}/exports/${created.export_id}/download-link`, { method: "POST" });
     const verified = await api(`/projects/${pid}/exports/${created.export_id}/verify`, { method: "POST", json: { deep: true } });
     if (verified.status !== "verified") throw new Error(`导出深度验证失败: ${verified.status}`);
     return {
-      project_id: pid, document_a: docA.id, document_b: docB.id,
+      project_id: pid, document_a: docA.id,
       parse_a1: parseA1.id, parse_a2: parseA2.id, chunk_set_a1: sourceA1.chunkSetId,
       export_id: created.export_id, manifest_schema: manifest.schema_version,
       download_url: link.url, evidence_count: entries.length,

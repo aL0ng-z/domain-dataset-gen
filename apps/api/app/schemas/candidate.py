@@ -36,6 +36,7 @@ class CandidateReview(RequestSchema):
     unsupported/out_of_scope 必须提供 reject_reason（422 字段校验）。客户端不得发送额外 action。"""
 
     verdict: str
+    expected_revision: int = Field(ge=1)
     evidence_spans: list[EvidenceSpan] | None = None
     reject_reason: str | None = None
 
@@ -63,6 +64,13 @@ class CandidateUpdate(RequestSchema):
     """
 
     content: dict | None = None
+    expected_revision: int = Field(ge=1)
+
+
+class CandidatePromote(RequestSchema):
+    """提升请求必须绑定审核时读取的内容版本。"""
+
+    expected_revision: int = Field(ge=1)
 
 
 class CandidateResponse(BaseSchema):
@@ -72,6 +80,8 @@ class CandidateResponse(BaseSchema):
     content: dict
     candidate_type: str
     status: str
+    content_revision: int
+    reviewed_content_revision: int | None
     reviewed_by: uuid.UUID | None
     review_verdict: str | None
     review_evidence_spans: dict | None

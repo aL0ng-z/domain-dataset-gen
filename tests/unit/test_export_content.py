@@ -69,3 +69,29 @@ def test_benchmark_requires_reference_answer_and_unknown_format_is_invalid():
         validate_export_members([member("benchmark_case")], "benchmark_json")
     with pytest.raises(ValueError, match="不支持的导出格式"):
         validate_export_members([member()], "unknown")
+
+
+@pytest.mark.parametrize("fmt", ["messages", "sharegpt"])
+def test_messages_and_sharegpt_keep_nonempty_input(fmt):
+    payload = render_payload_from_manifest(
+        {"members": [member(content={"question": "问题", "input": "唯一上下文", "answer": "答案"})]},
+        fmt,
+    )
+    record = json.loads(payload)[0]
+    user_content = (
+        record["messages"][1]["content"]
+        if fmt == "messages"
+        else record["conversations"][0]["value"]
+    )
+    assert user_content == "问题\n\n唯一上下文"
+
+
+@pytest.mark.parametrize("invalid", [None, [], {}, 0])
+def test_present_input_must_be_a_string(invalid):
+    with pytest.raises(ExportContentError) as exc:
+        validate_export_members(
+            [member(content={"question": "问题", "input": invalid, "answer": "答案"})],
+            "messages",
+        )
+    assert exc.value.code == "EXPORT_CONTENT_INVALID"
+    assert exc.value.issues[0]["fields"] == ["input"]

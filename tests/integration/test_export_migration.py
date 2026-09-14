@@ -44,7 +44,7 @@ class TestMigrationSealHelper:
 
         # formatter 版本在迁移/服务中为统一常量（任务卡 §4.3）。
         # R16–R19 增加固定清洗版本与内容格式门禁后，封存格式升级为 v2。
-        assert EXPORTER_VERSION == "exporter-v2"
+        assert EXPORTER_VERSION == "exporter-v3"
 
 
 class TestMigrationDowngradePrecheck:

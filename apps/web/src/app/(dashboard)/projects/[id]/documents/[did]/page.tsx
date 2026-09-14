@@ -15,7 +15,7 @@ import {
 import { StatusBadge } from "@/components/status-badge";
 import { BatchGenerateDialog } from "@/components/batch-generate-dialog";
 import { DataTable, type ColumnDef } from "@/components/data-table";
-import { api, ApiErrorException } from "@/lib/api";
+import { api, ApiErrorException, isAbortError } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
 import { useWs } from "@/hooks/use-ws";
 import {
@@ -56,42 +56,56 @@ export default function DocumentDetailPage() {
   const [showBatchGenerate, setShowBatchGenerate] = useState(false);
   const [selectedCleanJobId, setSelectedCleanJobId] = useState<string>("");
   const initialLoadDone = useRef(false);
-  // T06 §6：切分 idempotency key 由一次用户操作生成并复用，网络重试不换 key。
-  const chunkIdempotencyRef = useRef<string | null>(null);
+  // 每个切分意图有独立 key；只有未知网络结果的重试才复用该 key。
+  const chunkIdempotencyRef = useRef<{
+    key: string;
+    profileId: string;
+    cleanedVersionId: string;
+  } | null>(null);
   const [chunkSets, setChunkSets] = useState<components["schemas"]["ChunkSetSummary"][]>([]);
+  const dataRequestRef = useRef(0);
+  const dataControllerRef = useRef<AbortController | null>(null);
 
   // Fetch all data; silent=true skips the loading spinner (used for WS refreshes)
   const fetchData = useCallback((silent = false) => {
+    const request = ++dataRequestRef.current;
+    dataControllerRef.current?.abort();
+    const controller = new AbortController();
+    dataControllerRef.current = controller;
     if (!silent) setLoading(true);
     const base = { pid: projectId, did: docId };
     Promise.all([
-      api.get("/projects/{pid}/documents/{did}", { params: base }),
+      api.get("/projects/{pid}/documents/{did}", { params: base, signal: controller.signal }),
       api
-        .get("/projects/{pid}/documents/{did}/parse-jobs", { params: base })
+        .get("/projects/{pid}/documents/{did}/parse-jobs", { params: base, signal: controller.signal })
         .catch(() => [] as ParseJob[]),
       api
-        .get("/projects/{pid}/documents/{did}/cleaning-jobs", { params: base })
+        .get("/projects/{pid}/documents/{did}/cleaning-jobs", { params: base, signal: controller.signal })
         .catch(() => [] as CleaningJobContext[]),
       api
         .get("/projects/{pid}/parser-profiles/", {
           params: { pid: projectId },
           query: { page: 1, page_size: 50 },
+          signal: controller.signal,
         })
         .catch(() => ({ items: [] as ProfileOption[] })),
       api
         .get("/projects/{pid}/chunk-profiles/", {
           params: { pid: projectId },
           query: { page: 1, page_size: 50 },
+          signal: controller.signal,
         })
         .catch(() => ({ items: [] as ProfileOption[] })),
       api
         .get("/projects/{pid}/documents/{did}/chunk-sets", {
           params: base,
           query: { page: 1, page_size: 20 },
+          signal: controller.signal,
         })
         .catch(() => ({ items: [] as components["schemas"]["ChunkSetSummary"][], total: 0, page: 1, page_size: 20 })),
-    ])
+      ])
       .then(([docData, jobsData, cleanJobsData, parserData, chunkData, chunkSetData]) => {
+        if (request !== dataRequestRef.current || controller.signal.aborted) return;
         setDoc(docData);
         setParseJobs(jobsData);
         setCleaningJobs(cleanJobsData);
@@ -100,12 +114,22 @@ export default function DocumentDetailPage() {
         setChunkSets(chunkSetData.items);
         initialLoadDone.current = true;
       })
-      .catch(() => toast.error("加载文档详情失败"))
-      .finally(() => setLoading(false));
+      .catch((error) => {
+        if (request === dataRequestRef.current && !controller.signal.aborted && !isAbortError(error)) {
+          toast.error("加载文档详情失败");
+        }
+      })
+      .finally(() => {
+        if (request === dataRequestRef.current) setLoading(false);
+      });
   }, [projectId, docId]);
 
   useEffect(() => {
     fetchData();
+    return () => {
+      dataRequestRef.current += 1;
+      dataControllerRef.current?.abort();
+    };
   }, [fetchData]);
 
   // Subscribe to WebSocket for real-time task updates
@@ -117,6 +141,15 @@ export default function DocumentDetailPage() {
       fetchData(true);
     }
   }, [lastMessage, fetchData]);
+
+  // WebSocket 通知丢失或初始握手被拒绝时，仍让解析/切分状态在 3 秒内收敛。
+  const hasActiveDocumentTask = parseJobs.some((job) => ["queued", "processing"].includes(job.status))
+    || chunkSets.some((chunkSet) => ["pending", "queued", "processing"].includes(chunkSet.status));
+  useEffect(() => {
+    if (!hasActiveDocumentTask) return;
+    const timer = window.setInterval(() => fetchData(true), 3_000);
+    return () => window.clearInterval(timer);
+  }, [hasActiveDocumentTask, fetchData]);
 
   const getDefaultProfile = (profiles: ProfileOption[]) =>
     profiles.find((p) => p.is_default) || profiles[0];
@@ -158,29 +191,47 @@ export default function DocumentDetailPage() {
       toast.error("请先在设置中创建切分配置");
       return;
     }
+    const cleanedVersionId = doc?.active_clean_version_id;
+    if (!cleanedVersionId) {
+      toast.error("请先完成清洗终审后再切分");
+      return;
+    }
     setActionLoading("chunk");
-    // T06 §6：一次用户操作生成并复用一个 idempotency key；网络重试不得换 key。
-    const idemKey = chunkIdempotencyRef.current ?? crypto.randomUUID();
-    chunkIdempotencyRef.current = idemKey;
+    const previousIntent = chunkIdempotencyRef.current;
+    const idemKey = previousIntent &&
+      previousIntent.profileId === profile.id &&
+      previousIntent.cleanedVersionId === cleanedVersionId
+      ? previousIntent.key
+      : crypto.randomUUID();
+    chunkIdempotencyRef.current = {
+      key: idemKey,
+      profileId: profile.id,
+      cleanedVersionId,
+    };
     try {
       const result = await api.post("/projects/{pid}/documents/{did}/chunk", {
         chunk_profile_id: profile.id,
+        cleaned_version_id: cleanedVersionId,
       }, {
         params: { pid: projectId, did: docId },
         headers: { "Idempotency-Key": idemKey },
       });
+      // 服务端已经确认本次意图，下一次按钮点击属于新的切分操作。
+      chunkIdempotencyRef.current = null;
       toast.success(result.reused ? "复用既有切分任务" : "切分任务已发起");
       fetchData(true);
     } catch (e) {
       // 409 后刷新服务端状态（版本/活跃 set/失败原因）。
       if (e instanceof ApiErrorException && e.apiError.status === 409) {
+        // 已收到业务响应，不能把后续用户操作伪装成同一网络重试。
+        chunkIdempotencyRef.current = null;
         fetchData(true);
       }
       toast.error("发起切分失败");
     } finally {
       setActionLoading(null);
     }
-  }, [projectId, docId, chunkProfiles, fetchData]);
+  }, [projectId, docId, doc?.active_clean_version_id, chunkProfiles, fetchData]);
 
   const cleanUrlFor = useCallback((cleaningJobId: string) => (
     `/projects/${projectId}/documents/${docId}/clean?cleaning_job_id=${encodeURIComponent(cleaningJobId)}`
@@ -466,11 +517,14 @@ export default function DocumentDetailPage() {
               disabled={
                 actionLoading !== null ||
                 !["cleaning", "cleaned"].includes(doc.status) ||
+                !doc.active_clean_version_id ||
                 chunkSets.some((cs) => cs.status === "pending" || cs.status === "processing")
               }
               title={
                 chunkSets.some((cs) => cs.status === "pending" || cs.status === "processing")
                   ? "该文档已有切分任务进行中"
+                  : !doc.active_clean_version_id
+                    ? "请先完成清洗终审"
                   : undefined
               }
             >

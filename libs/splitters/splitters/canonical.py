@@ -19,7 +19,7 @@ import re
 
 # 算法版本：修改拆分/overlap 逻辑时必须递增（任务卡 §7：同一输入/config/version
 # 必须产生相同顺序、内容、token_count 与 output_sha256）。
-SPLITTER_VERSION = "2.0.0"
+SPLITTER_VERSION = "3.0.0"
 
 # 默认 tokenizer：tiktoken cl100k_base。生产与测试必须使用同一编码名与库版本，
 # 否则计数漂移会使迁移预检失败（任务卡 §12 停止条件）。

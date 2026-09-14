@@ -526,7 +526,11 @@ class TaskQueue:
     # ------------------------------------------------------------------
 
     async def reap_expired(
-        self, *, lease_grace_seconds: int = 60, batch: int = 50
+        self,
+        *,
+        lease_grace_seconds: int = 60,
+        batch: int = 50,
+        transition_log: list[tuple[uuid.UUID, str]] | None = None,
     ) -> dict[str, int]:
         """回收过期 processing 任务：有 cancel 请求 -> cancelled；
         可重试错误且有额度 -> 回 queued 退避；否则 failed。
@@ -569,8 +573,10 @@ class TaskQueue:
 
             if task.status == "cancelling" or task.cancel_requested_at is not None:
                 # 有取消请求：直接 cancelled。
-                await self._force_terminal(task, "cancelled", None, None)
+                changed = await self._force_terminal(task, "cancelled", None, None)
                 stats["cancelled"] += 1
+                if changed and transition_log is not None:
+                    transition_log.append((task.id, "cancelled"))
                 continue
 
             error_code = task.error_code or TaskErrorCode.TEMPORARY_INFRA_ERROR.value
@@ -596,15 +602,19 @@ class TaskQueue:
                 )
                 if res.rowcount == 1:
                     stats["requeued"] += 1
+                    if transition_log is not None:
+                        transition_log.append((task.id, "queued"))
                     continue
             # 非可重试或超限：failed。
-            await self._force_terminal(
+            changed = await self._force_terminal(
                 task,
                 "failed",
                 error_code or TaskErrorCode.TEMPORARY_INFRA_ERROR.value,
                 task.error_message or "任务执行超时被回收",
             )
             stats["failed"] += 1
+            if changed and transition_log is not None:
+                transition_log.append((task.id, "failed"))
 
         return stats
 
@@ -624,7 +634,7 @@ class TaskQueue:
         status: str,
         error_code: str | None,
         error_message: str | None,
-    ) -> None:
+    ) -> bool:
         """reaper 专用终态写入（已持有行锁，CAS 仍校验 state_version）。"""
         now = _now()
         values: dict[str, Any] = {
@@ -651,6 +661,7 @@ class TaskQueue:
         )
         if result.rowcount == 1:
             await self._sync_business_terminal(task.id, status, error_message)
+        return result.rowcount == 1
 
     # ------------------------------------------------------------------
     # Attempt 审计

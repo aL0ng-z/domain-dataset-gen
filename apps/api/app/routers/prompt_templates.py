@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.authz import ProjectResourceResolver
 from app.database import get_db
 from app.dependencies import require_project_member
+from app.generation.output_validation import OutputSchemaError
 from app.models.user import User
 from app.schemas.prompt_template import (
     PromptTemplateCreate,
@@ -31,7 +32,10 @@ async def create_prompt_template(
     _: Annotated[User, Depends(require_project_member(UserRole.editor))],
 ):
     service = PromptTemplateService(db)
-    return await service.create(project_id=pid, **body.model_dump())
+    try:
+        return await service.create(project_id=pid, **body.model_dump())
+    except OutputSchemaError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
 @router.get("/", response_model=PaginatedResponse[PromptTemplateResponse], operation_id="prompt_template_list")
@@ -74,7 +78,10 @@ async def update_prompt_template(
     if await resolver.prompt_template(pid, tid) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="模板不存在")
     service = PromptTemplateService(db)
-    updated = await service.update(tid, **body.model_dump(exclude_unset=True))
+    try:
+        updated = await service.update(tid, **body.model_dump(exclude_unset=True))
+    except OutputSchemaError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     return updated
 
 

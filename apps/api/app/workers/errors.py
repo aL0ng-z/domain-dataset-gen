@@ -33,6 +33,8 @@ class TaskErrorCode(StrEnum):
     EXPORT_REVISION_CONFLICT = "EXPORT_REVISION_CONFLICT"
     EXPORT_FORMAT_INCOMPATIBLE = "EXPORT_FORMAT_INCOMPATIBLE"
     EXPORT_CONTENT_INVALID = "EXPORT_CONTENT_INVALID"
+    # LLM 返回有效 JSON 但不符合冻结输出 schema / task_type 基础字段。
+    LLM_OUTPUT_INVALID = "LLM_OUTPUT_INVALID"
 
     # ---- 可重试错误（按 Policy 退避）----
     # 网络/传输层临时失败（超时、连接重置、5xx）。

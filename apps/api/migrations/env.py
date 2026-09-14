@@ -10,7 +10,12 @@ from app.database import Base
 from app.models import *  # noqa: F401, F403
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# ``ConfigParser`` 会把单个 ``%`` 视为插值标记。URL 已由 SQLAlchemy 正确
+# 编码凭据；这里仅为 Alembic 配置层再转义一次，读取时会恢复原 URL。
+config.set_main_option(
+    "sqlalchemy.url",
+    settings.database_url.render_as_string(hide_password=False).replace("%", "%%"),
+)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

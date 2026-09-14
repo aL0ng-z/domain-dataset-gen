@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthProvider } from "@/contexts/auth-context";
 import { useAuth } from "@/hooks/use-auth";
 import { createApiMockServer } from "@/lib/__mocks__/api-server";
+import { AUTH_SESSION_STORAGE_KEY, TokenStore } from "@/lib/auth";
 
 function AuthProbe() {
   const { user, token, status, loading, logout, login } = useAuth();
@@ -46,7 +47,7 @@ describe("AuthProvider 认证状态机", () => {
   });
 
   it("有 token 时拉取 /auth/me 并进入 authenticated", async () => {
-    localStorage.setItem("access_token", "access-1");
+    TokenStore.setTokens("access-1", "refresh-1");
     server.onGet("/auth/me", { username: "alice", email: "a@t", role: "admin" });
 
     renderProbe();
@@ -55,12 +56,12 @@ describe("AuthProvider 认证状态机", () => {
   });
 
   it("/auth/me 失败时清理令牌并进入 anonymous", async () => {
-    localStorage.setItem("access_token", "expired-token");
+    TokenStore.setTokens("expired-token", "refresh-1");
     server.mock("GET", "/auth/me", { status: 401, body: { detail: "x" } });
 
     renderProbe();
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("anonymous"));
-    expect(localStorage.getItem("access_token")).toBeNull();
+    expect(TokenStore.getAccessToken()).toBeNull();
   });
 
   it("login 后进入 authenticated，logout 后进入 anonymous", async () => {
@@ -79,11 +80,11 @@ describe("AuthProvider 认证状态机", () => {
 
     await screen.findByText("logout").then((b) => b.click());
     await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("anonymous"));
-    expect(localStorage.getItem("access_token")).toBeNull();
+    expect(TokenStore.getAccessToken()).toBeNull();
   });
 
   it("bootstrapping 阶段 loading 为 true，避免误跳登录页", async () => {
-    localStorage.setItem("access_token", "access-1");
+    TokenStore.setTokens("access-1", "refresh-1");
     server.mock("GET", "/auth/me", { delay: 100, body: { username: "alice", email: "a@t", role: "admin" } });
 
     renderProbe();
@@ -99,7 +100,7 @@ describe("AuthProvider 认证状态机", () => {
   });
 
   it("退出后晚到的 me 响应不能恢复用户", async () => {
-    localStorage.setItem("access_token", "old");
+    TokenStore.setTokens("old", "refresh-1");
     server.onGet("/auth/me", { username: "old-user", role: "admin" }, { delay: 80 });
     renderProbe();
     fireEvent.click(screen.getByText("logout"));
@@ -123,20 +124,30 @@ describe("AuthProvider 认证状态机", () => {
     fireEvent.click(screen.getByText("start"));
     fireEvent.click(screen.getByText("stop"));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
-    expect(localStorage.getItem("access_token")).toBeNull();
+    expect(TokenStore.getAccessToken()).toBeNull();
     expect(screen.getByTestId("state").textContent).toBe("anonymous");
   });
 
   it("跨标签页切换账号必须重新获取用户，旧响应不能覆盖", async () => {
-    localStorage.setItem("access_token", "old");
+    TokenStore.setTokens("old", "refresh-1");
     server.mock("GET", "/auth/me", ({ init }) => ({
       delay: (init?.headers as Record<string, string>)?.Authorization === "Bearer old" ? 100 : 5,
       body: { username: (init?.headers as Record<string, string>)?.Authorization === "Bearer old" ? "old-user" : "new-user", role: "viewer" },
     }));
     renderProbe();
     await act(async () => {
-      localStorage.setItem("access_token", "new");
-      window.dispatchEvent(new StorageEvent("storage", { key: "access_token", oldValue: "old", newValue: "new" }));
+      const oldValue = localStorage.getItem(AUTH_SESSION_STORAGE_KEY);
+      const newValue = JSON.stringify({
+        session_id: "other-session",
+        access_token: "new",
+        refresh_token: "new-refresh",
+      });
+      localStorage.setItem(AUTH_SESSION_STORAGE_KEY, newValue);
+      window.dispatchEvent(new StorageEvent("storage", {
+        key: AUTH_SESSION_STORAGE_KEY,
+        oldValue,
+        newValue,
+      }));
     });
     await waitFor(() => expect(screen.getByTestId("username").textContent).toBe("new-user"));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 120)); });

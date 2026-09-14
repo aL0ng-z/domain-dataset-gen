@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import LoginPage from "@/app/login/page";
 import { AuthProvider } from "@/contexts/auth-context";
 import { createApiMockServer } from "@/lib/__mocks__/api-server";
+import { TokenStore } from "@/lib/auth";
 
 // next/navigation 的 useRouter 在测试环境中无上下文，mock 掉。
 const mockPush = vi.fn();
@@ -50,7 +51,7 @@ describe("登录页", () => {
     await user.click(screen.getByRole("button", { name: /登录/ }));
 
     await waitFor(() => expect(mockPush).toHaveBeenCalledWith("/projects"));
-    expect(localStorage.getItem("access_token")).toBe("access-1");
+    expect(TokenStore.getAccessToken()).toBe("access-1");
   });
 
   it("登录失败展示后端错误信息", async () => {

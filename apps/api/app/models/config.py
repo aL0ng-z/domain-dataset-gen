@@ -10,6 +10,14 @@ from app.database import Base
 
 class ModelConfig(Base):
     __tablename__ = "model_configs"
+    __table_args__ = (
+        Index(
+            "uq_model_configs_default",
+            "project_id",
+            unique=True,
+            postgresql_where=text("is_default = true"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"))
@@ -29,6 +37,14 @@ class ModelConfig(Base):
 
 class ParserProfile(Base):
     __tablename__ = "parser_profiles"
+    __table_args__ = (
+        Index(
+            "uq_parser_profiles_default",
+            "project_id",
+            unique=True,
+            postgresql_where=text("is_default = true"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"))
@@ -50,6 +66,12 @@ class ChunkProfile(Base):
             "overlap_tokens >= 0 AND overlap_tokens < max_tokens",
             name="ck_chunk_profiles_overlap_range",
         ),
+        Index(
+            "uq_chunk_profiles_default",
+            "project_id",
+            unique=True,
+            postgresql_where=text("is_default = true"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -67,6 +89,14 @@ class ChunkProfile(Base):
 
 class ExportProfile(Base):
     __tablename__ = "export_profiles"
+    __table_args__ = (
+        Index(
+            "uq_export_profiles_default",
+            "project_id",
+            unique=True,
+            postgresql_where=text("is_default = true"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     project_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"))

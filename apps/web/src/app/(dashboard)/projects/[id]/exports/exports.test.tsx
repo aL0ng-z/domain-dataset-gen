@@ -5,6 +5,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApiMockServer } from "@/lib/__mocks__/api-server";
+import { TokenStore } from "@/lib/auth";
 import ExportsPage from "./page";
 
 const server = createApiMockServer();
@@ -76,7 +77,7 @@ function listBody(items: unknown[]) {
 beforeEach(() => {
   window.history.replaceState(null, "", "/projects/p1/exports");
   localStorage.clear();
-  localStorage.setItem("access_token", "access-1");
+  TokenStore.setTokens("access-1", "refresh-1");
   server.reset();
   server.install();
   vi.clearAllMocks();
@@ -119,7 +120,7 @@ describe("导出页", () => {
     expect(download.calls[0].options?.headers).toMatchObject({
       Authorization: "Bearer access-1",
     });
-    expect(localStorage.getItem("access_token")).toBe("access-1");
+    expect(TokenStore.getAccessToken()).toBe("access-1");
     expect(localStorage.getItem("download_url")).toBeNull();
 
     await userEvent.click(screen.getByRole("button", { name: "浅验" }));

@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -100,7 +101,7 @@ def _format_messages(members: list[dict]) -> str:
         content = _member_content(member)
         messages = [
             {"role": "system", "content": content.get("system", "你是一个压气机设计领域的专家。")},
-            {"role": "user", "content": content.get("instruction", content.get("question", ""))},
+            {"role": "user", "content": _user_content(content)},
             {"role": "assistant", "content": content.get("output", content.get("answer", ""))},
         ]
         records.append({"messages": messages})
@@ -126,11 +127,18 @@ def _format_sharegpt(members: list[dict]) -> str:
     for member in members:
         content = _member_content(member)
         conversations = [
-            {"from": "human", "value": content.get("instruction", content.get("question", ""))},
+            {"from": "human", "value": _user_content(content)},
             {"from": "gpt", "value": content.get("output", content.get("answer", ""))},
         ]
         records.append({"conversations": conversations})
     return json.dumps(records, ensure_ascii=False, indent=2)
+
+
+def _user_content(content: dict) -> str:
+    """保留 QA/SFT 的可选 input，组成 messages 与 ShareGPT 的用户消息。"""
+    instruction = content.get("instruction", content.get("question", ""))
+    input_text = content.get("input", "")
+    return f"{instruction}\n\n{input_text}" if input_text else instruction
 
 
 def _format_benchmark_json(members: list[dict]) -> str:
@@ -394,15 +402,26 @@ async def _export_common(
     # 5. versioned 上传：内容寻址 key（每次 Export 唯一，同扩展名不同格式不共享 key）。
     base_key = build_storage_key(ctx.project_id, "exports", export_id)
     output_key = f"{base_key}/payload-{payload_sha256}.{ext}"
-    output_version_id = storage.put_object_versioned(
-        settings.minio_bucket_outputs, output_key, payload_bytes, content_type, sha256=payload_sha256,
+    output_version_id = await asyncio.to_thread(
+        storage.put_object_versioned,
+        settings.minio_bucket_outputs,
+        output_key,
+        payload_bytes,
+        content_type,
+        sha256=payload_sha256,
     )
     if not output_version_id:
         raise RuntimeError("output 上传未返回 version_id")
+    await ctx.checkpoint()
     manifest_bytes = manifest_cjson(manifest).encode("utf-8")
     manifest_key = f"{base_key}/manifest-{manifest_hash}.json"
-    manifest_version_id = storage.put_object_versioned(
-        settings.minio_bucket_outputs, manifest_key, manifest_bytes, "application/json", sha256=manifest_hash,
+    manifest_version_id = await asyncio.to_thread(
+        storage.put_object_versioned,
+        settings.minio_bucket_outputs,
+        manifest_key,
+        manifest_bytes,
+        "application/json",
+        sha256=manifest_hash,
     )
     if not manifest_version_id:
         raise RuntimeError("manifest 上传未返回 version_id")

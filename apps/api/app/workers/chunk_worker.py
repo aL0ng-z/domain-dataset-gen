@@ -44,6 +44,91 @@ class CleanVersionStaleError(Exception):
     """发布时发现来源清洗版本已不是 active（T05 终审推进）。"""
 
 
+def _load_source_intervals(value: object) -> list[dict]:
+    """读取清洗版本冻结的、可验证的正文来源区间。"""
+    if not isinstance(value, list):
+        return []
+    intervals: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        try:
+            section_id = uuid.UUID(str(item["section_id"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        start, end = item.get("start_char"), item.get("end_char")
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start < 0
+            or end <= start
+        ):
+            continue
+        pages = item.get("source_pages")
+        trusted_pages = sorted({
+            page for page in pages
+            if isinstance(page, int) and not isinstance(page, bool) and page > 0
+        }) if isinstance(pages, list) else []
+        intervals.append({
+            "section_id": section_id,
+            "start_char": start,
+            "end_char": end,
+            "source_pages": trusted_pages,
+            "trusted": item.get("page_mapping_status") == "trusted" and bool(trusted_pages),
+        })
+    return sorted(intervals, key=lambda item: (item["start_char"], item["end_char"]))
+
+
+def _locate_chunk_source_ranges(markdown: str, chunk_data_list) -> list[tuple[list[tuple[int, int]], list[tuple[int, int]]]]:
+    """定位每个 Chunk 正文及其 overlap 的 merged_markdown 字符区间。
+
+    splitter 保留未加 overlap 的 ``source_content``。正文无法在冻结内容中精确定位时，
+    不猜测相同文本的其他出现位置，后续将把该 Chunk 标为页码未知。
+    """
+    cursor = 0
+    previous_body_ranges: list[tuple[int, int]] = []
+    result: list[tuple[list[tuple[int, int]], list[tuple[int, int]]]] = []
+    for cdata in chunk_data_list:
+        source_content = cdata.source_content
+        if not isinstance(source_content, str):
+            source_content = cdata.content
+        body_ranges: list[tuple[int, int]] = []
+        if source_content:
+            start = markdown.find(source_content, cursor)
+            if start >= 0:
+                end = start + len(source_content)
+                body_ranges = [(start, end)]
+                cursor = end
+        # overlap 的内容来自紧邻的前一段正文，因此携带该正文的来源区间；避免从
+        # 生成的 "..." 前缀或正文中的页码字样反推来源。
+        ranges = [*previous_body_ranges, *body_ranges] if cdata.content != source_content else body_ranges
+        result.append((body_ranges, ranges))
+        previous_body_ranges = body_ranges
+    return result
+
+
+def _resolve_source_provenance(
+    ranges: list[tuple[int, int]], source_intervals: list[dict]
+) -> tuple[uuid.UUID | None, list[int]]:
+    """按相交的冻结区间选首个 Section，并合并可信物理页码。"""
+    if not ranges:
+        return None, []
+    selected = [
+        interval
+        for interval in source_intervals
+        if any(start < interval["end_char"] and end > interval["start_char"] for start, end in ranges)
+    ]
+    if not selected:
+        return None, []
+    section_id = selected[0]["section_id"]
+    # Chunk 只要有一部分来源页码无法确认，就不能把部分集合伪装成完整页码来源。
+    if any(not interval["trusted"] for interval in selected):
+        return section_id, []
+    return section_id, sorted({page for interval in selected for page in interval["source_pages"]})
+
+
 async def run_chunk_handler(ctx: ExecutionContext) -> None:
     """chunk_document:v2 handler：按冻结 ChunkSet 输入切分并原子发布。"""
     payload = ctx.payload
@@ -122,19 +207,26 @@ async def run_chunk_handler(ctx: ExecutionContext) -> None:
     chunk_data_list = chunker.chunk(markdown, "", cfg)
     await ctx.checkpoint()
 
-    # fallback section（保持下游 FK 结构，不伪造批次来源）。若文档无任何 Section
-    # （异常态），整个集合失败而不是写入 NULL section_id。
-    fallback_section = (
-        await db.execute(
-            select(Section.id).where(Section.document_id == document_id).order_by(Section.ordinal).limit(1)
-        )
-    ).scalar_one_or_none()
+    # 仅接受清洗版本冻结的来源区间。正常新链路中每个 Chunk 均会映射到其首个实际
+    # Section；旧/异常快照无法确认来源时保留空页码，并使用同一清洗任务的首个
+    # Section 满足既有非空外键约束。
+    section_query = select(Section.id).where(Section.document_id == document_id)
+    if clean_version.source_cleaning_job_id is not None:
+        section_query = section_query.where(Section.cleaning_job_id == clean_version.source_cleaning_job_id)
+    available_sections = list((await db.execute(section_query.order_by(Section.ordinal))).scalars().all())
+    fallback_section = available_sections[0] if available_sections else None
     if fallback_section is None:
         raise ProjectChainError("文档没有可关联的 Section，无法切分")
+    valid_section_ids = set(available_sections)
+    source_intervals = [
+        interval for interval in _load_source_intervals(clean_version.source_intervals)
+        if interval["section_id"] in valid_section_ids
+    ]
+    chunk_source_ranges = _locate_chunk_source_ranges(markdown, chunk_data_list)
 
     staging: list[Chunk] = []
     total_tokens = 0
-    for cdata in chunk_data_list:
+    for cdata, (body_ranges, all_ranges) in zip(chunk_data_list, chunk_source_ranges, strict=True):
         # 批次循环 checkpoint：支持协作取消与 run token 校验。
         if len(staging) % 5 == 0:
             await ctx.checkpoint()
@@ -146,14 +238,22 @@ async def run_chunk_handler(ctx: ExecutionContext) -> None:
                 f"chunk 超过 max_tokens 预算: token_count={token_count} "
                 f"max_tokens={cfg.max_tokens}"
             )
+        # overlap 位于输出开头时也属于 Chunk 的真实来源，因此关联整个输出范围中的首个
+        # Section，而不是统一关联文档的第一条 Section。
+        section_id, _ = _resolve_source_provenance(all_ranges, source_intervals)
+        if not body_ranges:
+            # 当前正文不能精确落到冻结文本中时，overlap 的已知来源不能替代它。
+            source_pages = []
+        else:
+            _, source_pages = _resolve_source_provenance(all_ranges, source_intervals)
         chunk = Chunk(
-            section_id=fallback_section,
+            section_id=section_id or fallback_section,
             document_id=document_id,
             chunk_set_id=chunk_set.id,
             ordinal=cdata.ordinal,
             heading_path=cdata.heading_path,
             content=cdata.content,
-            source_pages=cdata.source_pages,
+            source_pages=source_pages,
             token_count=token_count,
             status="ready",
         )

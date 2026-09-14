@@ -106,17 +106,18 @@ describe("ChunksPage 版本化切分", () => {
 });
 
 describe("DocumentDetailPage 发起切分", () => {
-  it("发送 Idempotency-Key 且网络重试不换 key", async () => {
-    server.onGet("/projects/p1/documents/d1", { id: "d1", project_id: "p1", status: "cleaned", filename: "a.pdf", file_size: 10, sha256: "0".repeat(64), clean_status: "completed" });
+  it("网络结果未知时复用 Idempotency-Key，并显式携带当前清洗版本", async () => {
+    server.onGet("/projects/p1/documents/d1", { id: "d1", project_id: "p1", status: "cleaned", filename: "a.pdf", file_size: 10, sha256: "0".repeat(64), clean_status: "completed", active_clean_version_id: "clean-v1" });
     server.onGet("/projects/p1/documents/d1/parse-jobs", []);
     server.onGet("/projects/p1/documents/d1/cleaning-jobs", []);
     server.onGet("/projects/p1/parser-profiles/?page=1&page_size=50", { items: [], total: 0, page: 1, page_size: 50 });
     server.onGet("/projects/p1/chunk-profiles/?page=1&page_size=50", { items: [{ id: "prof-1", name: "默认切分", is_default: true, strategy: "hybrid_heading_recursive", max_tokens: 512, overlap_tokens: 50 }], total: 1, page: 1, page_size: 50 });
     server.onGet("/projects/p1/documents/d1/chunk-sets?page=1&page_size=50", { items: [], total: 0, page: 1, page_size: 20 });
-    const chunkHandler = server.mock("POST", "/projects/p1/documents/d1/chunk", {
-      status: 202,
-      body: { task_id: "t1", chunk_set_id: "cs1", reused: false, status: "pending", message: "切分任务已创建" },
-    });
+    const chunkHandler = server.mock("POST", "/projects/p1/documents/d1/chunk", ({ callCount }) =>
+      callCount === 1
+        ? { networkError: true }
+        : { status: 202, body: { task_id: "t1", chunk_set_id: "cs1", reused: false, status: "pending", message: "切分任务已创建" } },
+    );
 
     render(<DocumentDetailPage />);
     const button = await screen.findByRole("button", { name: /执行切分/ });
@@ -125,16 +126,42 @@ describe("DocumentDetailPage 发起切分", () => {
     await waitFor(() => expect(chunkHandler.callCount).toBe(1));
     const headers = chunkHandler.calls[0].options?.headers as Record<string, string>;
     expect(headers["Idempotency-Key"]).toBeTruthy();
+    expect(JSON.parse(chunkHandler.calls[0].options?.body as string)).toMatchObject({ cleaned_version_id: "clean-v1" });
 
-    // 再次点击（模拟网络重试）：同 key 不换。
+    // 网络失败后再次点击：同一未知结果重试，key 不换。
+    await waitFor(() => expect(button).toBeEnabled());
     await userEvent.click(button);
     await waitFor(() => expect(chunkHandler.callCount).toBe(2));
     const headers2 = chunkHandler.calls[1].options?.headers as Record<string, string>;
     expect(headers2["Idempotency-Key"]).toBe(headers["Idempotency-Key"]);
   });
 
+  it("已收到切分结果后，下一次按钮点击生成新 Idempotency-Key", async () => {
+    server.onGet("/projects/p1/documents/d1", { id: "d1", project_id: "p1", status: "cleaned", filename: "a.pdf", file_size: 10, sha256: "0".repeat(64), clean_status: "completed", active_clean_version_id: "clean-v1" });
+    server.onGet("/projects/p1/documents/d1/parse-jobs", []);
+    server.onGet("/projects/p1/documents/d1/cleaning-jobs", []);
+    server.onGet("/projects/p1/parser-profiles/?page=1&page_size=50", { items: [], total: 0, page: 1, page_size: 50 });
+    server.onGet("/projects/p1/chunk-profiles/?page=1&page_size=50", { items: [{ id: "prof-1", name: "默认切分", is_default: true, strategy: "hybrid_heading_recursive", max_tokens: 512, overlap_tokens: 50 }], total: 1, page: 1, page_size: 50 });
+    server.onGet("/projects/p1/documents/d1/chunk-sets?page=1&page_size=20", { items: [], total: 0, page: 1, page_size: 20 });
+    const chunkHandler = server.onPost("/projects/p1/documents/d1/chunk", {
+      task_id: "t1", chunk_set_id: "cs1", reused: false, status: "pending", message: "切分任务已创建",
+    });
+
+    render(<DocumentDetailPage />);
+    const button = await screen.findByRole("button", { name: /执行切分/ });
+    await userEvent.click(button);
+    await waitFor(() => expect(chunkHandler.callCount).toBe(1));
+    await waitFor(() => expect(button).toBeEnabled());
+    await userEvent.click(button);
+    await waitFor(() => expect(chunkHandler.callCount).toBe(2));
+
+    const first = chunkHandler.calls[0].options?.headers as Record<string, string>;
+    const second = chunkHandler.calls[1].options?.headers as Record<string, string>;
+    expect(second["Idempotency-Key"]).not.toBe(first["Idempotency-Key"]);
+  });
+
   it("已有活跃切分时按钮禁用并显示切分中", async () => {
-    server.onGet("/projects/p1/documents/d1", { id: "d1", project_id: "p1", status: "chunking", filename: "a.pdf", file_size: 10, sha256: "0".repeat(64), clean_status: "completed" });
+    server.onGet("/projects/p1/documents/d1", { id: "d1", project_id: "p1", status: "chunking", filename: "a.pdf", file_size: 10, sha256: "0".repeat(64), clean_status: "completed", active_clean_version_id: "clean-v1" });
     server.onGet("/projects/p1/documents/d1/parse-jobs", []);
     server.onGet("/projects/p1/documents/d1/cleaning-jobs", []);
     server.onGet("/projects/p1/parser-profiles/?page=1&page_size=50", { items: [], total: 0, page: 1, page_size: 50 });

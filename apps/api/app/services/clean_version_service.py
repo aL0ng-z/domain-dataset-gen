@@ -47,6 +47,46 @@ def content_sha256(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _trusted_pages(value: object) -> list[int]:
+    """只接受清洗分节器写入的物理页码数组；其余来源一律标为未知。"""
+    if not isinstance(value, list):
+        return []
+    return sorted({
+        page for page in value
+        if isinstance(page, int) and not isinstance(page, bool) and page > 0
+    })
+
+
+def merge_sections_with_source_intervals(sections: list[Section]) -> tuple[str, list[dict]]:
+    """合并 Section，并冻结每段正文在 merged_markdown 中的来源区间。
+
+    页码仅来自 Section 已保存的物理页码数组；正文中的 ``Page 888`` 等文字绝不会
+    参与推断。没有可信映射时保留空集合并显式标记为 unknown。
+    """
+    parts: list[str] = []
+    intervals: list[dict] = []
+    cursor = 0
+    for section in sections:
+        body = section.raw_markdown if section.cleaned_markdown is None else section.cleaned_markdown
+        body = body.strip() if body else ""
+        if not body:
+            continue
+        if parts:
+            cursor += 2  # ``\n\n`` between adjacent merged sections.
+        start = cursor
+        cursor += len(body)
+        pages = _trusted_pages(getattr(section, "source_pages", None))
+        intervals.append({
+            "section_id": str(section.id),
+            "start_char": start,
+            "end_char": cursor,
+            "source_pages": pages,
+            "page_mapping_status": "trusted" if pages else "unknown",
+        })
+        parts.append(body)
+    return "\n\n".join(parts) + "\n", intervals
+
+
 class CleanVersionService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -124,13 +164,7 @@ class CleanVersionService:
         rev_map = canonical_revision_map(sections)
         source_rev_sha = revision_map_sha256(rev_map)
 
-        parts: list[str] = []
-        for s in sections:
-            body = s.raw_markdown if s.cleaned_markdown is None else s.cleaned_markdown
-            if not body:
-                continue
-            parts.append(body.strip())
-        merged = "\n\n".join(parts) + "\n"
+        merged, source_intervals = merge_sections_with_source_intervals(sections)
         merged_sha = content_sha256(merged)
 
         version_id = uuid.uuid4()
@@ -151,7 +185,12 @@ class CleanVersionService:
 
         # 稳定顺序锁定参与合并的 Sections，并复核 revision 向量是否仍与计算输入一致。
         locked_sections = await self._load_locked_sections(document_id, cleaning_job_id)
-        if canonical_revision_map(locked_sections) != rev_map:
+        locked_merged, locked_source_intervals = merge_sections_with_source_intervals(locked_sections)
+        if (
+            canonical_revision_map(locked_sections) != rev_map
+            or locked_merged != merged
+            or locked_source_intervals != source_intervals
+        ):
             # 来源在计算与发布之间变化：不发布版本、不改 Document 状态。
             raise CleanSourceChangedError("来源 Section 在合并期间已变化")
 
@@ -183,6 +222,7 @@ class CleanVersionService:
             merged_markdown=merged,
             artifact_key=artifact_key,
             source_revision_map=rev_map,
+            source_intervals=source_intervals,
             source_revision_sha256=source_rev_sha,
             content_sha256=merged_sha,
             merge_idempotency_key=idempotency_key,

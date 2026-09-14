@@ -2,10 +2,10 @@ import { TokenStore, handleAuthFailure, refreshToken } from "./auth";
 import type { components, paths } from "./api/generated";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api";
-const DEFAULT_TIMEOUT = 15000; // 15s for normal reads
-const LONG_TIMEOUT = 300000;   // 5min for uploads/writes
+const DEFAULT_TIMEOUT = 15_000;
+const LONG_TIMEOUT = 300_000;
 
-/** 刷新逻辑排除的路径：登录/刷新本身不做 401 重试（任务卡 §6）。 */
+/** 登录/刷新本身不进入 401 刷新循环。 */
 const NO_RETRY_PATHS = ["/auth/login", "/auth/refresh"];
 
 export interface ApiRequestOptions {
@@ -14,7 +14,11 @@ export interface ApiRequestOptions {
 }
 
 export function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
+  return typeof error === "object" && error !== null && (error as Error).name === "AbortError";
+}
+
+function createAbortError(message = "Request cancelled"): DOMException {
+  return new DOMException(message, "AbortError");
 }
 
 function createTimeoutError(timeout: number): Error {
@@ -23,70 +27,108 @@ function createTimeoutError(timeout: number): Error {
   return error;
 }
 
-function fetchWithTimeout(
-  url: string,
-  options?: RequestInit,
-  timeout?: number,
-  externalSignal?: AbortSignal,
-): Promise<Response> {
-  if (!timeout && !externalSignal) return fetch(url, options);
+/**
+ * 一个请求只有一个截止时间。它从发起首个 fetch 开始，覆盖 401 刷新等待、重试
+ * 以及 JSON/Blob body 的完整读取；请求结束后才清理计时器和事件监听。
+ */
+class RequestLifecycle {
+  private readonly controller = new AbortController();
+  private readonly externalSignal?: AbortSignal;
+  private readonly timeout?: number;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private timedOut = false;
+  private readonly onExternalAbort: () => void;
 
-  const timeoutController = timeout ? new AbortController() : null;
-  const combinedController =
-    timeoutController && externalSignal ? new AbortController() : null;
-  let didTimeout = false;
+  constructor(timeout?: number, externalSignal?: AbortSignal) {
+    this.timeout = timeout;
+    this.externalSignal = externalSignal;
+    this.onExternalAbort = () => this.controller.abort();
 
-  const timer = timeoutController
-    ? setTimeout(() => {
-        didTimeout = true;
-        timeoutController.abort();
-      }, timeout)
-    : null;
-
-  let cleanup = () => {};
-  let signal = externalSignal ?? timeoutController?.signal;
-
-  if (timeoutController && externalSignal && combinedController) {
-    const forwardAbort = () => {
-      if (!combinedController.signal.aborted) {
-        combinedController.abort();
-      }
-    };
-
-    if (externalSignal.aborted || timeoutController.signal.aborted) {
-      forwardAbort();
+    if (externalSignal?.aborted) {
+      this.controller.abort();
     } else {
-      externalSignal.addEventListener("abort", forwardAbort, { once: true });
-      timeoutController.signal.addEventListener("abort", forwardAbort, { once: true });
-      cleanup = () => {
-        externalSignal.removeEventListener("abort", forwardAbort);
-        timeoutController.signal.removeEventListener("abort", forwardAbort);
-      };
+      externalSignal?.addEventListener("abort", this.onExternalAbort, { once: true });
     }
-
-    signal = combinedController.signal;
+    if (timeout !== undefined) {
+      this.timer = setTimeout(() => {
+        this.timedOut = true;
+        this.controller.abort();
+      }, timeout);
+    }
   }
 
-  return fetch(url, { ...options, signal })
-    .catch((error) => {
-      if (didTimeout && timeout) {
-        throw createTimeoutError(timeout);
-      }
-      throw error;
-    })
-    .finally(() => {
-      if (timer) clearTimeout(timer);
-      cleanup();
+  get signal(): AbortSignal {
+    return this.controller.signal;
+  }
+
+  assertActive(): void {
+    if (this.timedOut) throw createTimeoutError(this.timeout ?? 0);
+    if (this.controller.signal.aborted || this.externalSignal?.aborted) {
+      throw createAbortError();
+    }
+  }
+
+  wait<T>(promise: Promise<T>): Promise<T> {
+    try {
+      this.assertActive();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => this.controller.signal.removeEventListener("abort", onAbort);
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        callback();
+      };
+      const onAbort = () => finish(() => {
+        try {
+          this.assertActive();
+        } catch (error) {
+          reject(error);
+        }
+      });
+
+      this.controller.signal.addEventListener("abort", onAbort, { once: true });
+      promise.then(
+        (value) => finish(() => {
+          try {
+            this.assertActive();
+            resolve(value);
+          } catch (error) {
+            reject(error);
+          }
+        }),
+        (error: unknown) => finish(() => {
+          if (this.controller.signal.aborted) {
+            try {
+              this.assertActive();
+            } catch (abort) {
+              reject(abort);
+              return;
+            }
+          }
+          reject(error);
+        }),
+      );
     });
+  }
+
+  dispose(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.externalSignal?.removeEventListener("abort", this.onExternalAbort);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // 错误判别联合
 // ---------------------------------------------------------------------------
-// 前端按稳定 `code` 分支，不匹配中文 message/detail。两类错误：
-//   - 应用业务错误：ErrorResponse
-//   - 字段校验错误：ValidationErrorResponse
-// 非 2xx body 一律不当作成功响应强转。
 
 export interface ApiClientErrorBase {
   status: number;
@@ -112,7 +154,6 @@ export type ApiError = ApiBusinessError | ApiValidationError;
 function parseError(status: number, body: unknown): ApiError {
   const obj = (body ?? {}) as Record<string, unknown>;
   const code = typeof obj.code === "string" ? obj.code : "INTERNAL_ERROR";
-  // 兼容后端 HTTPException detail 字符串（如 parser-profile 422 返回 detail）。
   const message =
     typeof obj.message === "string"
       ? obj.message
@@ -144,6 +185,7 @@ function parseError(status: number, body: unknown): ApiError {
 
 export class ApiErrorException extends Error {
   readonly apiError: ApiError;
+
   constructor(apiError: ApiError) {
     super(apiError.message);
     this.name = "ApiError";
@@ -151,118 +193,152 @@ export class ApiErrorException extends Error {
   }
 }
 
-function buildHeaders(options?: RequestInit): Record<string, string> {
-  const token = TokenStore.getAccessToken();
+function buildHeaders(options?: RequestInit, accessToken?: string | null): Record<string, string> {
   const headers: Record<string, string> = {
     ...(options?.headers as Record<string, string>),
   };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-  if (!(options?.body instanceof FormData)) {
-    headers["Content-Type"] = "application/json";
-  }
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  if (!(options?.body instanceof FormData)) headers["Content-Type"] = "application/json";
   return headers;
 }
 
 function isNoRetryPath(path: string): boolean {
-  return NO_RETRY_PATHS.some((p) => path === p || path.startsWith(`${p}/`));
+  return NO_RETRY_PATHS.some((excluded) => path === excluded || path.startsWith(`${excluded}/`));
+}
+
+function assertSessionStillCurrent(sessionId: string | null): void {
+  if (sessionId && TokenStore.getSessionId() !== sessionId) {
+    throw createAbortError("Session changed");
+  }
+}
+
+async function readJson<T>(response: Response, lifecycle: RequestLifecycle): Promise<T> {
+  return lifecycle.wait(Promise.resolve().then(() => response.json() as Promise<T>));
+}
+
+async function readJsonOrFallback(
+  response: Response,
+  lifecycle: RequestLifecycle,
+  fallback: unknown,
+): Promise<unknown> {
+  try {
+    return await readJson(response, lifecycle);
+  } catch {
+    lifecycle.assertActive();
+    return fallback;
+  }
+}
+
+type ResponseReader<T> = (response: Response, lifecycle: RequestLifecycle) => Promise<T>;
+type ErrorFactory = (response: Response, lifecycle: RequestLifecycle) => Promise<Error>;
+
+/** 统一请求执行链，确保所有阶段使用同一个 RequestLifecycle。 */
+async function executeRequest<T>(
+  path: string,
+  options: RequestInit | undefined,
+  timeout: number | undefined,
+  externalSignal: AbortSignal | undefined,
+  readSuccess: ResponseReader<T>,
+  createError: ErrorFactory,
+): Promise<T> {
+  const lifecycle = new RequestLifecycle(timeout, externalSignal);
+  const initialSession = TokenStore.getSession();
+  const sessionId = initialSession?.session_id ?? null;
+  const fetchResponse = async (accessToken: string | null): Promise<Response> => {
+    lifecycle.assertActive();
+    const headers = buildHeaders(options, accessToken);
+    const response = await lifecycle.wait(
+      fetch(`${API_BASE}${path}`, { ...options, headers, signal: lifecycle.signal }),
+    );
+    lifecycle.assertActive();
+    assertSessionStillCurrent(sessionId);
+    return response;
+  };
+
+  try {
+    let response = await fetchResponse(initialSession?.access_token ?? null);
+
+    if (response.status === 401 && sessionId && !isNoRetryPath(path)) {
+      const currentSession = TokenStore.getSession();
+      if (
+        currentSession?.session_id === sessionId &&
+        currentSession.access_token !== initialSession?.access_token
+      ) {
+        // 同一会话已经在别处完成 token 轮换，直接用当前 token 重试一次，
+        // 不能把旧 401 当成新 token 的认证失败。
+        response = await fetchResponse(currentSession.access_token);
+      } else {
+        const refreshResult = await lifecycle.wait(refreshToken({ sessionId }));
+        lifecycle.assertActive();
+        assertSessionStillCurrent(sessionId);
+        if (refreshResult === "refreshed") {
+          response = await fetchResponse(TokenStore.getSession()?.access_token ?? null);
+        } else if (refreshResult === "failed") {
+          handleAuthFailure(sessionId);
+        } else {
+          throw createAbortError("Session changed");
+        }
+      }
+    }
+
+    lifecycle.assertActive();
+    assertSessionStillCurrent(sessionId);
+    if (response.status === 401) handleAuthFailure(sessionId);
+    if (!response.ok) throw await createError(response, lifecycle);
+    lifecycle.assertActive();
+    assertSessionStillCurrent(sessionId);
+    return await readSuccess(response, lifecycle);
+  } finally {
+    lifecycle.dispose();
+  }
 }
 
 async function fetchApi(
-  url: string,
+  path: string,
   options?: RequestInit,
   timeout?: number,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  // 统一经 TokenStore 读取 access token（任务卡 §6：单一令牌读写入口）。
-  let headers = buildHeaders(options);
-  let res = await fetchWithTimeout(
-    `${API_BASE}${url}`,
-    { ...options, headers },
+  return executeRequest(
+    path,
+    options,
     timeout,
     signal,
+    async (response, lifecycle) => {
+      if (response.status === 204) return undefined;
+      return readJson(response, lifecycle);
+    },
+    async (response, lifecycle) => {
+      const body = await readJsonOrFallback(response, lifecycle, { message: response.statusText });
+      return new ApiErrorException(parseError(response.status, body));
+    },
   );
-  if (signal?.aborted) throw new DOMException("Request cancelled", "AbortError");
-
-  // 401 处理：仅对非登录/刷新请求触发一次 single-flight 刷新，并各重试一次。
-  if (res.status === 401 && !isNoRetryPath(url)) {
-    const refreshed = await refreshToken();
-    if (refreshed) {
-      headers = buildHeaders(options);
-      res = await fetchWithTimeout(
-        `${API_BASE}${url}`,
-        { ...options, headers },
-        timeout,
-        signal,
-      );
-    }
-  }
-
-  // 重试后仍然 401（或刷新失败）：原子清理并触发一次统一认证失败回调
-  if (signal?.aborted) throw new DOMException("Request cancelled", "AbortError");
-  if (res.status === 401) {
-    handleAuthFailure();
-  }
-
-  if (!res.ok) {
-    const errorBody = await res.json().catch(() => ({ message: res.statusText }));
-    throw new ApiErrorException(parseError(res.status, errorBody));
-  }
-
-  if (res.status === 204) return undefined;
-  return res.json();
 }
 
-/**
- * 携带 Authorization 的 Blob 下载（任务卡 §5.2、§6）。
- *
- * PDF 等二进制资源只允许经 Authorization 头获取；禁止回退为带 token 的 query
- * URL。401 走统一刷新重试；任何失败抛错，由调用方负责清理已创建的 object URL。
- */
+/** Blob 下载与 JSON 请求共用认证、重试、截止时间和取消生命周期。 */
 async function fetchBlob(
   path: string,
   options?: RequestInit,
   timeout?: number,
   signal?: AbortSignal,
 ): Promise<Blob> {
-  let headers = buildHeaders(options);
-  let res = await fetchWithTimeout(
-    `${API_BASE}${path}`,
-    { ...options, headers },
+  return executeRequest(
+    path,
+    options,
     timeout,
     signal,
+    (response, lifecycle) => lifecycle.wait(Promise.resolve().then(() => response.blob())),
+    async (response, lifecycle) => {
+      const body = await readJsonOrFallback(response, lifecycle, { detail: response.statusText });
+      const detail = (body as { detail?: unknown }).detail;
+      return new Error(typeof detail === "string" ? detail : "下载失败");
+    },
   );
-
-  if (res.status === 401 && !isNoRetryPath(path)) {
-    const refreshed = await refreshToken();
-    if (refreshed) {
-      headers = buildHeaders(options);
-      res = await fetchWithTimeout(
-        `${API_BASE}${path}`,
-        { ...options, headers },
-        timeout,
-        signal,
-      );
-    }
-  }
-
-  if (res.status === 401) {
-    handleAuthFailure();
-  }
-
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(error.detail || "下载失败");
-  }
-
-  return res.blob();
 }
 
 // ---------------------------------------------------------------------------
 // 类型化 client：以 HTTP method + path（OpenAPI 路由模板）为索引推导类型。
 // ---------------------------------------------------------------------------
-// path 必须是 generated.ts 中的路由模板（如 "/projects/{pid}/datasets"，
-// 不带 /api 前缀）；实际取值通过 params.path 提供，运行时替换 {pid} 等占位符。
-// 返回类型从 operations 的 responses 推导；页面不允许再用 api.get<T>() 手写覆盖。
 
 type RelativePaths = {
   [P in keyof paths as P extends `/api${infer R}` ? R : never]: paths[P];
@@ -271,16 +347,12 @@ type RelativePaths = {
 type MethodOf<Path extends keyof RelativePaths, M extends "get" | "post" | "put" | "patch" | "delete"> =
   NonNullable<RelativePaths[Path][M]>;
 
-// 请求体推导。`Op extends unknown` 使条件类型在联合上分配（distributive），
-// 因此 endpoint 为联合时仍能推出每个分支的请求体。
 type BodyParams<Op> = Op extends unknown
   ? Op extends { requestBody?: { content: { "application/json": infer B } } }
     ? B
     : never
   : never;
 
-// 响应类型推导：取所有 responses 的 application/json 内容，再排除错误 envelope。
-// 204 等无内容响应推导为 void。
 type OperationResponseData<Operation> = Operation extends { responses: Record<string, unknown> }
   ? {
       [code in keyof Operation["responses"]]: Operation["responses"][code] extends {
@@ -306,10 +378,6 @@ export interface PaginatedResponse<T> {
   page_size: number;
 }
 
-// ---------------------------------------------------------------------------
-// 共享 JSON 展示/解析 helper（页面展示 JSONB 字段时使用）。
-// ---------------------------------------------------------------------------
-
 export function formatJsonPreview(value: unknown): string {
   if (value === null || value === undefined) return "(空)";
   if (typeof value === "string") return value;
@@ -333,41 +401,36 @@ export interface RequestInitTyped {
   query?: Record<string, string | number | boolean | undefined | null>;
   signal?: AbortSignal;
   timeout?: number;
-  /** 附加请求头（如 Idempotency-Key）。与 Authorization 合并，不覆盖既有头。 */
   headers?: Record<string, string>;
 }
 
 function buildUrl(path: string, init?: RequestInitTyped): string {
   let resolved = path;
-  for (const [k, v] of Object.entries(init?.params ?? {})) {
-    resolved = resolved.replace(`{${k}}`, String(v));
+  for (const [key, value] of Object.entries(init?.params ?? {})) {
+    resolved = resolved.replace(`{${key}}`, String(value));
   }
   const search = new URLSearchParams();
-  for (const [k, v] of Object.entries(init?.query ?? {})) {
-    if (v !== undefined && v !== null) search.set(k, String(v));
+  for (const [key, value] of Object.entries(init?.query ?? {})) {
+    if (value !== undefined && value !== null) search.set(key, String(value));
   }
-  const qs = search.toString();
-  return qs ? `${resolved}?${qs}` : resolved;
+  const query = search.toString();
+  return query ? `${resolved}?${query}` : resolved;
 }
 
 export const api = {
   get: async <Path extends keyof RelativePaths>(
     path: Path,
     init?: RequestInitTyped,
-  ): Promise<SuccessResponse<MethodOf<Path, "get">>> => {
-    return (await fetchApi(
-      buildUrl(path, init),
-      undefined,
-      init?.timeout ?? DEFAULT_TIMEOUT,
-      init?.signal,
-    )) as SuccessResponse<MethodOf<Path, "get">>;
-  },
+  ): Promise<SuccessResponse<MethodOf<Path, "get">>> => (
+    await fetchApi(buildUrl(path, init), undefined, init?.timeout ?? DEFAULT_TIMEOUT, init?.signal)
+  ) as SuccessResponse<MethodOf<Path, "get">>,
+
   post: async <Path extends keyof RelativePaths>(
     path: Path,
     body?: BodyParams<MethodOf<Path, "post">>,
     init?: RequestInitTyped,
-  ): Promise<SuccessResponse<MethodOf<Path, "post">>> => {
-    return (await fetchApi(
+  ): Promise<SuccessResponse<MethodOf<Path, "post">>> => (
+    await fetchApi(
       buildUrl(path, init),
       {
         method: "POST",
@@ -376,28 +439,28 @@ export const api = {
       },
       init?.timeout ?? LONG_TIMEOUT,
       init?.signal,
-    )) as SuccessResponse<MethodOf<Path, "post">>;
-  },
+    )
+  ) as SuccessResponse<MethodOf<Path, "post">>,
 
   put: async <Path extends keyof RelativePaths>(
     path: Path,
     body: BodyParams<MethodOf<Path, "put">>,
     init?: RequestInitTyped,
-  ): Promise<SuccessResponse<MethodOf<Path, "put">>> => {
-    return (await fetchApi(
+  ): Promise<SuccessResponse<MethodOf<Path, "put">>> => (
+    await fetchApi(
       buildUrl(path, init),
       { method: "PUT", body: JSON.stringify(body), headers: init?.headers },
       init?.timeout ?? LONG_TIMEOUT,
       init?.signal,
-    )) as SuccessResponse<MethodOf<Path, "put">>;
-  },
+    )
+  ) as SuccessResponse<MethodOf<Path, "put">>,
 
   patch: async <Path extends keyof RelativePaths>(
     path: Path,
     body?: BodyParams<MethodOf<Path, "patch">>,
     init?: RequestInitTyped,
-  ): Promise<SuccessResponse<MethodOf<Path, "patch">>> => {
-    return (await fetchApi(
+  ): Promise<SuccessResponse<MethodOf<Path, "patch">>> => (
+    await fetchApi(
       buildUrl(path, init),
       {
         method: "PATCH",
@@ -406,42 +469,37 @@ export const api = {
       },
       init?.timeout ?? LONG_TIMEOUT,
       init?.signal,
-    )) as SuccessResponse<MethodOf<Path, "patch">>;
-  },
+    )
+  ) as SuccessResponse<MethodOf<Path, "patch">>,
 
   delete: async <Path extends keyof RelativePaths>(
     path: Path,
     init?: RequestInitTyped,
-  ): Promise<SuccessResponse<MethodOf<Path, "delete">>> => {
-    return (await fetchApi(
+  ): Promise<SuccessResponse<MethodOf<Path, "delete">>> => (
+    await fetchApi(
       buildUrl(path, init),
       { method: "DELETE", headers: init?.headers },
       init?.timeout ?? LONG_TIMEOUT,
       init?.signal,
-    )) as SuccessResponse<MethodOf<Path, "delete">>;
-  },
+    )
+  ) as SuccessResponse<MethodOf<Path, "delete">>,
 
   upload: async <Path extends keyof RelativePaths>(
     path: Path,
     formData: FormData,
     init?: RequestInitTyped,
-  ): Promise<SuccessResponse<MethodOf<Path, "post">>> => {
-    return (await fetchApi(
+  ): Promise<SuccessResponse<MethodOf<Path, "post">>> => (
+    await fetchApi(
       buildUrl(path, init),
       { method: "POST", body: formData, headers: init?.headers },
-      init?.timeout,
+      init?.timeout ?? LONG_TIMEOUT,
       init?.signal,
-    )) as SuccessResponse<MethodOf<Path, "post">>;
-  },
+    )
+  ) as SuccessResponse<MethodOf<Path, "post">>,
 
-  getBlob: async (path: string, init?: RequestInitTyped): Promise<Blob> => {
-    return fetchBlob(
-      buildUrl(path, init),
-      undefined,
-      init?.timeout ?? DEFAULT_TIMEOUT,
-      init?.signal,
-    );
-  },
+  getBlob: async (path: string, init?: RequestInitTyped): Promise<Blob> => (
+    fetchBlob(buildUrl(path, init), undefined, init?.timeout ?? DEFAULT_TIMEOUT, init?.signal)
+  ),
 };
 
-export { components, type paths, type RelativePaths };
+export type { components, paths, RelativePaths };

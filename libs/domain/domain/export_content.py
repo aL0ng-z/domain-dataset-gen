@@ -45,7 +45,15 @@ def validate_export_members(members: list[dict], fmt: str) -> list[dict]:
         else:
             question_field = "question" if "question" in content else "instruction"
             answer_field = "answer" if "answer" in content else "output"
-        invalid = [field for field in (question_field, answer_field) if not isinstance(content.get(field), str) or not content[field].strip()]
+        invalid = [
+            field
+            for field in (question_field, answer_field)
+            if not isinstance(content.get(field), str) or not content[field].strip()
+        ]
+        # ``input`` 是可选的，但一旦提供必须是原样可导出的字符串。否则 messages /
+        # ShareGPT 无法可靠地把它合入用户消息，不能静默丢弃或转成字符串。
+        if "input" in content and not isinstance(content["input"], str):
+            invalid.append("input")
         if invalid:
             issues.append({**issue, "code": "EXPORT_CONTENT_INVALID", "fields": invalid, "reason": "必需字段必须为非空字符串"})
             continue

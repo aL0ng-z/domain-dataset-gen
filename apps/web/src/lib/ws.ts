@@ -1,3 +1,4 @@
+import { ApiErrorException, api, isAbortError } from "./api";
 import { TokenStore, handleAuthFailure, subscribeToTokenChange } from "./auth";
 
 export type WsMessageHandler = (data: unknown) => void;
@@ -9,157 +10,199 @@ export interface WsClient {
   send: (data: unknown) => void;
 }
 
-/** 服务端 WebSocket 关闭码（任务卡 §5.1、§6）。 */
-export const WS_UNAUTHORIZED_CLOSE = 4401; // 认证失败 -> 走 T01 刷新恢复
-export const WS_FORBIDDEN_CLOSE = 4403;    // 无项目权限 -> 停止重连
+export interface WsClientOptions {
+  /** 提供时，建连前以受保护 HTTP access 接口确认当前用户仍可访问项目。 */
+  projectId?: string;
+}
 
-export function createWsClient(url: string): WsClient {
+/** 已建立连接后的服务端关闭码；初次握手失败不依赖这些私有码。 */
+export const WS_UNAUTHORIZED_CLOSE = 4401;
+export const WS_FORBIDDEN_CLOSE = 4403;
+
+export function createWsClient(url: string, options: WsClientOptions = {}): WsClient {
   let ws: WebSocket | null = null;
   let reconnectAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  let intentionalClose = false;
+  let preflightController: AbortController | null = null;
+  let desiredConnection = false;
   let permissionDenied = false;
+  let connectionVersion = 0;
   let unsubscribeTokenChange: (() => void) | null = null;
   const listeners = new Map<string, Set<WsMessageHandler>>();
 
-  const MAX_BACKOFF = 30000;
+  const MAX_BACKOFF = 30_000;
 
-  function getBackoff(): number {
-    const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), MAX_BACKOFF);
-    return delay;
-  }
+  const emit = (message: unknown) => {
+    const event = (message as { event?: string }).event;
+    if (event) listeners.get(event)?.forEach((handler) => handler(message));
+    listeners.get("*")?.forEach((handler) => handler(message));
+  };
 
-  function scheduleReconnect() {
-    if (intentionalClose || permissionDenied) return;
+  const stopReconnectTimer = () => {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+  };
+
+  const cancelPreflight = () => {
+    preflightController?.abort();
+    preflightController = null;
+  };
+
+  const closeSocket = () => {
+    if (!ws) return;
+    const socket = ws;
+    ws = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    socket.close();
+  };
+
+  const getBackoff = () => Math.min(1_000 * 2 ** reconnectAttempt, MAX_BACKOFF);
+
+  const scheduleReconnect = () => {
+    if (!desiredConnection || permissionDenied || reconnectTimer) return;
     const delay = getBackoff();
-    reconnectAttempt++;
+    reconnectAttempt += 1;
     reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
       connect();
     }, delay);
-  }
+  };
 
-  function connect() {
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+  const rejectPermission = () => {
+    permissionDenied = true;
+    stopReconnectTimer();
+    emit({ event: "ws_forbidden", code: WS_FORBIDDEN_CLOSE });
+  };
+
+  const openSocket = (token: string, sessionId: string, version: number) => {
+    if (
+      !desiredConnection ||
+      permissionDenied ||
+      version !== connectionVersion ||
+      TokenStore.getSessionId() !== sessionId
+    ) {
       return;
     }
+    const wsUrl = `${url}?token=${encodeURIComponent(token)}`;
+    const socket = new WebSocket(wsUrl);
+    ws = socket;
 
-    intentionalClose = false;
-
-    // 统一经 TokenStore 读取令牌（任务卡 §6：WebSocket 获取令牌必须经过统一认证模块）。
-    const token = TokenStore.getAccessToken();
-    const wsUrl = token ? `${url}?token=${encodeURIComponent(token)}` : url;
-
-    ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
+    socket.onopen = () => {
+      if (ws !== socket || version !== connectionVersion) return;
       reconnectAttempt = 0;
     };
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (ws !== socket || version !== connectionVersion) return;
       try {
-        const msg = JSON.parse(event.data);
-        const eventType = msg.event || msg.type || "message";
-        const handlers = listeners.get(eventType);
-        if (handlers) {
-          handlers.forEach((h) => h(msg));
-        }
-        // Also notify wildcard listeners
-        const allHandlers = listeners.get("*");
-        if (allHandlers) {
-          allHandlers.forEach((h) => h(msg));
-        }
+        const message = JSON.parse(event.data);
+        emit(message);
       } catch {
-        // non-JSON message, ignore
+        // 非 JSON 消息不属于任务事件协议。
       }
     };
 
-    ws.onclose = (event: CloseEvent) => {
+    socket.onclose = (event: CloseEvent) => {
+      if (ws !== socket || version !== connectionVersion) return;
       ws = null;
-      // 4403：无项目权限 -> 停止重连并提示（任务卡 §6）。
+      if (!desiredConnection) return;
       if (event.code === WS_FORBIDDEN_CLOSE) {
-        permissionDenied = true;
-        listeners.forEach((set) => {
-          set.forEach((h) => h({ event: "ws_forbidden", code: WS_FORBIDDEN_CLOSE }));
-        });
+        rejectPermission();
         return;
       }
-      // 4401：认证失败 -> 触发 T01 统一刷新/退出流程（任务卡 §6）。
       if (event.code === WS_UNAUTHORIZED_CLOSE) {
-        handleAuthFailure();
-        intentionalClose = true;
+        handleAuthFailure(sessionId);
         return;
       }
       scheduleReconnect();
     };
 
-    ws.onerror = () => {
-      ws?.close();
+    socket.onerror = () => {
+      if (ws === socket) socket.close();
     };
-  }
+  };
 
-  /**
-   * 令牌变化处理（任务卡 §6、§11 验收标准 9）：
-   * - 令牌轮换（新 access token）-> 重置权限拒绝状态并关闭旧连接触发重连；
-   * - 令牌被清除（logout）-> 完全断开且不再自动重连。
-   */
-  function handleTokenChange() {
-    if (intentionalClose) return; // 已主动断开（logout）
-    if (TokenStore.getAccessToken()) {
-      const wasDenied = permissionDenied;
-      // 新令牌出现：清除之前的权限拒绝标记，允许重新建立连接。
-      permissionDenied = false;
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        // 关闭会触发 onclose -> scheduleReconnect -> connect() 读取新令牌
-        ws.close();
-      } else if (wasDenied) {
-        // 之前因 4403 停止重连：现在有新令牌，显式重连。
-        connect();
+  const connect = () => {
+    desiredConnection = true;
+    if (!unsubscribeTokenChange) {
+      unsubscribeTokenChange = subscribeToTokenChange(handleTokenChange);
+    }
+    if (ws || preflightController || reconnectTimer || permissionDenied) return;
+
+    const session = TokenStore.getSession();
+    if (!session) return;
+    const version = ++connectionVersion;
+
+    if (!options.projectId) {
+      openSocket(session.access_token, session.session_id, version);
+      return;
+    }
+
+    const controller = new AbortController();
+    preflightController = controller;
+    void api.get("/projects/{pid}/access", {
+      params: { pid: options.projectId },
+      signal: controller.signal,
+    }).then(() => {
+      if (preflightController === controller) preflightController = null;
+      if (controller.signal.aborted || version !== connectionVersion) return;
+      const current = TokenStore.getSession();
+      if (!current || current.session_id !== session.session_id) return;
+      openSocket(current.access_token, current.session_id, version);
+    }).catch((error: unknown) => {
+      if (preflightController === controller) preflightController = null;
+      if (controller.signal.aborted || version !== connectionVersion || isAbortError(error)) return;
+      if (error instanceof ApiErrorException && (error.apiError.status === 401 || error.apiError.status === 403)) {
+        rejectPermission();
+        return;
       }
-    } else {
-      disconnect();
+      scheduleReconnect();
+    });
+  };
+
+  function handleTokenChange() {
+    connectionVersion += 1;
+    cancelPreflight();
+    stopReconnectTimer();
+    closeSocket();
+
+    const session = TokenStore.getSession();
+    if (!session) {
+      desiredConnection = false;
+      return;
     }
+    permissionDenied = false;
+    reconnectAttempt = 0;
+    if (desiredConnection) connect();
   }
 
-  function disconnect() {
-    intentionalClose = true;
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-    if (unsubscribeTokenChange) {
-      unsubscribeTokenChange();
-      unsubscribeTokenChange = null;
-    }
-    if (ws) {
-      ws.close();
-      ws = null;
-    }
-  }
+  const disconnect = () => {
+    desiredConnection = false;
+    connectionVersion += 1;
+    cancelPreflight();
+    stopReconnectTimer();
+    closeSocket();
+    unsubscribeTokenChange?.();
+    unsubscribeTokenChange = null;
+  };
 
-  function subscribe(event: string, handler: WsMessageHandler): () => void {
-    if (!listeners.has(event)) {
-      listeners.set(event, new Set());
-    }
+  const subscribe = (event: string, handler: WsMessageHandler): (() => void) => {
+    if (!listeners.has(event)) listeners.set(event, new Set());
     listeners.get(event)!.add(handler);
     return () => {
-      const set = listeners.get(event);
-      if (set) {
-        set.delete(handler);
-        if (set.size === 0) listeners.delete(event);
-      }
+      const handlers = listeners.get(event);
+      if (!handlers) return;
+      handlers.delete(handler);
+      if (handlers.size === 0) listeners.delete(event);
     };
-  }
+  };
 
-  function send(data: unknown) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(data));
-    }
-  }
-
-  // 客户端被创建即订阅令牌变化（首个 connect 前若令牌已存在也不会误连）
-  if (!unsubscribeTokenChange) {
-    unsubscribeTokenChange = subscribeToTokenChange(handleTokenChange);
-  }
+  const send = (data: unknown) => {
+    if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+  };
 
   return { connect, disconnect, subscribe, send };
 }

@@ -84,6 +84,30 @@ class RetryPreparationRegistry:
 retry_preparation_registry = RetryPreparationRegistry()
 
 
+async def publish_task_event(
+    redis_client: aioredis.Redis | None,
+    task: Task,
+    event: str,
+) -> None:
+    """发布已提交的任务状态提示；Redis 故障不得影响数据库真源。"""
+    if redis_client is None:
+        return
+    message = json.dumps({
+        "event": event,
+        "task_id": str(task.id),
+        "task_type": task.task_type,
+        "status": task.status,
+        "progress": task.progress,
+        "state_version": task.state_version,
+        "attempt_count": task.attempt_count,
+        "event_at": datetime.now(UTC).isoformat(),
+    })
+    import contextlib
+
+    with contextlib.suppress(Exception):
+        await redis_client.publish(f"project:{task.project_id}:tasks", message)
+
+
 async def _prepare_export_retry(db: AsyncSession, source_task: Task, new_task: Task) -> None:
     """让同一 Export 原子指向新 Task；已封存 snapshot 保持不变。"""
     from app.models.export import Export
@@ -225,7 +249,9 @@ class TaskService:
     # ------------------------------------------------------------------
 
     async def get_task(self, task_id: uuid.UUID) -> Task | None:
-        result = await self.db.execute(select(Task).where(Task.id == task_id))
+        result = await self.db.execute(
+            select(Task).where(Task.id == task_id).execution_options(populate_existing=True)
+        )
         return result.scalar_one_or_none()
 
     async def list_tasks(
@@ -271,10 +297,8 @@ class TaskService:
         )
         if not ok:
             return None
-        task = await self.get_task(task_id)
-        if task is not None:
-            await self._publish_event(task, f"task.{task.status}")
-        return task
+        # 调用方必须先提交取消事务，再通过 ``publish_transition`` 通知客户端。
+        return await self.get_task(task_id)
 
     # ------------------------------------------------------------------
     # Retry
@@ -324,8 +348,6 @@ class TaskService:
         )
         if preparer is not None:
             await preparer(self.db, source_task, new_task)
-        if new_task.status == "queued":
-            await self._publish_event(new_task, "task.created")
         return new_task, True
 
     async def _retry_generation(self, source: Task, key: str,
@@ -372,26 +394,11 @@ class TaskService:
     # ------------------------------------------------------------------
 
     async def publish_transition(self, task: Task, event: str) -> None:
+        """发布已提交的状态变更；不得在未提交事务内调用。"""
         await self._publish_event(task, event)
 
     async def _publish_event(self, task: Task, event: str) -> None:
-        if self.redis is None:
-            return
-        message = json.dumps({
-            "event": event,
-            "task_id": str(task.id),
-            "task_type": task.task_type,
-            "status": task.status,
-            "progress": task.progress,
-            "state_version": task.state_version,
-            "attempt_count": task.attempt_count,
-            "event_at": datetime.now(UTC).isoformat(),
-        })
-        # 事件发布失败不阻断业务（Redis 不可用时 REST 仍是真源）。
-        import contextlib
-
-        with contextlib.suppress(Exception):
-            await self.redis.publish(f"project:{task.project_id}:tasks", message)
+        await publish_task_event(self.redis, task, event)
 
 
 def is_terminal_status(status: str) -> bool:

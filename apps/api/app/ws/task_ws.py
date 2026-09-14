@@ -106,35 +106,43 @@ class ConnectionManager:
             return False
 
     async def _broadcast(self, project_id: str, message: str):
-        if project_id not in self.active_connections:
+        connections = self.active_connections.get(project_id)
+        if not connections:
             return
         # 撤权/停用的连接：先关闭再发送（任务卡 §5.3、§11 验收标准 8）。
-        revoked = []
-        live = {}
-        for ws, user_id in list(self.active_connections[project_id].items()):
+        # 只以快照决定本轮校验对象。校验期间可能有新连接加入，绝不能把整个连接
+        # 集合替换为旧快照过滤后的副本。
+        snapshot = list(connections.items())
+        revoked: list[tuple[WebSocket, str]] = []
+        for ws, user_id in snapshot:
             if await self._verify_ws_access(user_id, project_id):
-                live[ws] = user_id
+                continue
             else:
-                revoked.append(ws)
-
-        self.active_connections[project_id] = live
+                revoked.append((ws, user_id))
 
         # 先关闭被撤权的连接。
-        for ws in revoked:
+        for ws, user_id in revoked:
+            current = self.active_connections.get(project_id)
+            # 连接可能已断开，或同一轮校验期间集合发生变动；只删确认无权限的原连接。
+            if current is None or current.get(ws) != user_id:
+                continue
+            current.pop(ws, None)
             with contextlib.suppress(Exception):
                 await ws.close(code=4403)
 
-        if not live:
-            return
-
-        dead = set()
-        for ws in live:
+        dead: list[tuple[WebSocket, str]] = []
+        for ws, user_id in snapshot:
+            current = self.active_connections.get(project_id)
+            if current is None or current.get(ws) != user_id:
+                continue
             try:
                 await ws.send_text(message)
             except Exception:
-                dead.add(ws)
-        for ws in dead:
-            self.active_connections[project_id].pop(ws, None)
+                dead.append((ws, user_id))
+        for ws, user_id in dead:
+            current = self.active_connections.get(project_id)
+            if current is not None and current.get(ws) == user_id:
+                current.pop(ws, None)
 
 
 manager = ConnectionManager()

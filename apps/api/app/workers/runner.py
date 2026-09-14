@@ -15,6 +15,7 @@ import dataclasses
 import logging
 import os
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -94,6 +95,9 @@ class _Outcome:
     requeue_after: int | None = None
 
 
+TaskEventPublisher = Callable[[Task, str], Awaitable[None]]
+
+
 class TaskRunner:
     """轮询队列、分派 handler、管理 attempt 生命周期的 runner。"""
 
@@ -103,14 +107,25 @@ class TaskRunner:
         registry: HandlerRegistry,
         *,
         worker_id: str | None = None,
+        event_publisher: TaskEventPublisher | None = None,
     ):
         self.session_factory = session_factory
         self.registry = registry
         self.worker_id = worker_id or f"runner-{uuid.uuid4().hex[:8]}"
+        self._event_publisher = event_publisher
         self._stop = asyncio.Event()
 
     def stop(self) -> None:
         self._stop.set()
+
+    async def _publish_committed(self, task: Task, event: str) -> None:
+        """发布已提交的状态提示；失败只记录日志，REST 仍是状态真源。"""
+        if self._event_publisher is None:
+            return
+        try:
+            await self._event_publisher(task, event)
+        except Exception:  # noqa: BLE001 - 通知不能影响已提交任务状态
+            logger.exception("task %s event publish failed: %s", task.id, event)
 
     async def run(self) -> None:
         """One execution slot, with lease recovery independent from handler duration."""
@@ -157,6 +172,8 @@ class TaskRunner:
                 await session.rollback()
                 return
         for task in tasks:
+            await self._publish_committed(task, "task.processing")
+        for task in tasks:
             await self._execute_one(task)
 
     async def _execute_one(self, task: Task) -> None:
@@ -187,7 +204,10 @@ class TaskRunner:
                         queue, task, run_token, TaskErrorCode.UNSUPPORTED_TASK_PAYLOAD,
                         f"未知 handler/version: {task.handler}:v{task.payload_version or 1}",
                     )
+                    await session.refresh(task)
                     await session.commit()
+                    if task.status == "failed":
+                        await self._publish_committed(task, "task.failed")
                     return
 
                 # 保存发布 CAS 所需的 claim 版本，然后释放控制面行锁。后续业务写入
@@ -262,7 +282,10 @@ class TaskRunner:
                             status="completed",
                         )
                         # 业务写入 + 完成转换原子提交。
+                        await session.flush()
+                        await session.refresh(task)
                         await session.commit()
+                        await self._publish_committed(task, "task.completed")
                     else:
                         await session.rollback()
                     return
@@ -281,7 +304,10 @@ class TaskRunner:
                             task_id=task.id, run_token=run_token, attempt_no=attempt_no,
                             status="completed",
                         )
+                        await session.flush()
+                        await session.refresh(task)
                         await session.commit()
+                        await self._publish_committed(task, "task.queued")
                     else:
                         await session.rollback()
                     return
@@ -358,7 +384,12 @@ class TaskRunner:
                 if (terminal_hook is not None and final_status in ("failed", "cancelled")
                         and lifecycle_registry.resolve(current.handler, current.payload_version or 1) is None):
                     await terminal_hook(session, final_status, outcome.error)
+                await session.flush()
+                await session.refresh(current)
                 await session.commit()
+                if final_status != "abandoned":
+                    event_status = "queued" if final_status == "requeued" else final_status
+                    await self._publish_committed(current, f"task.{event_status}")
             except Exception:  # noqa: BLE001
                 logger.exception("task %s terminal transaction failed", task_id)
                 await session.rollback()
@@ -424,8 +455,17 @@ class TaskRunner:
         async with self.session_factory() as session:
             queue = TaskQueue(session)
             try:
-                stats = await queue.reap_expired()
+                transitions: list[tuple[uuid.UUID, str]] = []
+                stats = await queue.reap_expired(transition_log=transitions)
                 await session.commit()
+                for task_id, status in transitions:
+                    task = await session.scalar(
+                        select(Task)
+                        .where(Task.id == task_id)
+                        .execution_options(populate_existing=True)
+                    )
+                    if task is not None:
+                        await self._publish_committed(task, f"task.{status}")
                 if any(stats.values()):
                     logger.info("reaper 回收：%s", stats)
             except Exception:  # noqa: BLE001
@@ -440,9 +480,11 @@ class TaskRunner:
 
 async def _main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+    import redis.asyncio as aioredis
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from app.config import settings
+    from app.services.task_service import publish_task_event
 
     engine = create_async_engine(settings.database_url)
     session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -453,10 +495,16 @@ async def _main() -> None:
 
     register_all_handlers()
 
-    runner = TaskRunner(session_factory, registry)
+    redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+
+    async def publish_event(task: Task, event: str) -> None:
+        await publish_task_event(redis, task, event)
+
+    runner = TaskRunner(session_factory, registry, event_publisher=publish_event)
     try:
         await runner.run()
     finally:
+        await redis.aclose()
         await engine.dispose()
 
 

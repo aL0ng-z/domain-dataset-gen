@@ -173,7 +173,8 @@ class HybridHeadingRecursiveChunker(BaseChunker):
         整个集合失败），不静默截断发布（任务卡 §4.2）。
         """
         chunks: list[ChunkData] = []
-        for i, (path, content) in enumerate(raw_chunks):
+        for i, (path, source_content) in enumerate(raw_chunks):
+            content = source_content
             if i > 0 and config.overlap_tokens > 0:
                 prev_content = raw_chunks[i - 1][1]
                 prev_tokens = self._encoder.encode(prev_content)
@@ -183,10 +184,6 @@ class HybridHeadingRecursiveChunker(BaseChunker):
                     content = f"{OVERLAP_SEPARATOR}{overlap_text}\n\n{content}"
 
             token_count = self._count_tokens(content)
-
-            # Extract page numbers
-            page_pattern = re.compile(r"(?:page|Page|PAGE)\s*(\d+)", re.IGNORECASE)
-            pages = sorted(set(int(m.group(1)) for m in page_pattern.finditer(content)))
 
             # 最终校验（兜底）：overlap/separator/joiner 已在正文预算中预留，
             # 任何 token_count > max_tokens 都使整个集合失败，不静默截断（任务卡 §4.2）。
@@ -200,8 +197,8 @@ class HybridHeadingRecursiveChunker(BaseChunker):
                 ordinal=i,
                 heading_path=path,
                 content=content,
-                source_pages=pages,
                 token_count=token_count,
+                source_content=source_content,
             ))
 
         return chunks

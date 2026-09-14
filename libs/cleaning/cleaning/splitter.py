@@ -48,9 +48,6 @@ def _split_by_pages(
     if sections:
         return sections
 
-    return _sections_from_page_markers(raw_markdown)
-
-
 def _sections_from_structured_pages(structured_json: dict[str, Any] | None) -> list[SectionData]:
     pages = structured_json.get("pages") if isinstance(structured_json, dict) else None
     if not isinstance(pages, list):
@@ -104,61 +101,6 @@ def _sections_from_markdown_ranges(
     return sections
 
 
-def _sections_from_page_markers(raw_markdown: str) -> list[SectionData]:
-    start_marker = re.compile(
-        r"^\s*(?:<!--\s*(?:page|Page)\s*[:= ]\s*(\d+)\s*-->|#{1,6}\s*(?:第\s*)?(\d+)\s*页)\s*$",
-        re.MULTILINE,
-    )
-    matches = list(start_marker.finditer(raw_markdown))
-    if matches:
-        sections: list[SectionData] = []
-        for index, match in enumerate(matches):
-            page_number = int(match.group(1) or match.group(2) or index + 1)
-            start = match.end()
-            end = matches[index + 1].start() if index + 1 < len(matches) else len(raw_markdown)
-            sections.append(
-                SectionData(
-                    ordinal=index,
-                    heading_path=f"第 {page_number} 页",
-                    raw_markdown=raw_markdown[start:end].strip(),
-                    source_pages=[page_number],
-                )
-            )
-        return sections
-
-    end_marker = re.compile(r"^\s*---\s*end of page=(\d+)\s*---\s*$", re.MULTILINE)
-    matches = list(end_marker.finditer(raw_markdown))
-    if not matches:
-        return []
-
-    sections = []
-    start = 0
-    for index, match in enumerate(matches):
-        raw_page = int(match.group(1))
-        page_number = raw_page + 1 if raw_page == index else raw_page
-        sections.append(
-            SectionData(
-                ordinal=index,
-                heading_path=f"第 {page_number} 页",
-                raw_markdown=raw_markdown[start:match.start()].strip(),
-                source_pages=[page_number],
-            )
-        )
-        start = match.end()
-    tail = raw_markdown[start:].strip()
-    if tail:
-        page_number = len(sections) + 1
-        sections.append(
-            SectionData(
-                ordinal=len(sections),
-                heading_path=f"第 {page_number} 页",
-                raw_markdown=tail,
-                source_pages=[page_number],
-            )
-        )
-    return sections
-
-
 def _page_markdown(page: dict[str, Any]) -> str | None:
     markdown = page.get("markdown")
     if isinstance(markdown, str):
@@ -203,13 +145,14 @@ def _split_by_heading_level(raw_markdown: str, level: int) -> list[SectionData]:
         end = matches[i + 1].start() if i + 1 < len(matches) else len(raw_markdown)
         heading_text = match.group(2).strip()
         section_text = raw_markdown[start:end].strip()
-        page_nums = _extract_page_numbers(section_text)
-
         sections.append(SectionData(
             ordinal=i,
             heading_path=heading_text,
             raw_markdown=section_text,
-            source_pages=page_nums,
+            # Heading-only fallback is not a physical page mapping. Keeping it empty
+            # makes the downstream provenance explicitly unknown instead of guessing
+            # from prose such as "Page 888".
+            source_pages=[],
         ))
 
     # Handle content before first heading
@@ -221,7 +164,7 @@ def _split_by_heading_level(raw_markdown: str, level: int) -> list[SectionData]:
                 ordinal=-1,
                 heading_path="前言",
                 raw_markdown=preamble,
-                source_pages=_extract_page_numbers(preamble),
+                source_pages=[],
             ),
         )
 
@@ -230,9 +173,3 @@ def _split_by_heading_level(raw_markdown: str, level: int) -> list[SectionData]:
         section.ordinal = i
 
     return sections
-
-
-def _extract_page_numbers(text: str) -> list[int]:
-    page_pattern = re.compile(r"(?:page|Page|PAGE)\s*(\d+)", re.IGNORECASE)
-    pages = sorted(set(int(m.group(1)) for m in page_pattern.finditer(text)))
-    return pages

@@ -28,6 +28,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from app.models.chunk import Chunk
 from app.models.curated import CuratedItem, CuratedRevision, EvidenceLink
 from app.models.generation import Candidate, GenerationRun
+from app.models.generation_batch import GenerationBatch
 from app.models.review_record import ReviewRecord
 from domain.canonical import (
     CURATED_APPROVAL_CJSON_VERSION,
@@ -133,12 +134,29 @@ async def _make_doc_chain(db_session, project_id, uploaded_by, *, content: str =
 
 
 async def _make_candidate(db_session, res, *, content=None, status="ai_generated"):
+    batch = GenerationBatch(
+        document_id=res["doc"].id,
+        chunk_set_id=res["chunk"].chunk_set_id,
+        model_config_id=res["model"].id,
+        prompt_template_id=res["tpl"].id,
+        selected_chunk_ids=[str(res["chunk"].id)],
+        status="completed",
+        total_chunks=1,
+        completed_chunks=1,
+        created_by=res["doc"].uploaded_by,
+        is_legacy=True,
+        provenance_status="legacy_unavailable",
+        provenance_error_code="LEGACY_TEST_FIXTURE",
+    )
+    db_session.add(batch)
+    await db_session.flush()
     run = GenerationRun(
         chunk_id=res["chunk"].id,
         prompt_template_id=res["tpl"].id,
         model_config_id=res["model"].id,
         context_mode="single_chunk",
         status="completed",
+        generation_batch_id=batch.id,
         is_legacy=True,
         provenance_status="legacy_unavailable",
         provenance_error_code="LEGACY_TEST_FIXTURE",
@@ -151,6 +169,7 @@ async def _make_candidate(db_session, res, *, content=None, status="ai_generated
         content=content or {"question": "什么是压比?", "answer": "压比是出口与进口压力之比"},
         candidate_type="qa_generation",
         status=status,
+        source_generation_batch_id=batch.id,
     )
     db_session.add(candidate)
     await db_session.flush()
@@ -175,13 +194,13 @@ async def _review_and_promote(client, username: str, candidate_id, res, *, verdi
     r = await client.post(
         f"/api/candidates/{candidate_id}/review",
         headers=headers,
-        json={"verdict": verdict, "evidence_spans": [span], "reject_reason": None},
+        json={"expected_revision": 1, "verdict": verdict, "evidence_spans": [span], "reject_reason": None},
     )
     assert r.status_code == 200, r.text
     p = await client.post(
         f"/api/candidates/{candidate_id}/promote-to-curated",
         headers=headers,
-        json={},
+        json={"expected_revision": 1},
     )
     assert p.status_code == 201, p.text
     return p.json()["id"]
@@ -232,7 +251,7 @@ class TestJsonObjectContract:
         new_content = {"question": "压比?", "answer": "压比是压力之比", "tags": ["核心"]}
         r = await client.patch(
             f"/api/candidates/{candidate.id}", headers=headers,
-            json={"content": new_content},
+            json={"content": new_content, "expected_revision": candidate.content_revision},
         )
         assert r.status_code == 200, r.text
         assert r.json()["content"] == new_content
@@ -254,7 +273,7 @@ class TestReviewValidation:
         candidate, _ = await _make_candidate(db_session, res)
         r = await client.post(
             f"/api/candidates/{candidate.id}/review", headers=headers,
-            json={"verdict": "supported", "evidence_spans": [], "reject_reason": None},
+            json={"expected_revision": candidate.content_revision, "verdict": "supported", "evidence_spans": [], "reject_reason": None},
         )
         assert r.status_code == 409, r.text
         assert r.json()["code"] == "CANDIDATE_EVIDENCE_REQUIRED"
@@ -265,7 +284,7 @@ class TestReviewValidation:
         candidate, _ = await _make_candidate(db_session, res)
         r = await client.post(
             f"/api/candidates/{candidate.id}/review", headers=headers,
-            json={"verdict": "unsupported", "evidence_spans": None, "reject_reason": None},
+            json={"expected_revision": candidate.content_revision, "verdict": "unsupported", "evidence_spans": None, "reject_reason": None},
         )
         assert r.status_code == 422, r.text
 
@@ -282,7 +301,7 @@ class TestReviewValidation:
         }
         r = await client.post(
             f"/api/candidates/{candidate.id}/review", headers=headers,
-            json={"verdict": "supported", "evidence_spans": [bad_span], "reject_reason": None},
+            json={"expected_revision": candidate.content_revision, "verdict": "supported", "evidence_spans": [bad_span], "reject_reason": None},
         )
         assert r.status_code == 422, r.text
         # Candidate 状态不变。
@@ -300,7 +319,7 @@ class TestReviewValidation:
         span["quote_text"] = "错误原文"
         r = await client.post(
             f"/api/candidates/{candidate.id}/review", headers=headers,
-            json={"verdict": "supported", "evidence_spans": [span], "reject_reason": None},
+            json={"expected_revision": candidate.content_revision, "verdict": "supported", "evidence_spans": [span], "reject_reason": None},
         )
         assert r.status_code == 422, r.text
 
@@ -312,9 +331,34 @@ class TestReviewValidation:
         span = _span(res_b["chunk"].id, res_b["chunk"].content, "压比是出口")
         r = await client.post(
             f"/api/candidates/{candidate.id}/review", headers=headers,
-            json={"verdict": "supported", "evidence_spans": [span], "reject_reason": None},
+            json={"expected_revision": candidate.content_revision, "verdict": "supported", "evidence_spans": [span], "reject_reason": None},
         )
         assert r.status_code == 422, r.text
+
+    async def test_same_project_chunk_outside_frozen_batch_422(self, client, org, db_session):
+        """证据不能借用同项目但未进入该 Candidate 冻结选择集的 Chunk。"""
+        headers = await _login(client, "reviewer_user")
+        res = await _make_doc_chain(db_session, org["projects"]["a"].id, org["users"]["editor"].id)
+        other = await _make_doc_chain(
+            db_session,
+            org["projects"]["a"].id,
+            org["users"]["editor"].id,
+            content="同项目另一批次的证据正文",
+        )
+        candidate, _ = await _make_candidate(db_session, res)
+        span = _span(other["chunk"].id, other["chunk"].content, "证据正文")
+        r = await client.post(
+            f"/api/candidates/{candidate.id}/review",
+            headers=headers,
+            json={
+                "expected_revision": candidate.content_revision,
+                "verdict": "supported",
+                "evidence_spans": [span],
+                "reject_reason": None,
+            },
+        )
+        assert r.status_code == 422, r.text
+        assert r.json()["code"] == "VALIDATION_ERROR"
 
     async def test_unicode_offset_codepoint(self, client, org, db_session):
         """emoji 是 surrogate pair（UTF-16 2 单元）；offset 按 Unicode code point 计数。"""
@@ -326,7 +370,7 @@ class TestReviewValidation:
         span = {"chunk_id": str(res["chunk"].id), "start_char": 2, "end_char": 5, "quote_text": "🌟测试"}
         r = await client.post(
             f"/api/candidates/{candidate.id}/review", headers=headers,
-            json={"verdict": "supported", "evidence_spans": [span], "reject_reason": None},
+            json={"expected_revision": candidate.content_revision, "verdict": "supported", "evidence_spans": [span], "reject_reason": None},
         )
         assert r.status_code == 200, r.text
         fresh = (
@@ -341,6 +385,37 @@ class TestReviewValidation:
 
 
 class TestReviewAtomicity:
+    async def test_stale_review_revision_conflict(self, client, org, db_session):
+        """编辑提交后，基于旧版本的审核不得覆盖新内容。"""
+        editor_headers = await _login(client, "editor_user")
+        reviewer_headers = await _login(client, "reviewer_user")
+        res = await _make_doc_chain(db_session, org["projects"]["a"].id, org["users"]["editor"].id)
+        candidate, _ = await _make_candidate(db_session, res)
+        old_revision = candidate.content_revision
+        edited = await client.patch(
+            f"/api/candidates/{candidate.id}",
+            headers=editor_headers,
+            json={
+                "content": {"question": "压比?", "answer": "编辑后的答案"},
+                "expected_revision": old_revision,
+            },
+        )
+        assert edited.status_code == 200, edited.text
+        span = _span(res["chunk"].id, res["chunk"].content, "压比是出口")
+        stale_review = await client.post(
+            f"/api/candidates/{candidate.id}/review",
+            headers=reviewer_headers,
+            json={
+                "expected_revision": old_revision,
+                "verdict": "supported",
+                "evidence_spans": [span],
+                "reject_reason": None,
+            },
+        )
+        assert stale_review.status_code == 409, stale_review.text
+        assert stale_review.json()["code"] == "CANDIDATE_REVISION_CONFLICT"
+        assert stale_review.json()["context"]["content_revision"] == old_revision + 1
+
     async def test_legal_review_writes_all_fields_and_record(self, client, org, db_session):
         headers = await _login(client, "reviewer_user")
         res = await _make_doc_chain(db_session, org["projects"]["a"].id, org["users"]["editor"].id)
@@ -348,7 +423,7 @@ class TestReviewAtomicity:
         span = _span(res["chunk"].id, res["chunk"].content, "压比是出口")
         r = await client.post(
             f"/api/candidates/{candidate.id}/review", headers=headers,
-            json={"verdict": "supported", "evidence_spans": [span], "reject_reason": None},
+            json={"expected_revision": candidate.content_revision, "verdict": "supported", "evidence_spans": [span], "reject_reason": None},
         )
         assert r.status_code == 200, r.text
         body = r.json()
@@ -377,7 +452,7 @@ class TestReviewAtomicity:
         # 乱序 + 重复。
         r = await client.post(
             f"/api/candidates/{candidate.id}/review", headers=headers,
-            json={"verdict": "supported", "evidence_spans": [s2, s1, s1], "reject_reason": None},
+            json={"expected_revision": candidate.content_revision, "verdict": "supported", "evidence_spans": [s2, s1, s1], "reject_reason": None},
         )
         assert r.status_code == 200, r.text
         spans = r.json()["review_evidence_spans"]["spans"]
@@ -411,6 +486,7 @@ class TestReviewAtomicity:
                 candidate_id=candidate_id,
                 reviewer_id=org["users"]["reviewer"].id,
                 verdict="supported",
+                expected_revision=1,
                 evidence_spans=review_spans,
             )
         monkeypatch.undo()
@@ -441,11 +517,12 @@ class TestPromote:
         span = _span(res["chunk"].id, res["chunk"].content, "压比是出口")
         r = await client.post(
             f"/api/candidates/{candidate.id}/review", headers=headers,
-            json={"verdict": "supported", "evidence_spans": [span], "reject_reason": None},
+            json={"expected_revision": candidate.content_revision, "verdict": "supported", "evidence_spans": [span], "reject_reason": None},
         )
         assert r.status_code == 200, r.text
         p = await client.post(
-            f"/api/candidates/{candidate.id}/promote-to-curated", headers=headers, json={},
+            f"/api/candidates/{candidate.id}/promote-to-curated", headers=headers,
+            json={"expected_revision": candidate.content_revision},
         )
         assert p.status_code == 201, p.text
         item = p.json()
@@ -483,7 +560,8 @@ class TestPromote:
         item_id = await _review_and_promote(client, "reviewer_user", candidate.id, res)
         # 重复提升 -> 409 + context item id。
         p2 = await client.post(
-            f"/api/candidates/{candidate.id}/promote-to-curated", headers=headers, json={},
+            f"/api/candidates/{candidate.id}/promote-to-curated", headers=headers,
+            json={"expected_revision": candidate.content_revision},
         )
         assert p2.status_code == 409, p2.text
         assert p2.json()["code"] == "CANDIDATE_ALREADY_PROMOTED"
@@ -512,6 +590,7 @@ class TestPromote:
                 candidate_id=candidate.id,
                 reviewer_id=org["users"]["reviewer"].id,
                 verdict="supported",
+                expected_revision=1,
                 evidence_spans=[{
                     "chunk_id": str(res["chunk"].id),
                     "start_char": span["start_char"],
@@ -532,7 +611,11 @@ class TestPromote:
             async with _test_session_factory() as session:
                 service = CandidateService(session)
                 try:
-                    item = await service.promote_to_curated(candidate.id, org["users"]["reviewer"].id)
+                    item = await service.promote_to_curated(
+                        candidate.id,
+                        org["users"]["reviewer"].id,
+                        expected_revision=1,
+                    )
                     await session.commit()
                     return "201", item.id
                 except CandidateAlreadyPromotedError:
@@ -563,7 +646,8 @@ class TestPromote:
         res = await _make_doc_chain(db_session, org["projects"]["a"].id, org["users"]["editor"].id)
         candidate, _ = await _make_candidate(db_session, res, status="ai_generated")
         p = await client.post(
-            f"/api/candidates/{candidate.id}/promote-to-curated", headers=headers, json={},
+            f"/api/candidates/{candidate.id}/promote-to-curated", headers=headers,
+            json={"expected_revision": candidate.content_revision},
         )
         assert p.status_code == 409, p.text
         assert p.json()["code"] == "CANDIDATE_REVIEW_STATE_CONFLICT"
@@ -592,7 +676,7 @@ class TestCuratedGate:
         candidate, _ = await _make_candidate(db_session, res)
         r = await client.post(
             f"/api/candidates/{candidate.id}/review", headers=headers,
-            json={"verdict": "supported", "evidence_spans": [], "reject_reason": None},
+            json={"expected_revision": candidate.content_revision, "verdict": "supported", "evidence_spans": [], "reject_reason": None},
         )
         assert r.status_code == 403, r.text
 

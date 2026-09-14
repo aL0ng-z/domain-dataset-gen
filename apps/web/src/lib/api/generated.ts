@@ -2249,6 +2249,14 @@ export interface components {
              */
             user_id: string;
         };
+        /**
+         * CandidatePromote
+         * @description 提升请求必须绑定审核时读取的内容版本。
+         */
+        CandidatePromote: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
         /** CandidateResponse */
         CandidateResponse: {
             /** Candidate Type */
@@ -2262,6 +2270,8 @@ export interface components {
             content: {
                 [key: string]: unknown;
             };
+            /** Content Revision */
+            content_revision: number;
             /**
              * Created At
              * Format: date-time
@@ -2287,6 +2297,8 @@ export interface components {
             review_verdict: string | null;
             /** Reviewed By */
             reviewed_by: string | null;
+            /** Reviewed Content Revision */
+            reviewed_content_revision: number | null;
             /** Status */
             status: string;
             /**
@@ -2303,6 +2315,8 @@ export interface components {
         CandidateReview: {
             /** Evidence Spans */
             evidence_spans?: components["schemas"]["EvidenceSpan"][] | null;
+            /** Expected Revision */
+            expected_revision: number;
             /** Reject Reason */
             reject_reason?: string | null;
             /** Verdict */
@@ -2320,6 +2334,8 @@ export interface components {
             content?: {
                 [key: string]: unknown;
             } | null;
+            /** Expected Revision */
+            expected_revision: number;
         };
         /** ChunkProfileCreate */
         ChunkProfileCreate: {
@@ -2655,6 +2671,10 @@ export interface components {
             section_count: number;
             /** Source Cleaning Job Id */
             source_cleaning_job_id: string | null;
+            /** Source Intervals */
+            source_intervals: {
+                [key: string]: unknown;
+            }[] | null;
             /** Source Revision Map */
             source_revision_map: {
                 [key: string]: unknown;
@@ -2705,6 +2725,10 @@ export interface components {
             section_count: number;
             /** Source Cleaning Job Id */
             source_cleaning_job_id: string | null;
+            /** Source Intervals */
+            source_intervals: {
+                [key: string]: unknown;
+            }[] | null;
             /** Source Revision Sha256 */
             source_revision_sha256: string | null;
             /** Status */
@@ -3165,7 +3189,7 @@ export interface components {
              * @description 稳定大写 snake case 业务错误码，前端按 code 分支
              * @enum {string}
              */
-            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_NOT_READY" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE" | "IDEMPOTENCY_KEY_REUSED" | "CHUNK_RUN_IN_PROGRESS" | "CHUNK_SET_IMMUTABLE" | "GENERATION_CONFIG_NOT_FOUND" | "GENERATION_SOURCE_NOT_FOUND" | "GENERATION_CONFIG_UNAVAILABLE" | "GENERATION_SNAPSHOT_UNSAFE" | "GENERATION_RENDERER_UNAVAILABLE" | "GENERATION_SOURCE_NOT_READY" | "GENERATION_IN_PROGRESS" | "GENERATION_NOT_RETRYABLE" | "GENERATION_RETRY_EXISTS" | "GENERATION_PROVENANCE_INVALID" | "CANDIDATE_REVIEW_STATE_CONFLICT" | "CANDIDATE_EVIDENCE_REQUIRED" | "CANDIDATE_ALREADY_PROMOTED" | "CURATED_REVISION_CONFLICT" | "CURATED_APPROVAL_GATE_FAILED" | "CURATED_REVIEW_STATE_CONFLICT" | "COMPOSITION_NOT_DRAFT" | "COMPOSITION_ITEM_INELIGIBLE" | "COMPOSITION_MEMBER_EXISTS" | "COMPOSITION_REVISION_CONFLICT" | "COMPOSITION_FINALIZE_GATE_FAILED" | "COMPOSITION_HASH_INVALID" | "EXPORT_SOURCE_NOT_FINALIZED" | "EXPORT_REVISION_CONFLICT" | "EXPORT_IMMUTABLE" | "EXPORT_INTEGRITY_ERROR" | "EXPORT_PROVENANCE_GAP" | "EXPORT_FORMAT_INCOMPATIBLE" | "EXPORT_CONTENT_INVALID";
+            code: "AUTH_REQUIRED" | "PERMISSION_DENIED" | "NOT_FOUND" | "CONFLICT" | "BAD_REQUEST" | "PAYLOAD_TOO_LARGE" | "VALIDATION_ERROR" | "INTERNAL_ERROR" | "SECTION_LEASE_HELD" | "SECTION_LEASE_LOST" | "SECTION_VERSION_CONFLICT" | "CLEAN_SOURCE_CHANGED" | "CLEAN_VERSION_NOT_READY" | "CLEAN_VERSION_REVIEW_CONFLICT" | "CLEAN_VERSION_STALE" | "IDEMPOTENCY_KEY_REUSED" | "CHUNK_RUN_IN_PROGRESS" | "CHUNK_SET_IMMUTABLE" | "GENERATION_CONFIG_NOT_FOUND" | "GENERATION_SOURCE_NOT_FOUND" | "GENERATION_CONFIG_UNAVAILABLE" | "GENERATION_SNAPSHOT_UNSAFE" | "GENERATION_RENDERER_UNAVAILABLE" | "GENERATION_SOURCE_NOT_READY" | "GENERATION_IN_PROGRESS" | "GENERATION_NOT_RETRYABLE" | "GENERATION_RETRY_EXISTS" | "GENERATION_PROVENANCE_INVALID" | "CANDIDATE_REVIEW_STATE_CONFLICT" | "CANDIDATE_REVISION_CONFLICT" | "CANDIDATE_EVIDENCE_REQUIRED" | "CANDIDATE_ALREADY_PROMOTED" | "DOCUMENT_IN_USE" | "CURATED_REVISION_CONFLICT" | "CURATED_APPROVAL_GATE_FAILED" | "CURATED_REVIEW_STATE_CONFLICT" | "COMPOSITION_NOT_DRAFT" | "COMPOSITION_ITEM_INELIGIBLE" | "COMPOSITION_MEMBER_EXISTS" | "COMPOSITION_REVISION_CONFLICT" | "COMPOSITION_FINALIZE_GATE_FAILED" | "COMPOSITION_HASH_INVALID" | "EXPORT_SOURCE_NOT_FINALIZED" | "EXPORT_REVISION_CONFLICT" | "EXPORT_IMMUTABLE" | "EXPORT_INTEGRITY_ERROR" | "EXPORT_PROVENANCE_GAP" | "EXPORT_FORMAT_INCOMPATIBLE" | "EXPORT_CONTENT_INVALID";
             /**
              * Context
              * @description 仅含经 schema 声明的非敏感结构；允许为 null
@@ -5359,6 +5383,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description 冲突 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description 请求参数校验失败 */
             422: {
                 headers: {
@@ -5517,7 +5550,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CandidatePromote"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             201: {

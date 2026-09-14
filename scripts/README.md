@@ -12,6 +12,7 @@
 | 只读审计 | `data-ownership-audit.py`、`clean_version_audit.py`、`composition_audit.py` | 发布前或迁移前执行；只读检查孤儿、跨项目引用、重复版本和 hash 一致性。 |
 | ParserProfile 迁移 | `migrate_parser_profiles.py` | 受控迁移入口；优先使用 `--dry-run` 和 `--check`，无参数会在单事务中写数据库。 |
 | 导出 orphan | `export_orphan_cleanup.py` | 长期运维入口；默认 dry-run，默认保留 24 小时。只有同时给出 `--apply --confirm-bucket <精确桶名>` 才删除未被 seal 引用、且不属于活跃 Export 的精确对象版本。 |
+| 开发处理重置 | `reset_processing_data.py` | 默认 dry-run；保留账号、项目、配置、提示词版本和原始 PDF，清空派生记录并重置 Documents。执行需同时给出 `--apply --confirm-database <当前库> --confirm-outputs-bucket <当前输出桶> --acknowledge-services-stopped`；仅在完整开发重置时额外传 `--purge-output-bucket` 清空输出桶全部对象版本。 |
 | 本地解析器 | `mineru_local_service.py`、`paddleocr_local_service.py`、`test_mineru_local.py` | 本地模型安装、配置、服务和冒烟验证；模型与验证结果属于本机资产，不随仓库清理。 |
 | 初始化 | `init_seed.py` | 开发环境种子数据写入；不得对生产环境随意执行。 |
 

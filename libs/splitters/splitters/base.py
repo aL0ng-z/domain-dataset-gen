@@ -18,6 +18,9 @@ class ChunkData:
     content: str
     source_pages: list[int] = field(default_factory=list)
     token_count: int = 0
+    # 未加 overlap 前的正文。worker 用它在冻结的 merged_markdown 中定位真实来源区间；
+    # 不写入数据库，也不影响输出内容或 canonical hash。
+    source_content: str | None = None
 
 
 class BaseChunker(ABC):

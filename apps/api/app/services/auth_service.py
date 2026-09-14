@@ -2,7 +2,8 @@ import logging
 
 from jose import JWTError
 from passlib.context import CryptContext
-from sqlalchemy import select
+from sqlalchemy import exists, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.jwt import (
@@ -24,11 +25,12 @@ class AuthService:
         self.db = db
 
     async def register(self, username: str, email: str, password: str, role: str = "editor") -> User:
-        # Check for existing user
-        result = await self.db.execute(
-            select(User).where((User.username == username) | (User.email == email))
+        # 这里只关心是否存在。不能用 scalar_one_or_none：用户名和邮箱分别命中
+        # 两个用户时会返回两行，进而泄漏为 500。
+        already_exists = await self.db.scalar(
+            select(exists().where((User.username == username) | (User.email == email)))
         )
-        if result.scalar_one_or_none():
+        if already_exists:
             raise ValueError("用户名或邮箱已存在")
 
         user = User(
@@ -37,8 +39,17 @@ class AuthService:
             password_hash=pwd_context.hash(password),
             role=role,
         )
-        self.db.add(user)
-        await self.db.flush()
+        try:
+            # 唯一约束是并发注册的最终裁决。使用 savepoint 保留当前请求会话，
+            # 让冲突仍以普通业务错误返回。
+            async with self.db.begin_nested():
+                self.db.add(user)
+                await self.db.flush()
+        except IntegrityError as exc:
+            sqlstate = getattr(exc.orig, "sqlstate", None)
+            if sqlstate == "23505":
+                raise ValueError("用户名或邮箱已存在") from None
+            raise
         await self.db.refresh(user)
         return user
 

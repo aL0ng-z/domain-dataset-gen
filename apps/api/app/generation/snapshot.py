@@ -162,7 +162,7 @@ def _filter_extra_params(extra_params: dict[str, Any] | None) -> dict[str, Any]:
     return cleaned
 
 
-def build_prompt_template_snapshot(template) -> dict[str, Any]:
+def build_prompt_template_snapshot(template, *, output_schema: dict[str, Any] | None = None) -> dict[str, Any]:
     """从 PromptTemplate ORM 构建非秘密快照。"""
     snapshot = {
         "template_id": str(template.id),
@@ -172,7 +172,9 @@ def build_prompt_template_snapshot(template) -> dict[str, Any]:
         "system_prompt": str(template.system_prompt),
         "user_prompt_template": str(template.user_prompt_template),
         "input_schema": template.input_schema,
-        "output_schema": template.output_schema,
+        # 批次创建时传入任务类型基础约束与模板约束合并后的 schema；普通模板快照
+        # 调用保持原始配置，避免改变模板版本的持久化语义。
+        "output_schema": template.output_schema if output_schema is None else output_schema,
     }
     _require_snapshot_keys(snapshot, PROMPT_SNAPSHOT_KEYS, "PromptTemplate")
     ensure_no_secrets(snapshot, field_prefix="prompt_template_snapshot")

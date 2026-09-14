@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/lib/api";
+import { api, isAbortError } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
 
 export type GenerationTrackStatus =
@@ -42,7 +42,15 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
   const [cancelling, setCancelling] = useState(false);
   const trackVersionRef = useRef(0);
   const optionsRef = useRef(options);
+  const terminalCallbackKeyRef = useRef<string | null>(null);
   optionsRef.current = options;
+
+  const notifyTerminal = useCallback((terminal: GenerationTrack) => {
+    const key = `${terminal.taskId}:${terminal.batchId}`;
+    if (terminalCallbackKeyRef.current === key) return;
+    terminalCallbackKeyRef.current = key;
+    optionsRef.current.onTerminal?.(terminal);
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -55,6 +63,7 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
 
   const startTrack = useCallback((taskId: string, batchId: string) => {
     trackVersionRef.current += 1;
+    terminalCallbackKeyRef.current = null;
     const next: GenerationTrack = { taskId, batchId, status: "queued" };
     setTrack(next);
     persistTrack(taskId, batchId);
@@ -62,6 +71,7 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
 
   const clearTrack = useCallback(() => {
     trackVersionRef.current += 1;
+    terminalCallbackKeyRef.current = null;
     setTrack(null);
     setCancelling(false);
     const url = new URL(window.location.href);
@@ -75,7 +85,7 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
   const currentStatus = track?.status;
 
   useEffect(() => {
-    if (!taskId || !batchId || !currentStatus || TERMINAL.has(currentStatus)) return;
+    if (!taskId || !batchId || !currentStatus || cancelling || TERMINAL.has(currentStatus)) return;
     const controller = new AbortController();
     const trackVersion = trackVersionRef.current;
     const isCurrent = () => !controller.signal.aborted && trackVersionRef.current === trackVersion;
@@ -107,7 +117,7 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
             batch,
           };
           setTrack(terminal);
-          optionsRef.current.onTerminal?.(terminal);
+          notifyTerminal(terminal);
         } else {
           setTrack((current) => current?.taskId === taskId ? {
             ...current,
@@ -131,26 +141,57 @@ export function useGenerationTracking(projectId: string, options: Options = {}) 
       window.clearInterval(timer);
       controller.abort();
     };
-  }, [projectId, taskId, batchId, currentStatus]);
+  }, [projectId, taskId, batchId, currentStatus, cancelling, notifyTerminal]);
 
   const cancelTask = useCallback(async () => {
     if (!track || cancelling || TERMINAL.has(track.status)) return;
     setCancelling(true);
+    trackVersionRef.current += 1;
+    const trackVersion = trackVersionRef.current;
     try {
       const result = await api.post(
         "/projects/{pid}/tasks/{tid}/cancel",
         undefined,
         { params: { pid: projectId, tid: track.taskId } },
       );
+      if (trackVersion !== trackVersionRef.current) return;
+      const status = result.status as GenerationTrackStatus;
+      if (TERMINAL.has(status)) {
+        // queued 任务可能在 cancel API 内同步转为 cancelled。此时也必须读取批次
+        // 汇总并触发终态回调，不能把终态状态直接写入后让轮询 effect 提前退出。
+        setTrack((current) => current?.taskId === track.taskId ? {
+          ...current,
+          status: "cancelling",
+          canCancel: false,
+        } : current);
+        const batch = await api.get("/projects/{pid}/generation-batches/{gbid}", {
+          params: { pid: projectId, gbid: track.batchId },
+        });
+        if (trackVersion !== trackVersionRef.current) return;
+        const terminal: GenerationTrack = {
+          taskId: track.taskId,
+          batchId: track.batchId,
+          status,
+          canCancel: false,
+          batch,
+        };
+        setTrack((current) => current?.taskId === track.taskId ? terminal : current);
+        notifyTerminal(terminal);
+        return;
+      }
       setTrack((current) => current?.taskId === track.taskId ? {
         ...current,
-        status: result.status as GenerationTrackStatus,
+        status,
         canCancel: false,
       } : current);
+    } catch (error) {
+      if (!isAbortError(error) && trackVersion === trackVersionRef.current) {
+        optionsRef.current.onError?.();
+      }
     } finally {
       setCancelling(false);
     }
-  }, [projectId, track, cancelling]);
+  }, [projectId, track, cancelling, notifyTerminal]);
 
   return { track, setTrack, startTrack, clearTrack, cancelTask, cancelling };
 }

@@ -88,8 +88,20 @@ async def test_runner_picks_up_persisted_task(
         project_id=org["projects"]["a"].id, created_by=org["users"]["admin"].id,
     )
 
+    committed_events: list[tuple[str, str]] = []
+
+    async def publish_after_commit(event_task, event: str) -> None:
+        async with _test_session_factory() as observer:
+            persisted = await observer.scalar(select(Task).where(Task.id == event_task.id))
+            committed_events.append((event, persisted.status))
+
     # 启动 runner 单轮（进程崩溃恢复后重新派发）。
-    runner = TaskRunner(_test_session_factory, registry, worker_id="test-runner-1")
+    runner = TaskRunner(
+        _test_session_factory,
+        registry,
+        worker_id="test-runner-1",
+        event_publisher=publish_after_commit,
+    )
     await runner._claim_and_execute()
 
     # runner 在独立会话执行；用全新会话读取最终状态（避免 identity map 陈旧）。
@@ -104,6 +116,7 @@ async def test_runner_picks_up_persisted_task(
             await s.execute(select(TaskAttempt).where(TaskAttempt.task_id == task.id))
         ).scalars().all()
         assert attempts[0].status == "completed"
+    assert committed_events == [("task.processing", "processing"), ("task.completed", "completed")]
 
 
 async def test_runner_permanent_fail_on_unknown_handler(
@@ -123,7 +136,17 @@ async def test_runner_permanent_fail_on_unknown_handler(
         max_attempts=5,
     )
 
-    runner = TaskRunner(_test_session_factory, registry, worker_id="test-runner-2")
+    events: list[str] = []
+
+    async def publish_event(_task, event: str) -> None:
+        events.append(event)
+
+    runner = TaskRunner(
+        _test_session_factory,
+        registry,
+        worker_id="test-runner-2",
+        event_publisher=publish_event,
+    )
     await runner._claim_and_execute()
 
     async with _test_session_factory() as s:
@@ -132,11 +155,13 @@ async def test_runner_permanent_fail_on_unknown_handler(
         assert fresh.error_code == "UNSUPPORTED_TASK_PAYLOAD"
         # 只尝试一次，不因 max_attempts=5 无限重试。
         assert fresh.attempt_count == 1
+    assert events == ["task.processing", "task.failed"]
 
 
 async def test_reaper_reclaims_expired_processing(
     db_session: AsyncSession,
     org,
+    _test_session_factory: async_sessionmaker[AsyncSession],
 ):
     """reaper 回收 lease 过期的 processing 任务（可重试 -> 回队退避）。"""
     task = await _make_task(
@@ -154,14 +179,19 @@ async def test_reaper_reclaims_expired_processing(
     task.lease_expires_at = datetime.now(UTC) - timedelta(seconds=300)
     await db_session.commit()
 
-    stats = await q.reap_expired(lease_grace_seconds=0, batch=50)
-    await db_session.commit()
+    events: list[str] = []
+
+    async def publish_event(_task, event: str) -> None:
+        events.append(event)
+
+    runner = TaskRunner(_test_session_factory, HandlerRegistry(), event_publisher=publish_event)
+    await runner._reap()
 
     # 可重试且未超限：回队退避。
-    fresh = (await db_session.execute(select(Task).where(Task.id == task.id))).scalar_one()
-    assert fresh.status == "queued"
-    assert fresh.next_run_at > datetime.now(UTC)
-    assert stats["requeued"] == 1
+    await db_session.refresh(task)
+    assert task.status == "queued"
+    assert task.next_run_at > datetime.now(UTC)
+    assert events == ["task.queued"]
 
 
 async def test_reaper_cancels_task_with_cancel_request(

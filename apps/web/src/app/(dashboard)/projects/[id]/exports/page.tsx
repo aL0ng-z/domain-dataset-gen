@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/card";
 import { DataTable, type ColumnDef } from "@/components/data-table";
 import { usePagination } from "@/hooks/use-pagination";
-import { api, formatJsonPreview } from "@/lib/api";
+import { api, formatJsonPreview, isAbortError } from "@/lib/api";
 import type { components } from "@/lib/api/generated";
 import {
   DownloadIcon,
@@ -83,27 +83,43 @@ export default function ExportsPage() {
   const [retrying, setRetrying] = useState<Record<string, boolean>>({});
   const [verification, setVerification] = useState<Record<string, VerifyResult>>({});
   const retryKeys = useRef<Record<string, string>>({});
+  const listRequestRef = useRef(0);
+  const listControllerRef = useRef<AbortController | null>(null);
 
   const fetchExports = useCallback((silent = false) => {
+    const request = ++listRequestRef.current;
+    listControllerRef.current?.abort();
+    const controller = new AbortController();
+    listControllerRef.current = controller;
     if (!silent) setLoading(true);
     api
       .get("/projects/{pid}/exports/", {
         params: { pid: projectId },
         query: { page, page_size: pageSize },
+        signal: controller.signal,
       })
       .then((data) => {
+        if (request !== listRequestRef.current || controller.signal.aborted) return;
         setExports(data.items);
         setTotal(data.total);
       })
-      .catch(() => toast.error("加载导出记录失败"))
+      .catch((error) => {
+        if (request === listRequestRef.current && !controller.signal.aborted && !isAbortError(error)) {
+          toast.error("加载导出记录失败");
+        }
+      })
       .finally(() => {
-        if (!silent) setLoading(false);
+        if (request === listRequestRef.current && !silent) setLoading(false);
       });
   }, [projectId, page, pageSize]);
 
   useEffect(() => {
     const timer = setTimeout(fetchExports, 0);
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      listRequestRef.current += 1;
+      listControllerRef.current?.abort();
+    };
   }, [fetchExports]);
 
   useEffect(() => {

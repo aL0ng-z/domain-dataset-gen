@@ -10,7 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { api } from "@/lib/api";
-import { resetAuthFailureGuard } from "@/lib/auth";
+import { resetAuthFailureGuard, TokenStore } from "@/lib/auth";
 import { createApiMockServer } from "@/lib/__mocks__/api-server";
 
 describe("api.getBlob 授权下载", () => {
@@ -20,7 +20,7 @@ describe("api.getBlob 授权下载", () => {
     server = createApiMockServer();
     server.install();
     resetAuthFailureGuard();
-    localStorage.setItem("access_token", "token-abc");
+    TokenStore.setTokens("token-abc", "refresh-1");
   });
 
   afterEach(() => {
@@ -49,7 +49,7 @@ describe("api.getBlob 授权下载", () => {
   });
 
   it("401 触发刷新并用新令牌重试", async () => {
-    localStorage.setItem("refresh_token", "refresh-1");
+    TokenStore.setTokens("token-abc", "refresh-1");
     server.mock("GET", "/projects/p1/documents/d1/file", ({ callCount }) =>
       callCount === 1
         ? { status: 401, body: { detail: "unauthorized" } }
@@ -65,7 +65,7 @@ describe("api.getBlob 授权下载", () => {
     // jsdom 中 res.blob() 返回 undici realm 的 Blob，跨 realm 不能用 toBeInstanceOf。
     expect(blob.size).toBe(8);
     expect(blob.type).toBe("application/pdf");
-    expect(localStorage.getItem("access_token")).toBe("new-token");
+    expect(TokenStore.getAccessToken()).toBe("new-token");
     expect(server.getHandler("GET", "/projects/p1/documents/d1/file")?.callCount).toBe(2);
   });
 

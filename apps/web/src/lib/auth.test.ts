@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  AUTH_SESSION_STORAGE_KEY,
+  REFRESH_TIMEOUT,
   TokenStore,
   getToken,
   handleAuthFailure,
@@ -26,28 +28,37 @@ describe("统一令牌模块", () => {
     server.restore();
   });
 
-  it("TokenStore 是令牌读写唯一入口：setTokens/getAccessToken 一致", () => {
+  it("以单条记录保存 session_id 与两类令牌", () => {
     TokenStore.setTokens("access-1", "refresh-1");
+
     expect(TokenStore.getAccessToken()).toBe("access-1");
     expect(TokenStore.getRefreshToken()).toBe("refresh-1");
     expect(getToken()).toBe("access-1");
+    const stored = JSON.parse(localStorage.getItem(AUTH_SESSION_STORAGE_KEY) ?? "{}") as Record<string, string>;
+    expect(stored).toMatchObject({ access_token: "access-1", refresh_token: "refresh-1" });
+    expect(stored.session_id).toEqual(expect.any(String));
+    expect(localStorage.getItem("access_token")).toBeNull();
+    expect(localStorage.getItem("refresh_token")).toBeNull();
   });
 
-  it("clearTokens 原子清除两类令牌并通知订阅方", () => {
+  it("clearTokens 原子清除整条会话并通知订阅方", () => {
     const listener = vi.fn();
-    const unsub = subscribeToTokenChange(listener);
+    const unsubscribe = subscribeToTokenChange(listener);
     TokenStore.setTokens("a", "r");
-    expect(listener).toHaveBeenCalledTimes(1);
+    const sessionId = TokenStore.getSessionId();
 
     TokenStore.clearTokens();
     expect(TokenStore.getAccessToken()).toBeNull();
     expect(TokenStore.getRefreshToken()).toBeNull();
+    expect(TokenStore.getSessionId()).toBeNull();
+    expect(sessionId).toBeTruthy();
     expect(listener).toHaveBeenCalledTimes(2);
-
-    unsub();
+    unsubscribe();
   });
 
-  it("login 写入令牌并返回用户资料", async () => {
+  it("login 写入一个新会话并返回用户资料", async () => {
+    TokenStore.setTokens("old-access", "old-refresh");
+    const oldSessionId = TokenStore.getSessionId();
     server.onPost("/auth/login", {
       access_token: "access-1",
       refresh_token: "refresh-1",
@@ -57,105 +68,125 @@ describe("统一令牌模块", () => {
 
     const data = await login("alice", "pw");
     expect(data.user.username).toBe("alice");
-    expect(localStorage.getItem("access_token")).toBe("access-1");
+    expect(TokenStore.getAccessToken()).toBe("access-1");
+    expect(TokenStore.getSessionId()).not.toBe(oldSessionId);
   });
 
-  it("logout 清除令牌", async () => {
+  it("logout 清除令牌", () => {
     TokenStore.setTokens("a", "r");
     logout();
     expect(TokenStore.getAccessToken()).toBeNull();
     expect(TokenStore.getRefreshToken()).toBeNull();
   });
 
-  it("refreshToken 无 refresh token 时返回 false", async () => {
-    localStorage.clear();
-    expect(await refreshToken()).toBe(false);
+  it("无会话时刷新被视为已取消", async () => {
+    expect(await refreshToken()).toBe("cancelled");
   });
 
-  it("refreshToken 成功时写回新令牌", async () => {
-    localStorage.setItem("refresh_token", "refresh-1");
+  it("刷新保留 session_id 并写回新令牌", async () => {
+    TokenStore.setTokens("old-access", "refresh-1");
+    const sessionId = TokenStore.getSessionId();
     server.onPost("/auth/refresh", {
       access_token: "new-access",
       refresh_token: "new-refresh",
     });
 
-    expect(await refreshToken()).toBe(true);
-    expect(localStorage.getItem("access_token")).toBe("new-access");
-    expect(localStorage.getItem("refresh_token")).toBe("new-refresh");
+    expect(await refreshToken()).toBe("refreshed");
+    expect(TokenStore.getAccessToken()).toBe("new-access");
+    expect(TokenStore.getRefreshToken()).toBe("new-refresh");
+    expect(TokenStore.getSessionId()).toBe(sessionId);
   });
 
-  it("refreshToken 失败时不修改现有令牌", async () => {
-    localStorage.setItem("access_token", "old-access");
-    localStorage.setItem("refresh_token", "refresh-1");
-    server.mock("POST", "/auth/refresh", { status: 401, body: { detail: "x" } });
-
-    expect(await refreshToken()).toBe(false);
-    expect(localStorage.getItem("access_token")).toBe("old-access");
-  });
-
-  it("refreshToken 响应格式错误（缺 refresh_token）时返回 false", async () => {
-    localStorage.setItem("refresh_token", "refresh-1");
-    server.onPost("/auth/refresh", { access_token: "only-access" });
-
-    expect(await refreshToken()).toBe(false);
-  });
-
-  it("20 个并发 refreshToken 只发 1 次刷新请求", async () => {
-    localStorage.setItem("refresh_token", "refresh-1");
+  it("20 个并发刷新只发送一次请求", async () => {
+    TokenStore.setTokens("old-access", "refresh-1");
     server.onPost("/auth/refresh", {
       access_token: "new-access",
       refresh_token: "new-refresh",
     });
 
     const results = await Promise.all(Array.from({ length: 20 }, () => refreshToken()));
-    expect(results.every((r) => r === true)).toBe(true);
+    expect(results).toEqual(Array.from({ length: 20 }, () => "refreshed"));
     expect(server.getHandler("POST", "/auth/refresh")?.callCount).toBe(1);
-    expect(localStorage.getItem("access_token")).toBe("new-access");
   });
 
-  it("旧刷新结果晚到时不得覆盖较新的登录会话（令牌代数）", async () => {
+  it("单个调用取消只退出自己的刷新等待，不中止共享刷新", async () => {
+    TokenStore.setTokens("old-access", "refresh-1");
+    server.mock("POST", "/auth/refresh", {
+      body: { access_token: "new-access", refresh_token: "new-refresh" },
+      delay: 20,
+    });
+    const controller = new AbortController();
+
+    const cancelled = refreshToken({ signal: controller.signal });
+    const shared = refreshToken();
+    controller.abort();
+
+    expect(await cancelled).toBe("cancelled");
+    expect(await shared).toBe("refreshed");
+    expect(TokenStore.getAccessToken()).toBe("new-access");
+  });
+
+  it("会话切换取消旧刷新，旧响应不能覆盖新用户", async () => {
     vi.useFakeTimers();
     try {
-      localStorage.setItem("refresh_token", "refresh-1");
-
-      // 第一次刷新请求延迟 100ms（慢），期间发生新登录
+      TokenStore.setTokens("old-access", "old-refresh");
       server.mock("POST", "/auth/refresh", {
-        status: 200,
         body: { access_token: "slow-access", refresh_token: "slow-refresh" },
         delay: 100,
       });
 
-      const slowRefresh = refreshToken(); // 发起慢刷新，捕获代数
-
-      // 慢刷新在途期间：发生一次新登录（代数递增）
+      const oldRefresh = refreshToken();
       await vi.advanceTimersByTimeAsync(10);
-      TokenStore.setTokens("newer-access", "newer-refresh");
+      TokenStore.startSession("new-access", "new-refresh");
+      await vi.advanceTimersByTimeAsync(100);
 
-      // 放行慢刷新响应
-      await vi.advanceTimersByTimeAsync(200);
-      const slowResult = await slowRefresh;
-
-      // 慢刷新的写入被丢弃，保留新会话
-      expect(slowResult).toBe(true);
-      expect(localStorage.getItem("access_token")).toBe("newer-access");
-      expect(localStorage.getItem("refresh_token")).toBe("newer-refresh");
+      expect(await oldRefresh).toBe("cancelled");
+      expect(TokenStore.getAccessToken()).toBe("new-access");
+      expect(TokenStore.getRefreshToken()).toBe("new-refresh");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("handleAuthFailure 原子清除令牌并只触发一次回调", () => {
+  it("刷新超时返回 failed，不无限等待", async () => {
+    vi.useFakeTimers();
+    try {
+      TokenStore.setTokens("old-access", "refresh-1");
+      server.mock("POST", "/auth/refresh", {
+        body: { access_token: "late", refresh_token: "late-refresh" },
+        delay: REFRESH_TIMEOUT + 1,
+      });
+      const pending = refreshToken();
+      await vi.advanceTimersByTimeAsync(REFRESH_TIMEOUT + 1);
+      expect(await pending).toBe("failed");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("旧会话认证失败不能清除新会话", () => {
+    TokenStore.setTokens("old-access", "old-refresh");
+    const oldSessionId = TokenStore.getSessionId();
+    TokenStore.startSession("new-access", "new-refresh");
     const listener = vi.fn();
-    const unsub = onAuthFailure(listener);
+    const unsubscribe = onAuthFailure(listener);
 
+    expect(handleAuthFailure(oldSessionId)).toBe(false);
+    expect(TokenStore.getAccessToken()).toBe("new-access");
+    expect(listener).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it("当前会话认证失败只清理一次", () => {
+    const listener = vi.fn();
+    const unsubscribe = onAuthFailure(listener);
     TokenStore.setTokens("a", "r");
-    handleAuthFailure();
-    handleAuthFailure(); // 第二次不应重复触发
+    const sessionId = TokenStore.getSessionId();
 
+    expect(handleAuthFailure(sessionId)).toBe(true);
+    expect(handleAuthFailure(sessionId)).toBe(false);
     expect(TokenStore.getAccessToken()).toBeNull();
-    expect(TokenStore.getRefreshToken()).toBeNull();
     expect(listener).toHaveBeenCalledTimes(1);
-
-    unsub();
+    unsubscribe();
   });
 });

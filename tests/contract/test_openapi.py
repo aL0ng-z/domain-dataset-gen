@@ -84,6 +84,8 @@ class TestOpenApiSnapshotDeterministic:
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         assert result.returncode == 0, f"OpenAPI 漂移：{result.stderr}"
 

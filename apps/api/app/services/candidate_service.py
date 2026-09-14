@@ -7,6 +7,7 @@ from app.models.chunk import Chunk
 from app.models.curated import CuratedItem, CuratedRevision, EvidenceLink
 from app.models.document import Document
 from app.models.generation import Candidate, CandidateComment
+from app.models.generation_batch import GenerationBatch
 from domain.canonical import (
     CURATED_CONTENT_CJSON_VERSION,
     curated_content_sha256,
@@ -33,6 +34,14 @@ class EvidenceValidationError(Exception):
     """证据 span 校验失败（越界/quote 不匹配/跨项目或批次 Chunk，422）。"""
 
 
+class CandidateRevisionConflictError(Exception):
+    """客户端基于旧内容版本进行编辑、审核或提升（409）。"""
+
+    def __init__(self, current_revision: int):
+        super().__init__("候选内容已更新，请重新加载后再操作")
+        self.current_revision = current_revision
+
+
 class CandidateService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -43,20 +52,37 @@ class CandidateService:
         )
         return result.scalar_one_or_none()
 
+    async def _get_for_update(self, candidate_id: uuid.UUID) -> Candidate | None:
+        """读取并锁住 Candidate，避免审核/编辑/提升基于不同内容版本执行。"""
+        return await self.db.scalar(
+            select(Candidate)
+            .where(Candidate.id == candidate_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    @staticmethod
+    def _require_revision(candidate: Candidate, expected_revision: int) -> None:
+        if candidate.content_revision != expected_revision:
+            raise CandidateRevisionConflictError(candidate.content_revision)
+
+    async def _existing_curated_item(self, candidate_id: uuid.UUID) -> CuratedItem | None:
+        return await self.db.scalar(
+            select(CuratedItem).where(CuratedItem.candidate_id == candidate_id).limit(1)
+        )
+
     async def update_content(
-        self, candidate_id: uuid.UUID, content: dict
+        self, candidate_id: uuid.UUID, content: dict, *, expected_revision: int
     ) -> Candidate | None:
         """更新 Candidate 内容并置 status=human_edited；已提升 Candidate 不可再改。
 
         已提升（存在 CuratedItem）默认返回 None 由路由映射 409；同事务清空旧审核字段。
         """
-        candidate = await self.get(candidate_id)
+        candidate = await self._get_for_update(candidate_id)
         if candidate is None:
             return None
-        promoted = await self.db.execute(
-            select(CuratedItem.id).where(CuratedItem.candidate_id == candidate_id).limit(1)
-        )
-        if promoted.scalar_one_or_none() is not None:
+        self._require_revision(candidate, expected_revision)
+        if await self._existing_curated_item(candidate_id) is not None:
             raise CandidateAlreadyPromotedError("候选已提升，内容不可再修改；后续编辑走 CuratedItem revision")
 
         candidate.content = content
@@ -66,6 +92,8 @@ class CandidateService:
         candidate.review_verdict = None
         candidate.review_evidence_spans = None
         candidate.reject_reason = None
+        candidate.reviewed_content_revision = None
+        candidate.content_revision += 1
         await self.db.flush()
         await self.db.refresh(candidate)
         return candidate
@@ -93,23 +121,30 @@ class CandidateService:
         if chunk is None:
             raise EvidenceValidationError("证据 Chunk 不存在")
 
-        # 跨项目/批次归属校验：Chunk 必须与 Candidate 同项目。
-        candidate_project = (
-            await self.db.execute(
-                select(Document.project_id)
-                .select_from(Candidate)
-                .join(Chunk, Chunk.id == Candidate.chunk_id)
-                .join(Document, Document.id == Chunk.document_id)
-                .where(Candidate.id == candidate.id)
-            )
-        ).scalar_one_or_none()
-        chunk_project = (
-            await self.db.execute(
-                select(Document.project_id).where(Document.id == chunk.document_id)
-            )
-        ).scalar_one_or_none()
+        candidate_source_chunk = await self.db.get(Chunk, candidate.chunk_id)
+        if candidate_source_chunk is None:
+            raise EvidenceValidationError("Candidate 关联 Chunk 不存在")
+        candidate_project = await self.db.scalar(
+            select(Document.project_id).where(Document.id == candidate_source_chunk.document_id)
+        )
+        chunk_project = await self.db.scalar(
+            select(Document.project_id).where(Document.id == chunk.document_id)
+        )
         if candidate_project is None or chunk_project is None or candidate_project != chunk_project:
             raise EvidenceValidationError("证据 Chunk 不属于 Candidate 所在项目")
+
+        # 证据集合属于生成时冻结的 selected_chunk_ids，而不是当前 active ChunkSet。
+        # 历史 batch 仍按自己的选择集校验，active 指针变化不能扩大可引用来源。
+        if candidate.source_generation_batch_id is None:
+            raise EvidenceValidationError("Candidate 缺少冻结的生成批次来源")
+        batch = await self.db.get(GenerationBatch, candidate.source_generation_batch_id)
+        if batch is None or batch.document_id != candidate_source_chunk.document_id:
+            raise EvidenceValidationError("Candidate 生成批次来源无效")
+        selected_chunk_ids = batch.selected_chunk_ids
+        if not isinstance(selected_chunk_ids, list) or str(chunk.id) not in {
+            str(selected_id) for selected_id in selected_chunk_ids
+        }:
+            raise EvidenceValidationError("证据 Chunk 不属于 Candidate 生成批次的冻结来源")
 
         content_len = len(chunk.content)
         if start < 0 or end > content_len or start >= end:
@@ -133,6 +168,8 @@ class CandidateService:
         candidate_id: uuid.UUID,
         reviewer_id: uuid.UUID,
         verdict: str,
+        *,
+        expected_revision: int,
         evidence_spans: list[dict] | None = None,
         reject_reason: str | None = None,
     ) -> Candidate | None:
@@ -142,14 +179,12 @@ class CandidateService:
         unsupported/out_of_scope 必须非空 reject_reason（schema 已强制，服务层兜底）。
         status=approved|rejected 由 verdict 映射；同事务写一条 ReviewRecord。
         """
-        candidate = await self.get(candidate_id)
+        candidate = await self._get_for_update(candidate_id)
         if candidate is None:
             return None
+        self._require_revision(candidate, expected_revision)
         # 已提升的 Candidate 不可再改（冻结）。
-        promoted = await self.db.execute(
-            select(CuratedItem.id).where(CuratedItem.candidate_id == candidate_id).limit(1)
-        )
-        if promoted.scalar_one_or_none() is not None:
+        if await self._existing_curated_item(candidate_id) is not None:
             raise CandidateAlreadyPromotedError("候选已提升，审核结论不可再修改")
 
         normalized_spans: list[dict] = []
@@ -173,6 +208,7 @@ class CandidateService:
         candidate.review_verdict = verdict
         candidate.review_evidence_spans = bundle
         candidate.reject_reason = reject_reason
+        candidate.reviewed_content_revision = candidate.content_revision
         candidate.status = "approved" if verdict in ("supported", "partially_supported") else "rejected"
 
         from app.models.review_record import ReviewRecord
@@ -218,25 +254,24 @@ class CandidateService:
         return list(result.scalars().all())
 
     async def promote_to_curated(
-        self, candidate_id: uuid.UUID, promoted_by: uuid.UUID
+        self, candidate_id: uuid.UUID, promoted_by: uuid.UUID, *, expected_revision: int
     ) -> CuratedItem:
         """幂等提升：approved 且证据有效的 Candidate -> 1 CuratedItem + v1 revision + EvidenceLink。
 
         并发重复提升最多一个成功：候选先查既有 CuratedItem（返回已有），再以条件插入
         （数据库 candidate_id 唯一约束兜底并发）。
         """
-        candidate = await self.get(candidate_id)
+        candidate = await self._get_for_update(candidate_id)
         if candidate is None:
             raise ValueError("候选项不存在")
+        self._require_revision(candidate, expected_revision)
         if candidate.status != "approved":
             raise CandidateStateConflictError("仅已审核通过的候选项可提升为知识条目")
+        if candidate.reviewed_content_revision != candidate.content_revision:
+            raise CandidateStateConflictError("候选内容已在审核后变更，请重新审核")
 
         # 幂等：已有 CuratedItem -> 返回既有（路由映射 409 + context item id）。
-        existing = (
-            await self.db.execute(
-                select(CuratedItem).where(CuratedItem.candidate_id == candidate_id).limit(1)
-            )
-        ).scalar_one_or_none()
+        existing = await self._existing_curated_item(candidate_id)
         if existing is not None:
             raise CandidateAlreadyPromotedError("该候选项已提升", existing.id)
 

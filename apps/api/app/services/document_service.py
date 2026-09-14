@@ -1,19 +1,24 @@
 import asyncio
 import hashlib
+import logging
 import uuid
-from contextlib import suppress
 
 # Pre-load pymupdf at module level to avoid slow first-call initialization
 import pymupdf  # noqa: F401
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.models.chunk_set import ChunkSet
+from app.models.cleaned_document_version import CleanedDocumentVersion
 from app.models.document import Document
 from app.models.parse import ParseJob
 from app.models.section import CleaningJob
 from app.storage_keys import build_storage_key
 from storage import get_storage_client
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_page_count(file_data: bytes) -> int | None:
@@ -25,6 +30,10 @@ def _extract_page_count(file_data: bytes) -> int | None:
         return page_count
     except Exception:
         return None
+
+
+class DocumentInUseError(Exception):
+    """文档删除被数据库 RESTRICT 外键阻止。"""
 
 
 class DocumentService:
@@ -118,27 +127,57 @@ class DocumentService:
         if doc is None:
             return False
 
-        # Delete parse job output files from MinIO outputs bucket
+        # 收集所有派生对象坐标，但绝不能在数据库删除已提交前清理它们。
+        # EvidenceLink 等 RESTRICT 外键会拒绝数据库删除；此前先删 MinIO 会把
+        # 仍存在的文档变成不可恢复的悬挂记录。
+        storage_objects: list[tuple[str, str]] = [
+            (settings.minio_bucket_documents, doc.minio_key),
+        ]
         parse_jobs = await self.db.execute(
             select(ParseJob).where(ParseJob.document_id == document_id)
         )
         for job in parse_jobs.scalars().all():
             for key in (job.raw_markdown_key, job.structured_json_key):
                 if key:
-                    with suppress(Exception):
-                        await asyncio.to_thread(
-                            self._storage.delete_file, settings.minio_bucket_outputs, key,
-                        )
-
-        # Delete PDF from documents bucket
-        with suppress(Exception):
-            await asyncio.to_thread(
-                self._storage.delete_file, settings.minio_bucket_documents, doc.minio_key,
+                    storage_objects.append((settings.minio_bucket_outputs, key))
+        cleaned_versions = await self.db.execute(
+            select(CleanedDocumentVersion.artifact_key).where(
+                CleanedDocumentVersion.document_id == document_id
             )
+        )
+        storage_objects.extend(
+            (settings.minio_bucket_outputs, key)
+            for key in cleaned_versions.scalars().all()
+            if key
+        )
+        chunk_sets = await self.db.execute(
+            select(ChunkSet.artifact_key).where(ChunkSet.document_id == document_id)
+        )
+        storage_objects.extend(
+            (settings.minio_bucket_outputs, key)
+            for key in chunk_sets.scalars().all()
+            if key
+        )
 
-        # DB cascade handles parse_jobs, cleaning_jobs, sections, etc.
-        await self.db.delete(doc)
-        await self.db.flush()
+        # DB cascade handles parse jobs, cleaning jobs, sections and chunks. Commit
+        # is intentionally here rather than in get_db: storage cleanup must happen
+        # only after the irreversible database decision has succeeded.
+        try:
+            await self.db.delete(doc)
+            await self.db.flush()
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise DocumentInUseError("文档已被证据或其他受保护记录引用，不能删除") from exc
+        except Exception:
+            await self.db.rollback()
+            raise
+
+        for bucket, key in dict.fromkeys(storage_objects):
+            try:
+                await asyncio.to_thread(self._storage.delete_file, bucket, key)
+            except Exception:  # noqa: BLE001 - DB 已提交，只记录待后续清理的具体对象
+                logger.exception("文档删除后清理对象失败: bucket=%s key=%s", bucket, key)
         return True
 
     async def list_parse_jobs(self, document_id: uuid.UUID) -> list[ParseJob]:
@@ -157,32 +196,43 @@ class DocumentService:
             return False
         document_id = job.document_id
 
-        # Delete cleaning jobs that reference this parse job (cascades to sections)
+        # 与文档删除相同：先做数据库删除并提交，再清理解析产物。清洗版本等
+        # RESTRICT 依赖会在 flush 时阻止删除，此时对象存储必须保持不变。
+        storage_objects = [
+            (settings.minio_bucket_outputs, key)
+            for key in (job.raw_markdown_key, job.structured_json_key)
+            if key
+        ]
         cleaning_jobs = await self.db.execute(
             select(CleaningJob).where(CleaningJob.parse_job_id == job_id)
         )
-        for cj in cleaning_jobs.scalars().all():
-            await self.db.delete(cj)
-        await self.db.flush()
+        try:
+            for cleaning_job in cleaning_jobs.scalars().all():
+                await self.db.delete(cleaning_job)
+            await self.db.delete(job)
+            await self.db.flush()
 
-        # Delete associated files from MinIO outputs bucket
-        for key in (job.raw_markdown_key, job.structured_json_key):
-            if key:
-                with suppress(Exception):
-                    await asyncio.to_thread(
-                        self._storage.delete_file, settings.minio_bucket_outputs, key,
-                    )
-        await self.db.delete(job)
-        await self.db.flush()
+            # If no parse jobs remain, revert document status to "uploaded".
+            remaining = await self.db.scalar(
+                select(func.count()).select_from(ParseJob).where(ParseJob.document_id == document_id)
+            )
+            if remaining == 0:
+                doc = await self.get_document(document_id)
+                if doc and doc.status in ("parsed", "parsing"):
+                    doc.status = "uploaded"
+                    await self.db.flush()
+            await self.db.commit()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise DocumentInUseError("解析任务仍被清洗版本或其他受保护记录引用，不能删除") from exc
+        except Exception:
+            await self.db.rollback()
+            raise
 
-        # If no parse jobs remain, revert document status to "uploaded"
-        remaining = await self.db.execute(
-            select(func.count()).select_from(ParseJob).where(ParseJob.document_id == document_id)
-        )
-        if remaining.scalar() == 0:
-            doc = await self.get_document(document_id)
-            if doc and doc.status in ("parsed", "parsing"):
-                doc.status = "uploaded"
-                await self.db.flush()
+        for bucket, key in storage_objects:
+            try:
+                await asyncio.to_thread(self._storage.delete_file, bucket, key)
+            except Exception:  # noqa: BLE001 - 数据库已提交，只记录待后续清理对象
+                logger.exception("解析任务删除后清理对象失败: bucket=%s key=%s", bucket, key)
 
         return True

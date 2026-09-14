@@ -270,11 +270,18 @@ async def _make_approved_item(
     r = await client.post(
         f"/api/candidates/{candidate.id}/review",
         headers=headers,
-        json={"verdict": verdict, "evidence_spans": [span], "reject_reason": None},
+        json={
+            "expected_revision": candidate.content_revision,
+            "verdict": verdict,
+            "evidence_spans": [span],
+            "reject_reason": None,
+        },
     )
     assert r.status_code == 200, r.text
     p = await client.post(
-        f"/api/candidates/{candidate.id}/promote-to-curated", headers=headers, json={}
+        f"/api/candidates/{candidate.id}/promote-to-curated",
+        headers=headers,
+        json={"expected_revision": candidate.content_revision},
     )
     assert p.status_code == 201, p.text
     item_id = p.json()["id"]

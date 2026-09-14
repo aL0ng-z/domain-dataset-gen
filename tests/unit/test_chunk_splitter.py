@@ -134,7 +134,7 @@ def test_deterministic_output(chunker):
 def test_splitter_version_is_frozen():
     """splitter_version 必须含算法版本与 tokenizer 名/版本，不得只写策略名。"""
     ver = splitter_version()
-    assert ver.startswith("2.0.0@")
+    assert ver.startswith("3.0.0@")
     assert "cl100k_base" in ver
     assert tokenizer_version() in ver
 

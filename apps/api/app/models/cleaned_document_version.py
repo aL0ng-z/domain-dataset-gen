@@ -29,6 +29,9 @@ class CleanedDocumentVersion(Base):
     merged_markdown: Mapped[str] = mapped_column(Text, nullable=False)
     artifact_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_revision_map: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # 合并正文的字符区间与可信物理页码快照。每项均绑定 Section，供后续切分按实际
+    # 来源传播页码；空页码集合明确表示该区间的物理页码未知。
+    source_intervals: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
     source_revision_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     merge_idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
