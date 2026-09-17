@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Stop API / Web processes started by dev-start.ps1 or dev-start-conda.ps1.
+  Stop API / Worker / Web processes started by dev-start-conda.ps1.
 
 .EXAMPLE
   .\scripts\dev-stop.ps1
@@ -37,7 +37,7 @@ function Stop-ByPidFile {
     taskkill /F /T /PID $targetPid 2>&1 | Out-Null
 }
 
-Write-Host "==> Stopping API / Web processes..."
+Write-Host "==> Stopping API / Worker / Web processes..."
 Stop-ByPidFile -PidFile (Join-Path $PidDir 'R1plus-API.pid') -Label 'R1plus-API'
 Stop-ByPidFile -PidFile (Join-Path $PidDir 'R1plus-Web.pid') -Label 'R1plus-Web'
 Stop-ByPidFile -PidFile (Join-Path $PidDir 'R1plus-Worker.pid') -Label 'R1plus-Worker'

@@ -8,9 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest",
-    "test:watch": "vitest",
-    "api:generate": "node scripts/generate-api.mjs",
-    "api:check": "node scripts/check-api.mjs"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",

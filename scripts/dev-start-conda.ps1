@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Windows + conda one-click startup for local testing.
+  Windows + conda one-click startup for the application.
 
 .EXAMPLE
   .\scripts\dev-start-conda.ps1
@@ -12,8 +12,9 @@
 
   This script does not create or use .venv, and it does not switch conda
   environments for you. Backend commands use the current environment's python.
-  API and Web are started as hidden background PowerShell processes and write
-  logs under ./logs.
+  API, Worker and Web run in hidden background processes and write UTF-8 logs.
+  After startup, this terminal follows their logs. Ctrl+C stops following only;
+  use dev-stop.ps1 to stop the application processes.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -282,8 +283,16 @@ function Start-DockerInfra {
     try {
         Invoke-NativeChecked -Exe "docker" -Arguments @("info") -FailureMessage "Docker Desktop is not running" -Quiet
     } catch {
-        Write-Host "Docker Desktop is not running. Start Docker Desktop and retry." -ForegroundColor Red
-        exit 1
+        Write-Host "Docker engine is not ready. Starting Docker Desktop (timeout: 120 seconds)..."
+        Invoke-NativeChecked `
+            -Exe "docker" `
+            -Arguments @("desktop", "start", "--timeout", "120") `
+            -FailureMessage "Could not start Docker Desktop. Complete its first-run setup, check the WSL 2/virtualization prerequisites, and ensure 'docker desktop start' is available."
+        Invoke-NativeChecked `
+            -Exe "docker" `
+            -Arguments @("info") `
+            -FailureMessage "Docker Desktop started, but the Docker engine is still unavailable. Check Docker Desktop and the current Docker context." `
+            -Quiet
     }
 
     Invoke-NativeChecked `
@@ -341,20 +350,67 @@ function Start-BackgroundPowerShell {
         [string]$LogFile
     )
 
-    "===== $(Get-Date -Format o) $Title =====" | Add-Content -LiteralPath $LogFile -Encoding UTF8
+    if (Test-Path -LiteralPath $LogFile) {
+        $backupPath = "$LogFile.$(Get-Date -Format 'yyyyMMdd-HHmmss-fff').bak"
+        Move-Item -LiteralPath $LogFile -Destination $backupPath
+        Write-Host "   Previous log preserved: $backupPath"
+    }
     $titleQuoted = Quote-PsLiteral $Title
     $workDirQuoted = Quote-PsLiteral $WorkDir
     $logFileQuoted = Quote-PsLiteral $LogFile
     $pythonPathQuoted = Quote-PsLiteral $env:PYTHONPATH
     $script = @"
+`$ErrorActionPreference = 'Continue'
+`$utf8 = [System.Text.UTF8Encoding]::new(`$false)
+[Console]::OutputEncoding = `$utf8
+`$OutputEncoding = `$utf8
+`$env:PYTHONUTF8 = '1'
+`$env:PYTHONIOENCODING = 'utf-8'
+`$env:PYTHONUNBUFFERED = '1'
 `$Host.UI.RawUI.WindowTitle = $titleQuoted
 `$env:PYTHONPATH = $pythonPathQuoted
 Set-Location -LiteralPath $workDirQuoted
-$Command *>> $logFileQuoted
+`$writer = [System.IO.StreamWriter]::new($logFileQuoted, `$false, `$utf8)
+`$writer.AutoFlush = `$true
+try {
+    `$writer.WriteLine("===== `$(Get-Date -Format o) " + $titleQuoted + " =====")
+    $Command 2>&1 | ForEach-Object { `$writer.WriteLine(`$_.ToString()) }
+    `$commandExitCode = `$LASTEXITCODE
+} finally {
+    `$writer.Dispose()
+}
+exit `$commandExitCode
 "@
-    $proc = Start-Process powershell -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $script) -PassThru -WindowStyle Hidden
+    $encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script))
+    $proc = Start-Process powershell -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encodedCommand) -PassThru -WindowStyle Hidden
     $proc.Id | Out-File -LiteralPath $PidFile -Encoding ASCII
     Write-Host "   $Title PID=$($proc.Id), log=$LogFile"
+}
+
+function Show-ApplicationLogs {
+    $readers = [ordered]@{}
+    try {
+        foreach ($name in @("API", "Worker", "Web")) {
+            $path = Join-Path $LogDir "R1plus-$name.log"
+            $sharing = [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+            $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, $sharing)
+            $readers[$name] = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8)
+        }
+        Write-Host "==> Following API / Worker / Web logs. Ctrl+C stops following; services keep running."
+        while ($true) {
+            foreach ($name in $readers.Keys) {
+                $reader = $readers[$name]
+                while (-not $reader.EndOfStream) {
+                    Write-Host "[$name] $($reader.ReadLine())"
+                }
+            }
+            Start-Sleep -Milliseconds 300
+        }
+    } finally {
+        foreach ($reader in $readers.Values) {
+            $reader.Dispose()
+        }
+    }
 }
 
 function Wait-HttpReady {
@@ -410,7 +466,7 @@ function Start-ApplicationProcesses {
 
     if (-not (Wait-HttpReady -Url "http://127.0.0.1:$ApiPort/api/health" -Label "API" -TimeoutSeconds 90)) {
         Write-Host "API failed to become ready. Last API log lines:" -ForegroundColor Red
-        Get-Content -LiteralPath $apiLog -Tail 80 -ErrorAction SilentlyContinue
+        Get-Content -LiteralPath $apiLog -Encoding UTF8 -Tail 80 -ErrorAction SilentlyContinue
         exit 1
     }
 
@@ -423,7 +479,7 @@ function Start-ApplicationProcesses {
     Start-Sleep -Seconds 2
     $workerProcessId = [int](Get-Content -LiteralPath $workerPidFile -Raw).Trim()
     if (-not (Get-Process -Id $workerProcessId -ErrorAction SilentlyContinue)) {
-        Get-Content -LiteralPath $workerLog -Tail 60
+        Get-Content -LiteralPath $workerLog -Encoding UTF8 -Tail 60
         throw "Worker exited during startup. Check logs/R1plus-Worker.log."
     }
 
@@ -439,7 +495,7 @@ function Start-ApplicationProcesses {
 
     if (-not (Wait-HttpReady -Url "http://127.0.0.1:$WebPort" -Label "Web" -TimeoutSeconds 120)) {
         Write-Host "Web failed to become ready. Last Web log lines:" -ForegroundColor Red
-        Get-Content -LiteralPath $webLog -Tail 80 -ErrorAction SilentlyContinue
+        Get-Content -LiteralPath $webLog -Encoding UTF8 -Tail 80 -ErrorAction SilentlyContinue
         exit 1
     }
 
@@ -462,7 +518,7 @@ $minioConsolePort = Get-EnvValue "MINIO_CONSOLE_PORT" "9001"
 $minioAccess = Get-EnvValue "MINIO_ACCESS_KEY" "minioadmin"
 $minioSecret = Get-EnvValue "MINIO_SECRET_KEY" "minioadmin123"
 
-Write-Host "==> [7/7] Ready for testing" -ForegroundColor Green
+Write-Host "==> [7/7] Ready" -ForegroundColor Green
 Write-Host "==========================================="
 Write-Host "Backend API     : http://localhost:$ApiPort/api/health"
 Write-Host "API docs        : http://localhost:$ApiPort/docs"
@@ -478,3 +534,5 @@ Write-Host ""
 Write-Host "Stop app only   : .\scripts\dev-stop.ps1"
 Write-Host "Stop everything : .\scripts\dev-stop.ps1 -All"
 Write-Host "==========================================="
+
+Show-ApplicationLogs

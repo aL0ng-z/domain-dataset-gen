@@ -2,7 +2,7 @@
 
 压气机（compressor）领域知识抽取与数据集生产平台。项目目标是把 PDF 教材、手册、论文加工为可追溯、可审核、可复现的知识资产，并进一步组织成微调数据集与评测 benchmark。
 
-当前仓库来自 macOS 环境迁移，已进入 R1/R1+ 测试加固阶段。前半段链路（上传、解析、清洗、分块）已重点打磨；LLM 生成、人工审核提升、数据集/评测集导出仍是 R1 最终验收重点。
+当前本机运行入口统一为 Windows PowerShell + conda `DatasetGen`。处理链路包括上传、解析、清洗、分块、LLM 生成、人工审核及数据集/评测集导出。
 
 ## 1. 你应该先看什么
 
@@ -15,32 +15,27 @@
 如果要继续开发，再看：
 
 - [7. 项目结构](#7-项目结构)
-- [8. 常用开发命令](#8-常用开发命令)
+- [8. 常用运行命令](#8-常用运行命令)
 - [9. 关键文档](#9-关键文档)
 
 ## 2. 推荐启动方式
 
-仓库里确实已经有一键启动脚本：
+在 PowerShell 中先执行 `conda activate DatasetGen`，再使用以下入口：
 
 ```text
-scripts/dev-start-conda.ps1  Windows + conda 一键启动（推荐）
-scripts/dev-start.ps1        Windows + uv/.venv 一键启动
-scripts/dev-stop.ps1         Windows 一键关闭
-scripts/dev-start.sh         macOS / Linux / Git Bash 一键启动
-scripts/dev-stop.sh          macOS / Linux / Git Bash 一键关闭
+scripts/dev-start-conda.ps1  启动基础设施、API、worker 和 Web
+scripts/dev-stop.ps1         停止 API、worker 和 Web；-All 同时停止 Docker 容器
 ```
 
-Windows 上建议优先使用 `dev-start-conda.ps1`。它假定你已经在 `DatasetGen` conda 环境中运行脚本，不创建 `.venv`，也不会替你切换 conda 环境。
-
-简单选择：
-
-- Windows + conda，想直接开始测试：用 [2.1 Windows + conda 一键脚本](#21-windows--conda-一键脚本推荐)。
-- 允许项目创建 `.venv`，想沿用旧脚本：用 [2.2 uv/.venv 一键脚本](#22-uvvenv-一键脚本保留)。
-- 想逐步排查或完全手动：用 [2.3 conda-only 手动启动](#23-conda-only-手动启动)。
+启动脚本使用当前 conda 环境，不创建 `.venv`。首次安装依赖或需要逐步排查时，参照 [2.2 conda 手动启动](#22-conda-手动启动)。保留脚本的用途见 [scripts/README.md](scripts/README.md)。
 
 ### 2.1 Windows + conda 一键脚本（推荐）
 
-这个脚本是为当前 Windows + conda 工作流新增的。它会检查当前 PowerShell 是否已经处于 `DatasetGen` 环境，然后启动基础设施、迁移数据库、初始化默认数据，并在后台启动 API 和 Web。脚本不安装 Python 或 npm 依赖，默认你已经准备好当前 conda 环境和前端依赖。
+脚本检查当前 PowerShell 是否处于 `DatasetGen` 环境，然后启动基础设施、迁移数据库、初始化默认数据，并在后台启动 API、worker 和 Web。运行前需要准备好 Python 与 npm 依赖。
+
+Docker 引擎未就绪时，脚本会执行 `docker desktop start --timeout 120` 自动启动已安装的 Docker Desktop，等待完成后再次检查引擎。新机器需先完成 Docker Desktop 首次初始化、所选后端的系统设置，并使用 Linux 容器模式；安装版本须支持 `docker desktop start`。脚本不会自动安装 Docker Desktop、Conda、Node.js 或项目依赖。
+
+首次运行会自动拉取缺失的 PostgreSQL、Redis、MinIO 和初始化工具镜像，并创建本项目的容器、网络、端口映射及持久化数据卷，无需在 Docker Desktop 中手工创建这些资源。镜像拉取需要网络可访问镜像仓库，已有数据卷会复用。
 
 先确认本机已安装 Docker Desktop、Conda、Node.js/npm，并激活 `DatasetGen`：
 
@@ -82,7 +77,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev-start-conda.ps1
 1. 创建 `infra/docker/.env`
 2. 创建 `apps/api/.env`
 3. 创建 `apps/web/.env.local`
-4. 启动 PostgreSQL、Redis、MinIO
+4. 按需自动启动 Docker Desktop，再启动 PostgreSQL、Redis、MinIO 并初始化存储桶
 5. 检查当前 shell 是否为 `DatasetGen` / Python 3.11
 6. 执行 Alembic 数据库迁移
 7. 执行种子脚本，创建默认管理员和默认项目
@@ -100,7 +95,7 @@ MinIO 控制台: http://localhost:9001
 
 如果 `localhost:3000` 被占用，脚本会自动尝试 `3001-3005`。
 
-API 和 Web 会在后台 PowerShell 进程中运行，日志写入：
+API、worker 和 Web 会在后台 PowerShell 进程中运行，标准输出和错误输出统一以 UTF-8 写入：
 
 ```text
 logs/R1plus-API.log
@@ -108,65 +103,29 @@ logs/R1plus-Worker.log
 logs/R1plus-Web.log
 ```
 
-脚本不会打开新的可见终端窗口；如果后端或前端启动失败，优先看上面的日志文件。
+启动完成并显示访问地址后，当前终端会持续显示这三个服务的日志，分别带有 `[API]`、`[Worker]`、`[Web]` 前缀。按 `Ctrl+C` 退出日志查看，后台服务继续运行；停止服务使用下面的 `dev-stop.ps1`。
+
+每次启动会先将上一轮日志保留为同目录下的 `R1plus-*.log.<时间戳>.bak`，再创建新的 UTF-8 日志，避免旧文件的混合编码污染新日志。已有混合编码日志保留原样，备份不会自动修复其编码。
+
+需要单独查看某个服务或 Docker 容器日志时，在另一终端执行：
+
+```powershell
+Get-Content -LiteralPath .\logs\R1plus-API.log -Encoding UTF8 -Tail 50 -Wait
+docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env logs -f postgres redis minio
+```
 
 关闭：
 
 ```powershell
-.\scripts\dev-stop.ps1       # 停止 API / Web，保留 Docker 基础设施
+.\scripts\dev-stop.ps1       # 停止 API / worker / Web，保留 Docker 基础设施
 .\scripts\dev-stop.ps1 -All  # 同时停止 Docker 容器，容器仍会保留在 Docker Desktop
 ```
 
-### 2.2 uv/.venv 一键脚本（保留）
-
-原有一键脚本仍然可用，但它使用 `uv sync` 管理 Python 依赖，并会创建仓库内 `.venv`。如果你决定统一使用 conda，优先使用上一节的 `dev-start-conda.ps1`。
-
-Windows PowerShell：
-
-```powershell
-.\scripts\dev-start.ps1
-```
-
-macOS / Linux / Git Bash：
-
-```bash
-./scripts/dev-start.sh
-```
-
-这套脚本会自动完成：
-
-1. 创建本地 `.env`
-2. 启动 PostgreSQL、Redis、MinIO
-3. 使用 uv 安装/同步后端依赖
-4. 安装/检查前端依赖
-5. 执行 Alembic 数据库迁移
-6. 执行种子脚本，创建默认管理员和默认项目
-7. 启动 FastAPI 后端和 Next.js 前端
-
-启动完成后访问：
-
-```text
-前端 Web: http://localhost:3000
-后端健康检查: http://localhost:8000/api/health
-API 文档: http://localhost:8000/docs
-MinIO 控制台: http://localhost:9001
-默认登录: admin / admin123
-```
-
-如果 `localhost:3000` 被占用，脚本会自动尝试 `3001-3005`。
-
-关闭：
-
-```powershell
-.\scripts\dev-stop.ps1       # 停止 API / Web，保留 Docker 基础设施
-.\scripts\dev-stop.ps1 -All  # 同时停止 Docker 容器，容器仍会保留在 Docker Desktop
-```
-
-### 2.3 conda-only 手动启动
+### 2.2 conda 手动启动
 
 如果新脚本启动失败，或你想逐步排查每一步，可以按下面流程手动启动。它同样不依赖 `.venv`。
 
-#### 2.3.1 前置软件
+#### 2.2.1 前置软件
 
 确认已安装并可用：
 
@@ -194,7 +153,7 @@ conda activate DatasetGen
 python --version
 ```
 
-#### 2.3.2 准备环境变量
+#### 2.2.2 准备环境变量
 
 在仓库根目录执行：
 
@@ -214,7 +173,7 @@ NEXT_PUBLIC_WS_URL=ws://localhost:8000/ws
 
 这些 `.env` 文件是本机运行配置，不提交 Git。
 
-#### 2.3.3 启动基础设施
+#### 2.2.3 启动基础设施
 
 启动 PostgreSQL、Redis、MinIO：
 
@@ -235,22 +194,22 @@ http://localhost:9001
 minioadmin / minioadmin123
 ```
 
-#### 2.3.4 安装后端依赖到 conda 环境
+#### 2.2.4 安装后端依赖到 conda 环境
 
 保持 `conda activate DatasetGen`，在仓库根目录执行：
 
 ```powershell
 python -m pip install -U pip setuptools wheel
-python -m pip install -e libs/domain -e libs/storage -e libs/parsing -e libs/cleaning -e libs/splitters -e libs/llm -e "apps/api[dev]"
+python -m pip install -e libs/domain -e libs/storage -e libs/parsing -e libs/cleaning -e libs/splitters -e libs/llm -e apps/api
 ```
 
 说明：
 
 - `libs/*` 是后端内部库，需要以 editable 模式装入同一个 conda 环境。
-- `apps/api[dev]` 安装 FastAPI 后端和测试/ruff 等开发依赖。
+- `apps/api` 安装 FastAPI 后端运行依赖。
 - `libs/parsing` 会安装本地 MinerU 解析所需依赖，首次安装可能较慢。
 
-#### 2.3.5 迁移数据库并初始化默认数据
+#### 2.2.5 迁移数据库并初始化默认数据
 
 ```powershell
 cd apps/api
@@ -268,7 +227,7 @@ cd ../..
 
 脚本是幂等的。重复执行时提示已初始化是正常现象。
 
-#### 2.3.6 启动后端 API
+#### 2.2.6 启动后端 API
 
 打开终端 A：
 
@@ -291,7 +250,7 @@ http://localhost:8000/docs
 {"status":"ok"}
 ```
 
-#### 2.3.7 启动前端 Web
+#### 2.2.7 启动前端 Web
 
 运行前端前，另开终端启动后台任务执行器（缺少此进程时任务会一直排队）：
 
@@ -325,53 +284,21 @@ npm run dev -- -p 3001
 
 ## 3. 日常启动与关闭
 
-如果使用 Windows + conda 一键脚本，日常只需要：
-
-```powershell
-.\scripts\dev-start-conda.ps1
-.\scripts\dev-stop.ps1
-```
-
-如果使用 uv/.venv 一键脚本，则运行 `.\scripts\dev-start.ps1`。如果使用 conda-only 手动流程，日常按下面三步。
-
-### 3.1 启动 Docker 基础设施
-
-```powershell
-docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env up -d
-```
-
-### 3.2 启动后端
+在仓库根目录的 PowerShell 中执行：
 
 ```powershell
 conda activate DatasetGen
-cd apps\api
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+.\scripts\dev-start-conda.ps1
 ```
 
-### 3.3 启动前端
+停止应用或全部本项目服务：
 
 ```powershell
-cd apps\web
-npm run dev
+.\scripts\dev-stop.ps1
+.\scripts\dev-stop.ps1 -All
 ```
 
-### 3.4 关闭
-
-后端和前端终端按 `Ctrl + C`。
-
-关闭 Docker 基础设施：
-
-```powershell
-docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env down
-```
-
-如果要删除本地数据库和 MinIO 数据卷，使用：
-
-```powershell
-docker compose -f infra/docker/docker-compose.yml --env-file infra/docker/.env down -v
-```
-
-`down -v` 会清空数据库和对象存储，只在确定要重置开发数据时使用。
+API、worker 和 Web 的运行日志位于 `logs/R1plus-API.log`、`logs/R1plus-Worker.log` 和 `logs/R1plus-Web.log`。
 
 ## 4. 页面使用流程
 
@@ -502,149 +429,37 @@ models/                   本地模型权重；不提交 Git
 logs/                     本地运行日志；不提交 Git
 ```
 
-## 8. 常用开发命令
+## 8. 常用运行命令
 
-### 8.1 一键质量门禁（推荐）
+### 8.1 数据库迁移
 
-在已激活的 `DatasetGen` conda 环境中，从仓库根目录执行：
-
-```powershell
-.\scripts\test-backend.ps1     # 后端：ruff lint + 重建隔离 schema/迁移 + pytest + 覆盖率
-.\scripts\test-frontend.ps1    # 前端：lint + tsc + vitest + build
-```
-
-macOS / Linux / Git Bash 对应脚本：
-
-```bash
-./scripts/test-backend.sh
-./scripts/test-frontend.sh
-```
-
-CI（`.github/workflows/ci.yml`）执行的正是与上述脚本相同的门禁。
-
-### 8.2 后端测试
-
-在已激活的 conda 环境中，从仓库根目录执行。推荐使用上一节的一键门禁；它会在
-确认 `datasetgen_test` 后重建其 `public` schema 并执行全部 Alembic 迁移，使数据库
-触发器和不可变性测试与 CI 保持一致。
-
-```powershell
-python -m pytest -q
-```
-
-测试分三层：
-
-- `tests/unit/`：纯单元测试（如安全校验、切分逻辑），不依赖外部服务。
-- `tests/integration/`：数据库/API 集成测试，使用隔离测试库 `datasetgen_test`
-  （PostgreSQL 55432、Redis 56379、MinIO 19000），每个测试结束后 TRUNCATE 清理，
-  保证无残留业务数据、Redis key 或 MinIO 对象。
-- `tests/contract/`：外部服务 adapter 契约测试（LLM、MinIO、解析器出站安全），
-  默认使用 fake，不发出真实网络请求。
-
-解析器出站与凭证安全（T03）专项测试：
-
-```powershell
-python -m pytest -q tests/unit/security/test_parser_egress.py tests/contract/test_parser_profiles.py tests/integration/test_parse_job_config_snapshot.py tests/test_remote_parsers.py tests/test_parser_credentials.py
-python -m ruff check apps/api/app/security apps/api/app/models/parse.py apps/api/app/schemas apps/api/app/workers/parse_worker.py libs/parsing tests
-```
-
-迁移验收：
-
-```powershell
-python scripts/migrate_parser_profiles.py --dry-run
-python scripts/migrate_parser_profiles.py --check
-python -m pytest -q tests/integration/test_parse_job_snapshot_migration.py
-```
-
-> 注意：运行上述集成/迁移命令前需启动测试基础设施（见下）。迁移命令默认连
-> `datasetgen_test`，请勿在开发库上执行。
-
-集成测试需要测试基础设施已启动：
-
-```powershell
-.\scripts\test-infra.ps1       # 启动（PostgreSQL/Redis/MinIO，与开发环境隔离）
-.\scripts\test-infra.ps1 -Stop # 停止
-```
-
-直接运行集成 pytest 前也需要先迁移测试 schema：
-
-```powershell
-cd apps\api
-$env:TESTING = "1"; $env:POSTGRES_HOST = "localhost"; $env:POSTGRES_PORT = "55432"
-$env:POSTGRES_DB = "datasetgen_test"; $env:POSTGRES_USER = "datasetgen_test"; $env:POSTGRES_PASSWORD = "datasetgen_test_password"
-python -m alembic upgrade head
-cd ..\..
-```
-
-### 8.3 后端 lint
-
-```powershell
-python -m ruff check apps/api libs tests
-```
-
-仓库以“零错误、零新增 warning”为基线，CI 强制该命令返回 0。
-
-### 8.4 Alembic 迁移 smoke test
-
-```powershell
-.\scripts\run-migration-smoke.ps1   # 空库 upgrade head → downgrade → upgrade head
-```
-
-该脚本只允许在 `datasetgen_test` 测试库上运行，不会触碰开发数据。
-
-### 8.5 前端类型检查
-
-```powershell
-cd apps/web
-npm exec tsc -- --noEmit
-```
-
-### 8.6 前端 lint
-
-```powershell
-cd apps/web
-npm run lint
-```
-
-### 8.7 前端测试
-
-```powershell
-cd apps/web
-npm test -- --run            # CI 无交互运行全部测试
-npm test -- src/lib/api.test.ts   # 单文件运行
-```
-
-前端测试使用统一的 API mock 层（`src/lib/__mocks__/api-server.ts`），
-按真实 HTTP 状态码与 JSON 响应运行，支持 fake timers、延迟响应、AbortSignal、
-401→refresh 序列响应与 WebSocket mock。
-
-### 8.8 数据库迁移
+一键启动脚本会自动执行数据库迁移，也可以在 `DatasetGen` 环境中手动执行：
 
 ```powershell
 conda activate DatasetGen
 cd apps/api
-alembic upgrade head
+python -m alembic upgrade head
 ```
 
-新增迁移示例：
+### 8.2 前端构建与运行
+
+本地开发启动使用 `npm run dev`。需要生产构建时执行：
 
 ```powershell
-cd apps/api
-alembic revision --autogenerate -m "describe change"
+cd apps/web
+npm run build
+npm run start
 ```
+
+前端继续使用仓库中的 `src/lib/api/generated.ts` 接口类型。后端实时 API 文档位于 `http://localhost:8000/docs`，OpenAPI 定义位于 `http://localhost:8000/openapi.json`。
 
 ## 9. 关键文档
 
-- 产品需求：[docs/product/PRD.md](docs/product/PRD.md)
-- 工程计划：[docs/plans/compressor-knowledge-platform-engineering-plan.md](docs/plans/compressor-knowledge-platform-engineering-plan.md)
-- 开发日志：[DevLog.md](DevLog.md)
-- R1 测试指南：[docs/r1-testing-guide.md](docs/r1-testing-guide.md)
-- R1 问题记录：[docs/r1-testing-issues.md](docs/r1-testing-issues.md)
-- 新机器部署 runbook：[docs/runbooks/new-machine-runbook.md](docs/runbooks/new-machine-runbook.md)
-- MinerU 本地解析指南：[docs/runbooks/mineru-local-parser.md](docs/runbooks/mineru-local-parser.md)
-- MinerU 本地服务指南：[docs/runbooks/mineru-local-service.md](docs/runbooks/mineru-local-service.md)
-- PaddleOCR 本地服务指南：[docs/runbooks/paddleocr-local-service.md](docs/runbooks/paddleocr-local-service.md)
-- 文档目录说明：[docs/README.md](docs/README.md)
+- 产品需求：[docs/PRD.md](docs/PRD.md)
+- 工程计划：[docs/PLAN.md](docs/PLAN.md)
+- 开发日志：[docs/DevLog.md](docs/DevLog.md)
+- 问题记录：[docs/BUG.md](docs/BUG.md)
+- 运行脚本：[scripts/README.md](scripts/README.md)
 
 ## 10. 常见问题
 
@@ -694,30 +509,11 @@ cd apps/api
 python ../../scripts/init_seed.py
 ```
 
-### 10.5 集成测试报错“连接超时”或“认证失败”
-
-后端集成测试使用隔离测试基础设施（端口 55432/56379/19000），与开发环境
-（5432/6379/9000）不同。请确认测试基础设施已启动：
-
-```powershell
-.\scripts\test-infra.ps1
-docker compose -f infra/docker/docker-compose.test.yml --env-file infra/docker/.env.test ps
-```
-
-如果 `pytest` 报“POSTGRES_DB 不在白名单”，说明环境变量未指向测试库，请确认
-`TESTING=1` 与 `POSTGRES_DB=datasetgen_test` 已设置（conftest 会自动设置默认值）。
-
-### 10.6 前端测试报错“mock not found”
-
-前端 API mock 层（`src/lib/__mocks__/api-server.ts`）只响应已注册的路由；未注册
-路由返回 404（`{"detail":"mock not found"}`），确保测试不会误连真实服务。请在测试
-中为所需端点调用 `server.onGet` / `server.onPost` / `server.mock`。
-
-### 10.7 PyMuPDF 解析中文乱码
+### 10.5 PyMuPDF 解析中文乱码
 
 部分中文 PDF 的内部文字层损坏或缺失 ToUnicode 映射，页面看起来正常但文本抽取会变成问号或替换字符。这种情况优先换 `MinerU2.5-Pro（本地模型）`，让模型按页面图像重新识别。
 
-### 10.8 本地 MinerU 提示模型不存在
+### 10.6 本地 MinerU 提示模型不存在
 
 确认文件存在：
 
@@ -727,7 +523,7 @@ models/MinerU2.5-Pro-2604-1.2B/model.safetensors
 
 如果没有模型权重，可以先用 `PyMuPDF4LLM（本地）` 跑通主流程。
 
-### 10.9 生成 Candidate 失败
+### 10.7 生成 Candidate 失败
 
 常见原因：
 
